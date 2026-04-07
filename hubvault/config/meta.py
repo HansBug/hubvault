@@ -10,7 +10,7 @@ __TITLE__ = 'hubvault'
 __VERSION__ = '0.0.1'
 
 #: Short description of the project, will be included in ``setup.py``.
-__DESCRIPTION__ = 'Useful utilities for huggingface'
+__DESCRIPTION__ = 'API-first embedded versioned storage for local ML artifacts'
 
 #: Author of this project.
 __AUTHOR__ = 'HansBug, narugo1992'

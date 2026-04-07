@@ -46,17 +46,17 @@ setup(
     long_description_content_type='text/markdown',
     author=meta['__AUTHOR__'],
     author_email=meta['__AUTHOR_EMAIL__'],
-    license='Apache License, Version 2.0',
-    keywords='huggingface, download, upload, batch processing, data processing, machine learning, ai',
+    license='GPL-3.0-only',
+    keywords='artifact storage, versioned storage, local repository, ml artifacts, huggingface hub, object store',
     url='https://github.com/hansbug/hubvault',
 
     # environment
-    python_requires=">=3.8",
+    python_requires=">=3.7",
     install_requires=requirements,
     tests_require=group_requirements['test'],
     extras_require=group_requirements,
     classifiers=[
-        'Development Status :: 5 - Production/Stable',
+        'Development Status :: 3 - Alpha',
 
         # Intended Audience
         'Intended Audience :: Developers',
@@ -64,18 +64,20 @@ setup(
         'Intended Audience :: Information Technology',
 
         # License
-        'License :: OSI Approved :: MIT License',
+        'License :: OSI Approved :: GNU General Public License v3 (GPLv3)',
 
         # Programming Language
         'Programming Language :: Python',
         'Programming Language :: Python :: 3',
         'Programming Language :: Python :: 3 :: Only',
+        'Programming Language :: Python :: 3.7',
         'Programming Language :: Python :: 3.8',
         'Programming Language :: Python :: 3.9',
         'Programming Language :: Python :: 3.10',
         'Programming Language :: Python :: 3.11',
         'Programming Language :: Python :: 3.12',
         'Programming Language :: Python :: 3.13',
+        'Programming Language :: Python :: 3.14',
 
         # Operating System
         'Operating System :: OS Independent',
@@ -84,15 +86,13 @@ setup(
         'Operating System :: MacOS',
 
         # Technical Topics
-        'Topic :: Scientific/Engineering',
-        'Topic :: Scientific/Engineering :: Artificial Intelligence',
+        'Topic :: Database',
+        'Topic :: System :: Archiving',
         'Topic :: Software Development :: Libraries',
         'Topic :: Software Development :: Libraries :: Python Modules',
-        'Topic :: Internet :: File Transfer Protocol (FTP)',
+        'Topic :: Software Development :: Version Control',
         'Topic :: Utilities',
 
-        # Data Processing Features
-        'Typing :: Typed',
         'Natural Language :: English'
     ],
     entry_points={
@@ -102,6 +102,7 @@ setup(
     },
     project_urls={
         'Bug Reports': 'https://github.com/hansbug/hubvault/issues',
+        'Documentation': 'https://hansbug.github.io/hubvault/main/index.html',
         'Source': 'https://github.com/hansbug/hubvault',
     },
 )

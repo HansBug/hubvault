@@ -1190,12 +1190,14 @@ fabric.properties
 # Android studio 3.1+ serialized cache file
 .idea/caches/build_file_checksums.ser
 
+
 /test_*
 .python-version
 /docs/build
 /public
-/docs/source/**/*.puml.svg
-/docs/source/**/*.puml.png
+/docs/source/**/*.fcstm.puml
+#/docs/source/**/*.puml.svg
+#/docs/source/**/*.puml.png
 /docs/source/**/*.gv.svg
 /docs/source/**/*.gv.png
 /docs/source/**/*.py.txt
@@ -1207,23 +1209,41 @@ fabric.properties
 /docs/source/**/*.dat.*
 !/docs/source/**/*.plot.py.svg
 !/docs/source/_static/**/*
+/docs/source/_static/logos/
 /docs/source/**/*.result.ipynb
-/cartpole_dqn_*
-/hubvault/**/*.json
-/hubvault/**/*.yaml
-/hubvault/**/*.yml
-/extra
-/resource/yolort/*
-!/resource/yolort/Makefile
+/docs/source/index.rst
+/pyfcstm/**/*.json
+/pyfcstm/**/*.yaml
+/pyfcstm/**/*.yml
 !/test/testfile/**/*
 !/zoo/testfile/**/*
 /test/testfile/dataset
 /zoo/testfile/dataset
 /.train
-*.pt
 /runs
-/YOLOv8
 .benchmarks
-!/hubvault/utils/irregular_repo.json
 /venv*
-/.env*
+junit.xml
+/antlr-*.jar
+!/pyfcstm/template/
+!/pyfcstm/template/*.py
+!/pyfcstm/template/*.json
+/pyfcstm/template/*.zip
+/test/template/_generated/
+/test/testfile/python_native_dlc6_more_result/
+*.cli_history
+
+# LLM configuration (contains API tokens)
+.llmconfig.yaml
+
+# Claude Code auto memory directory
+.claude
+
+# VSCode extension build artifacts
+/editors/vscode/build/
+/editors/vscode/*.vsix
+/editors/vscode/out/
+/editors/vscode/parser/*
+!/editors/vscode/parser/README.md
+!/editors/vscode/parser/package.json
+/editors/vscode/syntaxes/*.json

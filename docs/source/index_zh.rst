@@ -1,110 +1,43 @@
-欢迎来到 hubvault（Python Finite Control State Machine Framework）的文档
-==========================================================================
+欢迎来到 hubvault 文档
+======================
 
 概述
--------------
+--------
 
-\ **hubvault**\ （Python Finite Control State Machine Framework）是一个强大的 Python 框架，用于解析
-\ **FCSTM（Finite Control State Machine）**\ 领域特定语言（DSL）并生成多种目标语言的可执行代码。它专注于使用
-灵活的 Jinja2 模板系统建模\ **层次状态机（Harel 状态图）**\ 。
+\ **hubvault**\ 是一个仍在早期阶段的 Python 项目，目标是提供一个本地、嵌入式、API 优先的版本化仓库系统，用来保存模型权重、数据集、训练产物等大体积机器学习资产。它期望在使用体验上接近 ``huggingface_hub.HfApi``，但不依赖外部服务、数据库或守护进程。
 
-核心特性
-~~~~~~~~~~~~~
+当前状态
+--------
 
-* **表达性 DSL 语法**：直观的领域特定语言，用于定义状态、转换、事件和生命周期动作
-* **层次状态机**：完全支持嵌套状态的父子关系和面向切面编程
-* **多语言代码生成**：基于模板的渲染系统，支持 C、C++、Python 和自定义目标语言
-* **PlantUML 可视化**：自动生成状态机图表用于文档
-* **基于 ANTLR4 的解析器**：强大的语法解析，提供详细的错误报告
-* **灵活的事件系统**：本地、链式和全局事件作用域，用于复杂的状态机协调
-* **生命周期动作**：进入、期间和退出动作，支持前后切面
-* **抽象和引用动作**：声明抽象函数并在状态间重用动作
+.. note::
 
-应用场景
-~~~~~~~~~~~~~
+   hubvault 目前还处在项目引导和基础搭建阶段。这个仓库当前主要提供打包、CI、文档脚手架和一个很小的 CLI 外壳；设计文档里描述的存储引擎与公开仓库 API 仍在实现中。
 
-hubvault 适用于：
+设计目标
+--------
 
-* **嵌入式系统**：为微控制器和物联网设备生成高效的状态机代码
-* **协议实现**：使用复杂状态转换建模通信协议
-* **游戏 AI**：使用层次状态机设计角色行为和游戏逻辑
-* **工作流引擎**：使用清晰的状态定义实现业务流程工作流
-* **控制系统**：构建具有安全关键状态管理的工业控制逻辑
+hubvault 的核心设计约束包括：
 
-快速开始
--------------
+* **本地优先**：单机本地即可运行，不要求额外服务
+* **版本化资产**：围绕 commit、tree、ref 和大文件内容存储组织仓库
+* **一致性优先**：优先保证事务正确性、崩溃恢复和数据校验
+* **Python API 优先**：核心使用方式是 Python 接口，而不是庞杂的 CLI
+* **跨平台**：默认面向 Linux、macOS 和 Windows
 
-安装
-~~~~~~~~~~~~~
+当前仓库里已有的内容
+--------------------
 
-.. code-block:: bash
+当前仓库已经包含：
 
-   pip install hubvault
+* ``hubvault.config``：项目元信息
+* ``hubvault.entry``：基于 Click 的 CLI 引导层和命令装配
+* ``plan/init/``：初始范围、总体架构、存储格式、一致性和 GC 设计文档
+* ``docs/``：安装说明和当前代码的 API 参考页
 
-基本用法
-~~~~~~~~~~~~~
+现阶段 CLI 只承担很轻量的引导和校验职责，未来真正稳定的产品表面仍然会是 Python API。
 
-**1. 使用 DSL 定义状态机**
-
-创建文件 ``traffic_light.fcstm``：
-
-.. code-block:: fcstm
-
-   def int timer = 0;
-
-   state TrafficLight {
-       [*] -> Red;
-
-       state Red {
-           enter { timer = 0; }
-           during { timer = timer + 1; }
-       }
-
-       state Yellow {
-           enter { timer = 0; }
-           during { timer = timer + 1; }
-       }
-
-       state Green {
-           enter { timer = 0; }
-           during { timer = timer + 1; }
-       }
-
-       Red -> Green : if [timer >= 30];
-       Green -> Yellow : if [timer >= 25];
-       Yellow -> Red : if [timer >= 5];
-   }
-
-**2. 生成代码**
-
-.. code-block:: bash
-
-   hubvault generate -i traffic_light.fcstm -t templates/c/ -o output/
-
-**3. 使用 PlantUML 可视化**
-
-.. code-block:: bash
-
-   hubvault plantuml -i traffic_light.fcstm -o traffic_light.puml
-
-架构
--------------
-
-hubvault 遵循三阶段流水线：
-
-1. **DSL 解析**：基于 ANTLR4 的解析器将 DSL 文本转换为抽象语法树（AST）
-2. **模型构建**：AST 节点转换为可查询的状态机模型
-3. **代码生成**：Jinja2 模板将模型渲染为目标语言代码
-
-框架提供：
-
-* **DSL 层** (``hubvault.dsl``)：语法定义、解析器和 AST 节点
-* **模型层** (``hubvault.model``)：带验证的状态机模型类
-* **渲染引擎** (``hubvault.render``)：基于模板的代码生成，支持表达式样式
-* **CLI 工具** (``hubvault.entry``)：常用操作的命令行界面
-
-教程
--------------------------
+文档导航
+--------
 
 .. toctree::
     :maxdepth: 2
@@ -112,40 +45,27 @@ hubvault 遵循三阶段流水线：
     :hidden:
 
     tutorials/installation/index_zh
-    tutorials/structure/index_zh
-    tutorials/dsl/index_zh
-    tutorials/render/index_zh
-    tutorials/simulation/index_zh
-    tutorials/visualization/index_zh
-    tutorials/cli/index_zh
-    tutorials/grammar/index_zh
 
 * :doc:`tutorials/installation/index_zh`
-* :doc:`tutorials/structure/index_zh`
-* :doc:`tutorials/dsl/index_zh`
-* :doc:`tutorials/render/index_zh`
-* :doc:`tutorials/simulation/index_zh`
-* :doc:`tutorials/visualization/index_zh`
-* :doc:`tutorials/cli/index_zh`
-* :doc:`tutorials/grammar/index_zh`
 
-最佳实践
--------------------------
-
-.. toctree::
-    :maxdepth: 2
-    :caption: 最佳实践
+API 参考
+--------
 
 .. include:: api_doc_zh.rst
 
+设计文档
+--------
+
+项目当前的实现路线主要记录在仓库的 ``plan/init/`` 目录中，里面定义了 repo 模型、事务写入路径、磁盘格式、校验策略以及垃圾回收方案。
+
 社区和支持
------------------------
+----------
 
 * **GitHub 仓库**：https://github.com/HansBug/hubvault
 * **问题跟踪**：https://github.com/HansBug/hubvault/issues
 * **PyPI 包**：https://pypi.org/project/hubvault/
 
 许可证
----------
+-------
 
-hubvault 在 Apache License 2.0 下发布。详情请参阅 LICENSE 文件。
+hubvault 在 GNU General Public License v3.0 下发布。详情请参阅 LICENSE 文件。
