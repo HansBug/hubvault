@@ -26,3 +26,318 @@ Current history uses short, imperative commit subjects, for example: `Add initia
 
 ## Security & Configuration Tips
 Never commit `.env`, tokens, or PyPI credentials. GitHub Actions expects repository secrets such as `PYPI_PASSWORD`, `GIST_SECRET`, `BADGE_GIST_ID`, and `CODECOV_TOKEN`. Do not commit generated artifacts like `__pycache__/`, `build/`, or `dist/`.
+
+## Additional Repository Rules
+
+This repository must support cross-platform environments (Windows, mainstream Linux distributions, and macOS), older system platforms (for example Windows 7), older Python versions (for example Python 3.7), and a broad Python version range (3.7-3.14), so always account for that compatibility envelope when writing code or introducing dependencies.
+
+## Python Docstring Style Guide
+
+Use **reStructuredText (reST)** format exclusively, following PEP 257 and Sphinx standards.
+
+### Core Principles
+
+1. **Format**: reST markup exclusively
+2. **Completeness**: Document all public APIs (modules, classes, functions, methods)
+3. **Clarity**: Explain "why" and "what", not just "how"
+4. **Cross-references**: Use reST roles (`:class:`, `:func:`, `:mod:`)
+5. **Examples**: Include practical usage examples for public APIs
+6. **Tone**: Professional, clear, technical but accessible
+
+### Docstring Templates
+
+**Module**:
+```python
+"""
+Brief one-line description.
+
+Longer description of purpose, main capabilities, and fit in the larger system.
+
+The module contains:
+* :class:`ClassName` - Brief description
+* :func:`function_name` - Brief description
+
+.. note::
+   Important caveats about usage or requirements.
+
+Example::
+
+    >>> from module import something
+    >>> result = something()
+    >>> result
+    expected_output
+"""
+```
+
+**Class**:
+```python
+class ClassName:
+    """
+    Brief one-line description.
+
+    Longer explanation of purpose, responsibilities, and usage patterns.
+
+    :param param_name: Description of constructor parameter
+    :type param_name: ParamType
+    :param optional_param: Description, defaults to ``default_value``
+    :type optional_param: ParamType, optional
+
+    :ivar instance_var: Description of instance variable
+    :vartype instance_var: VarType
+    :cvar class_var: Description of class variable
+    :type class_var: ClassVarType
+
+    Example::
+
+        >>> obj = ClassName(param_name=value)
+        >>> obj.method()
+        expected_result
+    """
+```
+
+**Function/Method**:
+```python
+def function_name(param1: Type1, param2: Type2 = default) -> ReturnType:
+    """
+    Brief one-line description.
+
+    Longer explanation of behavior, algorithm, or important details.
+
+    :param param1: Description of the first parameter
+    :type param1: Type1
+    :param param2: Description, defaults to ``default``
+    :type param2: Type2, optional
+    :return: Description of what is returned
+    :rtype: ReturnType
+    :raises ExceptionType: Description of when raised
+
+    Example::
+
+        >>> result = function_name(arg1, arg2)
+        >>> result
+        expected_output
+    """
+```
+
+**Dataclass**:
+```python
+@dataclass
+class DataClassName:
+    """
+    Brief description of what this dataclass represents.
+
+    :param field1: Description of the first field
+    :type field1: Type1
+    :param field2: Description of the second field
+    :type field2: Type2
+
+    Example::
+
+        >>> obj = DataClassName(field1=value1, field2=value2)
+        >>> obj.field1
+        value1
+    """
+    field1: Type1
+    field2: Type2
+```
+
+### `__init__.py` Format
+
+Package-level `__init__.py` files should stay thin. Use them to define the package import surface, re-export stable public symbols, and document what the package exposes. Avoid placing real business logic in `__init__.py`.
+
+Preferred structure:
+
+1. Module-level reST docstring
+2. Explicit re-export imports
+3. `__all__` for the intended public surface
+
+Example:
+
+```python
+"""
+Entry points for the :mod:`hubvault.entry` package.
+
+This package exposes the command-line interface (CLI) entry point for the
+``hubvault`` application. The primary public object is the CLI group imported
+as :data:`hubvaultcli`, which can be used to invoke CLI commands programmatically
+or to register it with external tooling.
+
+The package contains the following main components:
+
+* :data:`hubvaultcli` - CLI group object for the ``hubvault`` command-line tool
+
+Example::
+
+    >>> from hubvault.entry import hubvaultcli
+    >>> # The object is typically used by CLI frameworks.
+    >>> # Actual invocation is usually handled by the CLI framework itself.
+
+.. note::
+   The underlying CLI implementation is defined in :mod:`hubvault.entry.cli`.
+   This package module merely re-exports the CLI group for convenience.
+
+"""
+
+from .cli import cli as hubvaultcli
+
+__all__ = ["hubvaultcli"]
+```
+
+### Parameter, Return, and Exception Patterns
+
+```python
+:param param_name: Description                           # Required parameter
+:type param_name: type_annotation
+:param param_name: Description, defaults to ``value``   # Optional parameter
+:type param_name: type_annotation, optional
+:return: Description of what is returned
+:rtype: ReturnType
+:return: ``None``.                                       # For None-returning functions
+:rtype: None
+:raises ExceptionType: When this exception is raised
+```
+
+### Cross-References and Markup
+
+- `:class:`ClassName``, `:func:`function_name``, `:meth:`Class.method_name``
+- `:mod:`module.name``, `:exc:`ExceptionType``, `:data:`variable_name``, `:attr:`attribute_name``
+- Instance variables: `:ivar:` / `:vartype:`; Class variables: `:cvar:` / `:type:`
+- Inline code: double backticks `` ``value`` `` (not single backticks)
+
+### Special Directives
+
+```python
+.. note::
+   Important information or caveats about usage.
+.. warning::
+   Critical warnings about potential issues or dangers.
+```
+
+### Checklist
+
+- [ ] Brief one-line summary at the top
+- [ ] Longer explanation for non-trivial functions/classes
+- [ ] All params documented with `:param:` and `:type:`
+- [ ] Return value with `:return:` and `:rtype:`
+- [ ] All exceptions with `:raises:`
+- [ ] Cross-references use reST roles (`:class:`, `:func:`, etc.)
+- [ ] Examples for public APIs
+- [ ] Inline code uses double backticks
+- [ ] Optional params marked with `, optional`; defaults shown in description
+
+### Anti-Patterns
+
+**DON'T**: Google/NumPy style; omit types (always include `:type:` and `:rtype:`); single backticks for inline code;
+vague descriptions ("Does something");
+bare class/function names without reST roles; volatile implementation details.
+
+**DO**: reST format consistently; explain "why" and "what"; use cross-references; include practical examples;
+update docstrings when code changes.
+
+## Testing Strategy
+
+- Tests in `test/`; use `@pytest.mark.unittest`
+- Unit tests must not depend on local files ignored by version control (for example, gitignored files).
+- Test timeout: 300 seconds (configured in `pytest.ini`)
+
+### Test File Organization
+
+Organize tests so they mirror the source tree wherever practical.
+
+- `hubvault/config/meta.py` → `test/config/test_meta.py`
+- `hubvault/entry/cli.py` → `test/entry/test_cli.py`
+- `hubvault/entry/dispatch.py` → `test/entry/test_dispatch.py`
+
+For package-level public surfaces, it is acceptable to keep one top-level test file that exercises the exported API directly.
+
+- `hubvault/entry/__init__.py` re-exports `hubvaultcli`, so `test/test_entry.py` is an acceptable public-surface test file.
+
+Naming rules:
+
+- Test files use `test_<module>.py`
+- Test classes use `Test<Subject>`
+- Test methods use `test_<behavior>`
+- Keep package `__init__.py` files under `test/` when the subtree is treated as a Python package
+
+### Test Code Example
+
+```python
+import pytest
+from click.testing import CliRunner
+
+from hubvault.entry import hubvaultcli
+
+
+@pytest.mark.unittest
+class TestEntryCli:
+    def test_version_flag(self):
+        runner = CliRunner()
+        result = runner.invoke(hubvaultcli, ['-v'])
+
+        assert result.exit_code == 0
+        assert 'hubvault' in result.output.lower()
+
+    def test_help_flag(self):
+        runner = CliRunner()
+        result = runner.invoke(hubvaultcli, ['-h'])
+
+        assert result.exit_code == 0
+        assert 'usage' in result.output.lower()
+```
+
+### Testing Examples
+
+```bash
+make unittest                                        # Run all tests
+make unittest RANGE_DIR=./config                     # Specific directory
+make unittest COV_TYPES="xml term-missing"           # With coverage types
+make unittest MIN_COVERAGE=80                        # With minimum coverage
+make unittest WORKERS=4                              # With parallel workers
+
+# Run a single test file or function directly:
+pytest test/test_entry.py -v
+pytest test/test_entry.py::TestEntryCli::test_help_flag -v
+```
+
+**Commit Message Style**: Follow the dominant repository convention from recent history.
+
+- For normal commits, prefer `type(scope): imperative summary`, such as
+  `feat(model): add StateMachine.resolve_state path resolver` or
+  `test(utils): strengthen fixed-int tests with live Z3 BitVec alignment`.
+- Use short lowercase types such as `feat`, `fix`, `docs`, `test`, `refactor`, `chore`; keep the scope lowercase when present
+  (`model`, `solver`, `utils`, `makefile`, `verify`, etc.). Omit the scope only when the change genuinely spans the whole repository.
+- Write the summary as a concise imperative phrase starting with a lowercase verb (`add`, `update`, `improve`, `align`, `compress`,
+  `clean up`); do not add a trailing period.
+- For non-trivial changes, add a blank line and then a body. Match the common repository pattern:
+  a short overview sentence or paragraph first, followed by `-` bullet points for concrete changes, tests, compatibility notes,
+  docs updates, or behavior clarifications.
+- When a bullet needs to wrap, continue it on the next line with indentation rather than starting a new bullet.
+- Preserve standard trailers when applicable, especially `Co-Authored-By: Name <email>`.
+- Merge commits should keep the generated style used in history, such as `Merge branch 'main' into dev/...` or
+  `Merge pull request #52 from HansBug/dev/fixed`.
+
+### Commit Message Examples From git log
+
+Example 1:
+
+```text
+docs(cli): add visualize command guide and cross-links
+Follow up the visualize CLI work from #65 by documenting the new command in the CLI guide and clarifying how it relates to the existing visualization guide.
+
+- add visualize command coverage to the English and Chinese CLI tutorial pages
+- explain when to use plantuml versus visualize and document renderer-related options
+- point CLI readers to the visualization guide for detailed PlantUML output configuration
+- point visualization readers back to the CLI guide for renderer, check, and auto-open behavior
+```
+
+Example 2:
+
+```text
+feat(entry): add visualize CLI command
+Add a PlantUML-backed visualize command that renders FCSTM diagrams through the plantumlcli Python API and optionally opens the generated output with the system default viewer.
+
+- add the new visualize subcommand with auto/local/remote renderer selection and built-in plantumlcli check support
+- share PlantUML generation logic between the plantuml and visualize commands
+- add runtime dependency and entry-point tests for rendering, headless fallback, and check behavior
+- include generated API docs for the new entry module
+```
