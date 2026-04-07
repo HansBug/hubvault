@@ -61,6 +61,8 @@ MVP 只要求打通以下最短路径：
 - `reset_ref()` 能把分支回退到历史 commit
 - `quick_verify()` 能做最小一致性体检
 - 已关闭的仓库目录可以直接 `mv` 到新路径后重新打开，行为不变
+- 通过公开文件信息接口拿到 `oid` / `sha256`
+- `hf_hub_download()` 返回的文件路径以 repo 内原始相对路径结尾，而不是内部 blob 名
 
 ### 5.2 MVP 明确不做
 
@@ -112,6 +114,8 @@ content = api.read_bytes("weights/config.json", revision="main")
 - 通过公开 Python API 完成提交、读取、列树、回滚
 - 发生异常中断后不会破坏已提交版本
 - 仓库关闭后整体搬迁路径或打包迁移后仍可正常打开、读取、校验
+- 对单个文件可以稳定拿到 HF 风格 `oid` / `sha256`
+- `hf_hub_download()` 与快照导出路径保持 repo 相对路径层级与文件名保真
 - 单元测试能通过公开 API 覆盖新增能力
 - `make unittest` 通过
 

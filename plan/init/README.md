@@ -7,6 +7,7 @@
 - 固定第一版协议、对象模型和兼容边界
 - 给出按阶段可执行的落地路径，优先把 MVP 尽快做出来
 - 固定“repo root 本身就是完整仓库”的自包含与可搬迁约束
+- 固定面向 `huggingface_hub` 风格下载路径与文件元数据的兼容语义
 
 ## 1. 当前仓库状态
 
@@ -61,6 +62,8 @@
 - 仓库根目录自包含全部持久化状态，关闭仓库后可以直接 `mv`、打包、解压并继续使用
 - 只实现 whole-file blob 存储，不在 MVP 阶段引入 chunk pack
 - 先打通 `create_repo -> create_commit -> list -> read -> reset -> quick_verify`
+- `hf_hub_download()` 与 `snapshot_download()` 返回的文件路径必须保留 repo 内相对路径后缀
+- 文件元数据要同时维护 HF 兼容的 `oid` / `blob_id` 与 `sha256`
 - 所有测试走公开 API、公开 CLI 或受版本控制的规划文档，不依赖 private / protected 实现细节
 
 更重的能力放到后续 phase：

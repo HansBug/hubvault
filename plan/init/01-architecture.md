@@ -76,6 +76,7 @@ hubvault/
 - revision 解析
 - 向下调用 repo/service 层
 - 返回公开 dataclass，而不是泄露内部实现对象
+- 对外暴露 HF 兼容的文件路径与文件身份元数据，而不是内部 blob 命名
 
 ### 3.2 仓库服务层
 
@@ -88,6 +89,8 @@ hubvault/
 - 维护 ref 与 reflog
 - 构造 `RepoInfo`、`CommitInfo`、`PathInfo`
 - 确保持久化记录只写逻辑路径、对象 ID 与相对布局，不写宿主绝对路径
+- 为下载类 API 生成保留 repo 相对路径后缀的可读文件路径
+- 维护公开文件 `oid` / `sha256` 与内部对象引用之间的映射
 
 ### 3.3 存储层
 
@@ -147,6 +150,7 @@ hubvault/
 - `snapshot_download()` 先构建只读缓存目录，不处理 chunk 级共享
 - `upload_large_folder()` 在 Phase 3 前可退化为多次 whole-file 提交
 - 所有缓存、事务和诊断状态都放在 repo root 下，保证仓库整体搬迁后仍然自洽
+- 默认下载路径可以使用 symlink、hardlink 或实体文件，但用户拿到的最终路径必须保留 repo 相对路径后缀
 
 这样可以先把一致性、对象关系、公开 API 和公开测试体系做稳。
 
@@ -172,6 +176,14 @@ class CommitInfo:
     tree_id: str
     parents: List[str]
     message: str
+
+
+@dataclass(frozen=True)
+class PathInfo:
+    path: str
+    size: int
+    oid: Optional[str]
+    sha256: Optional[str]
 
 
 class HubVaultApi:
@@ -201,6 +213,7 @@ class HubVaultApi:
 - `entry/` 只能依赖公开 API，不应直接操作内部存储实现
 - `models.py` 只定义公开 dataclass / enum，不放业务逻辑
 - 任何持久化实现都不得要求仓库外的 sidecar 目录、外部索引库或绝对路径配置才能工作
+- 内部对象 ID、公开文件 `oid`、以及下载导出路径三者必须显式分层，避免语义混淆
 
 ## 8. 写路径与读路径
 

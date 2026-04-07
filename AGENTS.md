@@ -39,11 +39,11 @@ Use 4-space indentation and follow existing Python style: snake_case for modules
 ## Testing Guidelines
 This project uses `pytest` with markers declared in `pytest.ini` (`unittest`, `benchmark`, `ignore`). Name test files `test_*.py`, classes `Test*`, and methods `test_*`. Place tests under `test/` following the source layout. Coverage is uploaded in CI; local changes should keep coverage stable or improve it. Add targeted tests for every behavior change, even when only metadata or packaging code is touched.
 
-New and updated unit tests must exercise public behavior only. Do not import, call, inspect, monkeypatch, or assert against private/protected modules, fields, classes, functions, or methods just to reach coverage. Prefer public APIs, public CLI commands, public dataclasses, and checked-in public artifacts such as version-controlled planning documents when they carry repository requirements.
+New and updated unit tests must exercise public behavior only. Do not import, call, inspect, monkeypatch, or assert against private/protected modules, fields, classes, functions, or methods just to reach coverage. Unit tests must target `hubvault/` source behavior only, through public APIs, public CLI commands, and other public symbols from the package.
 
 Prefer real behavior over mocks whenever the problem can be tested deterministically with the local filesystem, `CliRunner`, temporary directories, or normal in-process execution. Use mocks only for external boundaries or failure modes that cannot be exercised reliably in a normal local test.
 
-Tests that protect repository policy or planning structure are acceptable when they validate durable invariants in checked-in files such as `plan/` or `AGENTS.md`; keep those tests focused on structure and required commitments rather than fragile incidental wording.
+Do not add unit tests whose primary assertions target `plan/`, `AGENTS.md`, `README.md`, generated docs, or other non-`hubvault/` files. Documentation and repository guidance should be reviewed directly, while the unit-test suite remains focused on the package source tree.
 
 ## Commit & Pull Request Guidelines
 Current history uses short, imperative commit subjects, for example: `Add initial hubvault design docs`. Follow that pattern. Keep commits focused and avoid bundling packaging, workflow, and feature work together unless tightly related. PRs should include a clear summary, list of commands run locally, linked issues when applicable, and screenshots only for UI or badge-output changes.
@@ -57,6 +57,8 @@ This repository must support cross-platform environments (Windows, mainstream Li
 
 For the local-path repository design itself, treat the repository root as a self-contained portable artifact. Persisted repository state must live under the repo root and must not depend on absolute host paths, external sidecar databases, or metadata stored elsewhere. A closed repo should remain valid after moving the directory, restoring it from an archive, or unpacking it at another location.
 
+When designing or implementing file-download APIs and file metadata, preserve Hugging Face style public semantics where the project explicitly claims compatibility. In particular, returned downloadable file paths should preserve the repo-relative suffix, and public file metadata should distinguish internal storage object identifiers from Hugging Face compatible file `oid` / `blob_id` and `sha256` values.
+
 ## Planning Document Rules
 
 Execution-oriented documents under `plan/` must reflect the current repository state, not an imagined future implementation state.
@@ -65,7 +67,7 @@ Execution-oriented documents under `plan/` must reflect the current repository s
 - Each executable phase must include both a `Todo` section and a `Checklist` section.
 - Use Markdown checkboxes written exactly as `* [ ]` for `plan/` task lists.
 - Call out the MVP cut and deferred items explicitly so contributors know what is intentionally left for later phases.
-- When a `plan/` change introduces new structural expectations, add or update tests that enforce those expectations.
+- Do not turn planning-document structure into unit-test targets; keep these expectations enforced by review and by implementing matching source behavior under `hubvault/`.
 
 ## Python Docstring Style Guide
 
@@ -347,7 +349,7 @@ After writing code, run regression checks before considering the work complete. 
 - CLI entry changes under `hubvault/entry/`, `hubvault_cli.py`, or standalone packaging logic: run `make unittest`, and if the standalone path is affected, also run `make build` followed by `make test_cli`.
 - Packaging or dependency changes (`setup.py`, `requirements*.txt`, workflow packaging logic): run `make unittest` and `make package`.
 - Docstring/public API surface changes that affect generated API docs: run `make rst_auto` and then run at least the relevant regression tests.
-- Changes under `plan/` or `AGENTS.md` that create or tighten repository rules should add or update tests for those structural requirements and run `make unittest`.
+- Changes under `plan/` or `AGENTS.md` should not add doc-only unit tests; when they alter expected implementation behavior, reflect that through source-facing tests under `test/` that exercise `hubvault/` public behavior and run `make unittest`.
 
 During development, rerun a narrowed regression after meaningful edits when feasible so breakage is caught close to where it was introduced. Before declaring the task complete, run the full required regression set for the touched surface.
 

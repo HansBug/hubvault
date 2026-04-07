@@ -25,7 +25,8 @@
 * [ ] 明确 `HubVaultApi`、`CommitOperation*`、`RepoInfo`、`CommitInfo`、`PathInfo`、`VerifyReport` 的公开字段。
 * [ ] 固化 `AGENTS.md` 中的测试制度、公开表面约束和回归要求。
 * [ ] 冻结“repo root 自包含且可整体搬迁/归档恢复”的格式红线，禁止把真相写到仓库外部。
-* [ ] 为 `plan/init` 与 `AGENTS.md` 增加结构性单元测试，防止后续回退到非执行式计划。
+* [ ] 冻结 HF 兼容文件元数据语义，明确公开 `oid` / `blob_id` / `sha256` 与内部对象 ID 的区别。
+* [ ] 审查现有单元测试策略，确保测试对象只覆盖 `hubvault/` 公开源码行为，不把文档本身作为单测对象。
 
 ### Checklist
 
@@ -33,6 +34,8 @@
 * [ ] 所有 Phase 都包含可执行范围、Todo 和 Checklist。
 * [ ] 新增测试只依赖公开文件和公开表面，不使用 private / protected 细节。
 * [ ] 自包含/可搬迁要求已经在范围、格式、API 和测试路线图中明确落地。
+* [ ] 下载路径保真和文件 `oid` / `sha256` 语义已经写入 API 与存储设计。
+* [ ] 单元测试只覆盖 `hubvault/` 源码路径下的公开行为。
 * [ ] `make unittest` 通过。
 
 ## Phase 1. MVP 仓库核心
@@ -48,9 +51,11 @@
 * [ ] 新增 `hubvault/api.py` 与 `hubvault/repo.py`，提供 `HubVaultApi` 公开入口。
 * [ ] 实现 repo 初始化、打开、`repo_info()` 与默认分支解析。
 * [ ] 实现 whole-file blob 存储、commit/tree/file/blob 对象写入和读取。
-* [ ] 实现 `create_commit()`、`list_repo_tree()`、`list_repo_files()`、`open_file()`、`read_bytes()`、`hf_hub_download()`。
+* [ ] 实现 `create_commit()`、`get_paths_info()`、`list_repo_tree()`、`list_repo_files()`、`open_file()`、`read_bytes()`、`hf_hub_download()`。
 * [ ] 实现 `reset_ref()` 与最小 `quick_verify()`。
 * [ ] 保证所有持久化元数据不包含宿主绝对路径，且仓库移动后可以直接重新打开。
+* [ ] 为每个文件计算并持久化公开 `oid` / `sha256` / `etag`。
+* [ ] 让 `hf_hub_download()` 返回以 repo 相对路径结尾的可读文件路径。
 * [ ] 为上述能力补齐只经由公开 API 的单元测试和必要的临时目录集成测试。
 
 ### Checklist
@@ -61,6 +66,8 @@
 * [ ] 可以将分支回退到历史 commit。
 * [ ] `quick_verify()` 能在正常仓库上返回成功报告。
 * [ ] 仓库关闭后整体移动路径，再次打开仍能读取、回滚和校验。
+* [ ] 公开文件信息中可以拿到 HF 兼容 `oid` / `sha256`。
+* [ ] `hf_hub_download()` 返回路径以 repo 原始相对路径结尾。
 * [ ] `make unittest` 通过。
 
 ## Phase 2. 可用性增强
@@ -77,6 +84,7 @@
 * [ ] 实现 `snapshot_download()`，返回只读快照缓存目录。
 * [ ] 增强 `quick_verify()` 输出，增加 refs、对象和事务残留诊断。
 * [ ] 增加仓库打包/解包恢复后的公开 API 回归用例。
+* [ ] 增加 `snapshot_download()` 与 `hf_hub_download(local_dir=...)` 的路径保真回归。
 * [ ] 增加公开 API 的用例测试，覆盖 refs、文件删除、快照缓存和回滚。
 
 ### Checklist
@@ -86,6 +94,7 @@
 * [ ] `snapshot_download()` 产出的目录内容与目标 revision 一致。
 * [ ] reflog 至少能支持审计与恢复诊断。
 * [ ] 仓库归档恢复后不需要任何外部 sidecar 状态即可继续工作。
+* [ ] 外部导出模式下仍能拿到与 repo 相对路径一致的文件路径后缀。
 * [ ] `make unittest` 通过。
 
 ## Phase 3. 大文件引擎
@@ -101,6 +110,7 @@
 * [ ] 实现 append-only pack 写入与 `MANIFEST` 管理。
 * [ ] 实现 `read_range()` 与 `upload_large_folder()`。
 * [ ] 增加 chunk/hash、pack 截断、索引查找和范围读取测试。
+* [ ] 为大文件补齐 HF 风格 LFS 兼容 `oid` / `sha256` / `pointer_size` 语义。
 
 ### Checklist
 
@@ -109,6 +119,7 @@
 * [ ] pack/manifest 更新遵守事务发布原则。
 * [ ] 旧的 whole-file blob 仓库仍可兼容读取。
 * [ ] chunk/pack 引入后仍不破坏仓库整体搬迁与归档恢复能力。
+* [ ] 大文件公开元数据与 HF `RepoFile.blob_id + lfs.sha256` 语义对齐。
 * [ ] `make unittest` 通过。
 
 ## Phase 4. 一致性与维护能力

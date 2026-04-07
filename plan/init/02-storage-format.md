@@ -141,15 +141,19 @@ Tree 记录目录项列表，每个目录项包含：
 - `format_version`
 - `storage_kind`，取值为 `blob` 或 `chunked`
 - `logical_size`
-- `logical_hash`
+- `sha256`
+- `oid`
+- `etag`
 - `content_type_hint`
-- `blob_id`
+- `content_object_id`
 - `chunks`
 
 说明：
 
 - Phase 1 只允许 `storage_kind="blob"`
 - Phase 3 之后才允许 `storage_kind="chunked"`
+- `content_object_id` 是内部内容对象引用，不是对外兼容层里的 `blob_id`
+- `oid` / `etag` / `sha256` 是面向公开文件元数据的稳定字段
 
 ### 3.4 Blob 对象
 
@@ -166,7 +170,21 @@ MVP 新增 `Blob` 概念，表示一个 whole-file 内容对象：
 
 这里的 sidecar 仅指 repo root 内、与对象同属仓库布局的一部分，不是 repo 外的外置数据目录。
 
-### 3.5 Chunk 记录
+### 3.5 内部对象 ID 与公开文件身份分离
+
+为了避免与 Hugging Face 兼容层的 `blob_id` 语义冲突，必须明确区分：
+
+- 内部对象 ID：`objects/*` 下对象的仓库内部标识
+- 公开文件 `oid`：对外暴露的 HF 兼容文件 OID
+- 公开文件 `sha256`：文件逻辑内容的 SHA-256
+
+对齐规则建议如下：
+
+- 普通文件：`oid` 使用 git blob OID 语义，`sha256` 为文件内容 SHA-256
+- 大文件 / LFS 兼容模式：`oid` 使用 canonical LFS pointer 的 git blob OID，`sha256` 为真实文件内容 SHA-256
+- `etag` 采用 HF 风格：普通文件用 `oid`，LFS 兼容模式用 `sha256`
+
+### 3.6 Chunk 记录
 
 Phase 3 之后，chunk 元信息通过索引维护：
 
@@ -208,7 +226,7 @@ Phase 3 之后，chunk 元信息通过索引维护：
 
 ```python
 import json
-from hashlib import sha256
+from hashlib import sha1, sha256
 
 
 def encode_payload(payload):
@@ -219,6 +237,19 @@ def encode_payload(payload):
         ensure_ascii=False,
     ).encode("utf-8")
     return payload_bytes, "sha256:" + sha256(payload_bytes).hexdigest()
+
+
+def git_blob_oid(data):
+    header = "blob %d\0" % len(data)
+    return sha1(header.encode("utf-8") + data).hexdigest()
+
+
+def canonical_lfs_pointer(file_sha256, size):
+    return (
+        "version https://git-lfs.github.com/spec/v1\n"
+        "oid sha256:%s\n"
+        "size %d\n"
+    ) % (file_sha256, size)
 ```
 
 ## 5. 文件内容存储策略
@@ -227,8 +258,9 @@ def encode_payload(payload):
 
 - 小文件和普通文件统一走 whole-file blob
 - `Blob` 的 payload 存于 `objects/blobs/`
-- `File` 对象引用 `blob_id`
+- `File` 对象引用 `content_object_id`
 - `CommitOperationAdd.from_file()` 的源文件绝对路径只用于读取输入字节，绝不写入仓库持久化元数据
+- 提交时同步计算文件 `sha256` 与 git blob 语义 `oid`
 
 ### 5.2 Phase 3
 
@@ -250,6 +282,8 @@ def encode_payload(payload):
 MVP 不做 chunk 索引；blob 查找只依赖对象 ID 到对象文件路径的确定性映射。
 
 这意味着对象查找不需要任何 repo 外的数据库、注册表或路径映射。
+
+下载路径与缓存布局也必须由 repo 相对路径推导，不能退化成仅暴露内部 blob 名的用户路径。
 
 ### 6.2 Phase 3 设计
 
@@ -276,6 +310,7 @@ chunk 索引采用文件版 LSM：
 
 - 同一目录下如果两个逻辑名称在 `casefold()` 后相同，则拒绝提交
 - 所有持久化路径字段都必须是相对 repo root 的逻辑路径，不能是宿主绝对路径
+- 所有导出/下载路径都必须能从 repo 相对路径稳定映射出来
 
 ### 7.1 代表性规范化片段
 
@@ -308,3 +343,9 @@ def normalize_repo_path(path_in_repo):
 - quick verify 可忽略缓存
 - GC 只把活跃快照缓存作为额外 root，而不是把缓存内容当正式对象
 - 缓存必须位于 repo root 内部，确保仓库整体搬迁或归档恢复后不需要重建外部路径约定
+
+针对下载路径的额外约束：
+
+- repo 内部快照缓存应优先使用 `<snapshot_root>/<repo_relative_path>` 的布局
+- `hf_hub_download()` 返回的文件路径可以是 symlink、hardlink 或实体文件
+- 无论实现细节如何，返回路径都必须以原始 repo 相对路径结尾，例如 `xxx/yyy/zzz.safetensors`

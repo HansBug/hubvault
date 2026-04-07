@@ -197,6 +197,7 @@ MVP 的 `quick_verify()` 重点检查：
 - `File -> Blob` 引用闭包是否完整
 - 残留事务是否可恢复或可安全清理
 - 仓库内没有要求访问 repo root 外持久化状态的格式残留
+- 文件 `oid` / `sha256` / `etag` 与持久化文件对象记录一致
 
 ### 8.2 full verify
 

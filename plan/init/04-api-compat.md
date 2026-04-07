@@ -38,6 +38,7 @@ from hubvault import (
 - `RefInfo`
 - `CommitInfo`
 - `PathInfo`
+- `BlobLfsInfo`
 - `VerifyReport`
 - `MergeResult`
 
@@ -62,7 +63,17 @@ class PathInfo:
     path: str
     path_type: str
     size: int
-    object_id: str
+    oid: Optional[str]
+    blob_id: Optional[str]
+    sha256: Optional[str]
+    etag: Optional[str]
+
+
+@dataclass(frozen=True)
+class BlobLfsInfo:
+    size: int
+    sha256: str
+    pointer_size: int
 
 
 @dataclass(frozen=True)
@@ -99,6 +110,7 @@ class VerifyReport:
 
 - `from_file()` 只把外部文件当作导入源，不把其宿主路径写入仓库
 - `from_fileobj()` 只消费字节流，不把 file object 的来源路径作为持久化元数据
+- 这三种入口最终都必须产出一致的公开 `oid` / `sha256`
 
 代表性草图：
 
@@ -121,6 +133,7 @@ class CommitOperationAdd:
 - `create_repo()`
 - `repo_info()`
 - `create_commit()`
+- `get_paths_info()`
 - `list_repo_tree()`
 - `list_repo_files()`
 - `open_file()`
@@ -191,10 +204,29 @@ class HubVaultApi:
     def list_repo_tree(self, path_in_repo: str = "", *, revision: str = "main") -> Sequence[PathInfo]:
         ...
 
+    def get_paths_info(
+        self,
+        paths: Sequence[str],
+        *,
+        revision: str = "main",
+        expand: bool = False,
+    ) -> Sequence[PathInfo]:
+        ...
+
     def open_file(self, path_in_repo: str, *, revision: str = "main") -> BinaryIO:
         ...
 
     def read_bytes(self, path_in_repo: str, *, revision: str = "main") -> bytes:
+        ...
+
+    def hf_hub_download(
+        self,
+        repo_id: str,
+        filename: str,
+        *,
+        revision: Optional[str] = None,
+        local_dir: Optional[Union[str, "os.PathLike[str]"]] = None,
+    ) -> str:
         ...
 
     def reset_ref(self, ref_name: str, *, to_revision: str) -> CommitInfo:
@@ -205,6 +237,14 @@ class HubVaultApi:
 ```
 
 `repo_path` 是运行时打开仓库的位置，不是仓库内部持久化协议的一部分。仓库被整体移动到新路径后，只需用新的 `repo_path` 重新打开即可。
+
+下载路径语义建议严格对齐 `huggingface_hub` 的主流使用方式：
+
+- `filename` 是 repo root 下的相对路径
+- 返回值是可直接打开读取的文件路径
+- 默认仓库内缓存布局与 `snapshot_download()` 都要保留 repo 相对路径层级
+- 即使底层实际指向内容寻址 blob，最终返回给用户的路径也必须以 `filename` 结尾
+- `local_dir` 模式下同样要在目标目录内复制 repo 相对路径结构
 
 ## 7. 关键参数语义
 
@@ -222,6 +262,9 @@ class HubVaultApi:
 - `revision` 可以是 branch、tag 或 commit id
 - `parent_commit` 与 `expected_head` 用于乐观并发控制
 - `allow_patterns` / `ignore_patterns` / `delete_patterns` 优先服务 `upload_folder()` 与 `snapshot_download()`
+- `oid` 指对外文件 OID，推荐与 HF `RepoFile.blob_id` 对齐
+- `sha256` 指真实文件内容的 SHA-256
+- 对 LFS 兼容文件，`etag` 推荐等于 `sha256`；对普通文件，`etag` 推荐等于 `oid`
 
 ## 8. 典型公开使用示例
 
@@ -255,6 +298,11 @@ download_path = api.hf_hub_download(
 )
 ```
 
+期望语义：
+
+- `download_path` 可以是缓存中的符号链接、硬链接或普通文件
+- 但它必须以 `weights/config.json` 结尾，而不是 `.../blobs/<opaque-id>`
+
 ### 8.3 回滚与校验
 
 ```python
@@ -273,6 +321,7 @@ assert report.ok
 - `hf_hub_download()` 返回的是缓存文件或目标导出文件
 - `repo_id` 在本项目中只是逻辑名称；真正的存储根仍是本地路径
 - 仓库的全部正确性信息都保存在 repo root 内；导出文件、外部下载目标和调用时传入的源路径都不是仓库真相
+- `path` / `blob_id` / `sha256` / `lfs.pointer_size` 等文件公开字段应尽量与 Hugging Face `RepoFile` 语义对齐
 
 ## 10. 错误模型
 
