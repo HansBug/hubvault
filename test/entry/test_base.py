@@ -40,6 +40,20 @@ class TestEntryBase:
         assert outputs[0] == "Traceback (most recent call last):"
         assert outputs[-1] == "RuntimeError: boom"
 
+    def test_print_exception_without_args_uses_exception_name_only(self):
+        outputs = []
+
+        print_exception(RuntimeError(), outputs.append)
+
+        assert outputs == ["RuntimeError"]
+
+    def test_print_exception_with_multiple_args_formats_tuple(self):
+        outputs = []
+
+        print_exception(RuntimeError("boom", 1), outputs.append)
+
+        assert outputs == ["RuntimeError: ('boom', 1)"]
+
     def test_click_warning_exception_show_writes_message(self, capsys):
         ClickWarningException("warning").show()
 
@@ -57,6 +71,11 @@ class TestEntryBase:
 
         assert err.exit_code == 0x7
         assert err.format_message() == "Interrupted."
+
+    def test_keyboard_interrupted_accepts_custom_message(self):
+        err = KeyboardInterrupted("stop now")
+
+        assert err.format_message() == "stop now"
 
     def test_command_wrap_allows_successful_command(self):
         runner = CliRunner()

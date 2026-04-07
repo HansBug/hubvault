@@ -19,7 +19,7 @@
 - `pytest` / `make unittest` / `make package` 等基础工程能力
 - 已落地的 Phase 0-1 MVP 公开仓库 API：`hubvault.api`、`hubvault.errors`、`hubvault.models`、`hubvault.operations`、`hubvault.repo`
 - 已落地的本地仓库目录布局、whole-file blob 提交/读取、`hf_hub_download()` 路径保真与只读/可重建视图语义
-- 已落地的 public-only 单元测试，覆盖新仓库 API 的核心行为与回归要求
+- 已落地的 public-only 单元测试，按 `hubvault/` 模块树拆分到对应的 `test/**/test_<module>.py` 文件，并覆盖新仓库 API 的核心行为与回归要求
 
 尚未落地的核心能力包括：
 

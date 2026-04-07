@@ -3,7 +3,7 @@ CLAUDE.md and AGENTS.md are the same repository guidance file. `CLAUDE.md` is a 
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-`hubvault/` contains the Python package. Current runtime modules include `hubvault/config/meta.py` for package metadata and `hubvault/entry/` for the CLI surface (`base.py`, `cli.py`, `dispatch.py`, and package re-exports in `__init__.py`). `test/` contains pytest-based checks; right now `test/config/test_meta.py` covers metadata and `test/test_entry.py` covers the exported CLI entry surface. Repository automation lives in `.github/workflows/`. Packaging files are at the root: `setup.py`, `requirements*.txt`, `pytest.ini`, and `Makefile`. CLI packaging helpers and smoke-test tooling live under `tools/`. Design notes and scope drafts live in `plan/` and should be treated as reference material, not runtime code.
+`hubvault/` contains the Python package. Current runtime modules include the local repository surface in `hubvault/api.py`, `hubvault/errors.py`, `hubvault/models.py`, `hubvault/operations.py`, `hubvault/repo.py`, package metadata in `hubvault/config/meta.py`, and the CLI surface in `hubvault/entry/` (`base.py`, `cli.py`, `dispatch.py`, and package re-exports in `__init__.py`). `test/` contains pytest-based checks and should mirror `hubvault/` as closely as practical, for example `hubvault/api.py` → `test/test_api.py`, `hubvault/repo.py` → `test/test_repo.py`, `hubvault/entry/dispatch.py` → `test/entry/test_dispatch.py`. Repository automation lives in `.github/workflows/`. Packaging files are at the root: `setup.py`, `requirements*.txt`, `pytest.ini`, and `Makefile`. CLI packaging helpers and smoke-test tooling live under `tools/`. Design notes and scope drafts live in `plan/` and should be treated as reference material, not runtime code.
 
 ## Build, Test, and Development Commands
 Create a local environment and install dependencies with `pip install -r requirements.txt -r requirements-test.txt`.
@@ -40,6 +40,8 @@ Use 4-space indentation and follow existing Python style: snake_case for modules
 This project uses `pytest` with markers declared in `pytest.ini` (`unittest`, `benchmark`, `ignore`). Name test files `test_*.py`, classes `Test*`, and methods `test_*`. Place tests under `test/` following the source layout. Coverage is uploaded in CI; local changes should keep coverage stable or improve it. Add targeted tests for every behavior change, even when only metadata or packaging code is touched.
 
 New and updated unit tests must exercise public behavior only. Do not import, call, inspect, monkeypatch, or assert against private/protected modules, fields, classes, functions, or methods just to reach coverage. Unit tests must target `hubvault/` source behavior only, through public APIs, public CLI commands, and other public symbols from the package.
+
+Keep the test layout close to one-to-one with the source tree. When a new public module is added under `hubvault/`, add or update the corresponding `test/**/test_<module>.py` file instead of relying on one large catch-all integration test file. This rule also applies to package modules such as `__init__.py` and `__main__.py` where practical.
 
 Prefer real behavior over mocks whenever the problem can be tested deterministically with the local filesystem, `CliRunner`, temporary directories, or normal in-process execution. Use mocks only for external boundaries or failure modes that cannot be exercised reliably in a normal local test.
 

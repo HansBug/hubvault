@@ -11,6 +11,7 @@
 - Phase 0 的协议冻结、测试制度、repo 自包含/可搬迁约束、HF 风格路径与文件元数据语义已经落入 `plan/init/`、`AGENTS.md` 与公开源码接口。
 - Phase 1 的 MVP 公开模块 `hubvault.api`、`hubvault.errors`、`hubvault.models`、`hubvault.operations`、`hubvault.repo` 已经落地。
 - 当前 MVP 已支持 `create_repo -> create_commit -> list -> read -> hf_hub_download -> reset_ref -> quick_verify` 的闭环。
+- 当前单元测试已经按 `hubvault/` 模块树拆分为对应的 `test/**/test_<module>.py` 文件，不再依赖单一 MVP 汇总测试文件。
 - 当前回归基线应至少包括 `make unittest` 与 `make rst_auto`。
 
 优先级排序如下：
@@ -28,28 +29,32 @@
 
 冻结格式、API 名称、异常模型和测试制度，确保后续实现不会频繁推翻协议。
 
+### Status
+
+已完成。
+
 ### Todo
 
-* [ ] 冻结 `plan/init` 中的对象模型、目录布局、事务状态机和 API 命名。
-* [ ] 冻结 repo root 下 `refs/`、`logs/refs/`、`objects/`、`txn/`、`locks/`、`cache/`、`quarantine/`、`chunks/` 的组织结构与命名规则。
-* [ ] 明确 `HubVaultApi`、`CommitOperation*`、`RepoInfo`、`CommitInfo`、`PathInfo`、`VerifyReport` 的公开字段。
-* [ ] 固化 `AGENTS.md` 中的测试制度、公开表面约束和回归要求。
-* [ ] 冻结“repo root 自包含且可整体搬迁/归档恢复”的格式红线，禁止把真相写到仓库外部。
-* [ ] 冻结 HF 兼容文件元数据语义，明确公开 `oid` / `blob_id` / `sha256` 与内部对象 ID 的区别。
-* [ ] 审查现有单元测试策略，确保测试对象只覆盖 `hubvault/` 公开源码行为，不把文档本身作为单测对象。
-* [ ] 冻结“读取视图只读且可重建、真正修改只能走 commit API”的数据安全语义。
+* [x] 冻结 `plan/init` 中的对象模型、目录布局、事务状态机和 API 命名。
+* [x] 冻结 repo root 下 `refs/`、`logs/refs/`、`objects/`、`txn/`、`locks/`、`cache/`、`quarantine/`、`chunks/` 的组织结构与命名规则。
+* [x] 明确 `HubVaultApi`、`CommitOperation*`、`RepoInfo`、`CommitInfo`、`PathInfo`、`VerifyReport` 的公开字段。
+* [x] 固化 `AGENTS.md` 中的测试制度、公开表面约束和回归要求。
+* [x] 冻结“repo root 自包含且可整体搬迁/归档恢复”的格式红线，禁止把真相写到仓库外部。
+* [x] 冻结 HF 兼容文件元数据语义，明确公开 `oid` / `blob_id` / `sha256` 与内部对象 ID 的区别。
+* [x] 审查现有单元测试策略，确保测试对象只覆盖 `hubvault/` 公开源码行为，不把文档本身作为单测对象。
+* [x] 冻结“读取视图只读且可重建、真正修改只能走 commit API”的数据安全语义。
 
 ### Checklist
 
-* [ ] `plan/init` 文档与当前仓库骨架状态一致，没有假设已存在的实现。
-* [ ] 所有 Phase 都包含可执行范围、Todo 和 Checklist。
-* [ ] 新增测试只依赖公开文件和公开表面，不使用 private / protected 细节。
-* [ ] 自包含/可搬迁要求已经在范围、格式、API 和测试路线图中明确落地。
-* [ ] 下载路径保真和文件 `oid` / `sha256` 语义已经写入 API 与存储设计。
-* [ ] 仓库内部组织结构已经细化到目录、文件名和分片规则级别。
-* [ ] 单元测试只覆盖 `hubvault/` 源码路径下的公开行为。
-* [ ] 读取视图与正式对象的隔离语义已经写入缓存组织、API 和一致性设计。
-* [ ] `make unittest` 通过。
+* [x] `plan/init` 文档与当前仓库骨架状态一致，没有假设已存在的实现。
+* [x] 所有 Phase 都包含可执行范围、Todo 和 Checklist。
+* [x] 新增测试只依赖公开文件和公开表面，不使用 private / protected 细节。
+* [x] 自包含/可搬迁要求已经在范围、格式、API 和测试路线图中明确落地。
+* [x] 下载路径保真和文件 `oid` / `sha256` 语义已经写入 API 与存储设计。
+* [x] 仓库内部组织结构已经细化到目录、文件名和分片规则级别。
+* [x] 单元测试只覆盖 `hubvault/` 源码路径下的公开行为。
+* [x] 读取视图与正式对象的隔离语义已经写入缓存组织、API 和一致性设计。
+* [x] `make unittest` 通过。
 
 ## Phase 1. MVP 仓库核心
 
@@ -57,35 +62,39 @@
 
 做出第一个真正可用的本地版本仓库 MVP，先只支持 whole-file blob。
 
+### Status
+
+已完成。
+
 ### Todo
 
-* [ ] 新增 `hubvault/errors.py`，定义公开异常类型。
-* [ ] 新增 `hubvault/models.py` 与 `hubvault/operations.py`，定义公开 dataclass 和 `CommitOperation*`。
-* [ ] 新增 `hubvault/api.py` 与 `hubvault/repo.py`，提供 `HubVaultApi` 公开入口。
-* [ ] 实现 repo 初始化、打开、`repo_info()` 与默认分支解析。
-* [ ] 按固定组织结构创建 `FORMAT`、`repo.json`、`refs/`、`logs/refs/`、`objects/`、`txn/`、`locks/`、`cache/`、`quarantine/`。
-* [ ] 实现 whole-file blob 存储、commit/tree/file/blob 对象写入和读取。
-* [ ] 实现 `create_commit()`、`get_paths_info()`、`list_repo_tree()`、`list_repo_files()`、`open_file()`、`read_bytes()`、`hf_hub_download()`。
-* [ ] 实现 `reset_ref()` 与最小 `quick_verify()`。
-* [ ] 保证所有持久化元数据不包含宿主绝对路径，且仓库移动后可以直接重新打开。
-* [ ] 为每个文件计算并持久化公开 `oid` / `sha256` / `etag`。
-* [ ] 让 `hf_hub_download()` 返回以 repo 相对路径结尾的可读文件路径。
-* [ ] 让 `open_file()` 只返回只读句柄，`hf_hub_download()` 只返回与 repo 真相隔离的用户视图路径。
-* [ ] 为上述能力补齐只经由公开 API 的单元测试和必要的临时目录集成测试。
+* [x] 新增 `hubvault/errors.py`，定义公开异常类型。
+* [x] 新增 `hubvault/models.py` 与 `hubvault/operations.py`，定义公开 dataclass 和 `CommitOperation*`。
+* [x] 新增 `hubvault/api.py` 与 `hubvault/repo.py`，提供 `HubVaultApi` 公开入口。
+* [x] 实现 repo 初始化、打开、`repo_info()` 与默认分支解析。
+* [x] 按固定组织结构创建 `FORMAT`、`repo.json`、`refs/`、`logs/refs/`、`objects/`、`txn/`、`locks/`、`cache/`、`quarantine/`。
+* [x] 实现 whole-file blob 存储、commit/tree/file/blob 对象写入和读取。
+* [x] 实现 `create_commit()`、`get_paths_info()`、`list_repo_tree()`、`list_repo_files()`、`open_file()`、`read_bytes()`、`hf_hub_download()`。
+* [x] 实现 `reset_ref()` 与最小 `quick_verify()`。
+* [x] 保证所有持久化元数据不包含宿主绝对路径，且仓库移动后可以直接重新打开。
+* [x] 为每个文件计算并持久化公开 `oid` / `sha256` / `etag`。
+* [x] 让 `hf_hub_download()` 返回以 repo 相对路径结尾的可读文件路径。
+* [x] 让 `open_file()` 只返回只读句柄，`hf_hub_download()` 只返回与 repo 真相隔离的用户视图路径。
+* [x] 为上述能力补齐只经由公开 API 的单元测试和必要的临时目录集成测试。
 
 ### Checklist
 
-* [ ] 可以在空目录中初始化仓库并生成 `FORMAT`、`repo.json`、`refs/`、`objects/`、`txn/`、`locks/`。
-* [ ] `refs/`、`logs/refs/`、`objects/`、`txn/`、`cache/` 的内部组织符合已冻结命名规则。
-* [ ] 可以提交新增文件并通过公开 API 读回内容。
-* [ ] 可以列出目录树和文件清单。
-* [ ] 可以将分支回退到历史 commit。
-* [ ] `quick_verify()` 能在正常仓库上返回成功报告。
-* [ ] 仓库关闭后整体移动路径，再次打开仍能读取、回滚和校验。
-* [ ] 公开文件信息中可以拿到 HF 兼容 `oid` / `sha256`。
-* [ ] `hf_hub_download()` 返回路径以 repo 原始相对路径结尾。
-* [ ] 用户删除或改写下载结果后，不会影响正式对象，再次读取时可以重建视图。
-* [ ] `make unittest` 通过。
+* [x] 可以在空目录中初始化仓库并生成 `FORMAT`、`repo.json`、`refs/`、`objects/`、`txn/`、`locks/`。
+* [x] `refs/`、`logs/refs/`、`objects/`、`txn/`、`cache/` 的内部组织符合已冻结命名规则。
+* [x] 可以提交新增文件并通过公开 API 读回内容。
+* [x] 可以列出目录树和文件清单。
+* [x] 可以将分支回退到历史 commit。
+* [x] `quick_verify()` 能在正常仓库上返回成功报告。
+* [x] 仓库关闭后整体移动路径，再次打开仍能读取、回滚和校验。
+* [x] 公开文件信息中可以拿到 HF 兼容 `oid` / `sha256`。
+* [x] `hf_hub_download()` 返回路径以 repo 原始相对路径结尾。
+* [x] 用户删除或改写下载结果后，不会影响正式对象，再次读取时可以重建视图。
+* [x] `make unittest` 通过。
 
 ## Phase 2. 可用性增强
 
