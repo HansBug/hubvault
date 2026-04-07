@@ -106,13 +106,6 @@ jobs:
         with:
           fetch-depth: 20
           submodules: 'recursive'
-      - name: Refresh committed logo assets on Windows
-        if: ${{ env.OS_NAME == 'Windows' }}
-        shell: bash
-        run: |
-          test -f logos/logo.png
-          test -f logos/logo_banner.png
-          touch logos/logo.png logos/logo_banner.png
       - name: Set up system dependencies on Linux
         if: ${{ env.OS_NAME == 'Linux' }}
         shell: bash
@@ -197,7 +190,7 @@ jobs:
         if: ${{ env.OS_NAME == 'Windows' }}
         shell: bash
         run: |
-          python -m tools.test_cli dist/hubvault.exe --test-dsl docs/source/tutorials/cli/simple_machine.fcstm --template-dir test/testfile/template_1
+          python -m tools.test_cli dist/hubvault.exe
       - name: Upload binaries to release
         uses: svenstaro/upload-release-action@v2
         with:

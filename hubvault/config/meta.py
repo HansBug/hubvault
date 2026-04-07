@@ -16,4 +16,4 @@ __DESCRIPTION__ = 'API-first embedded versioned storage for local ML artifacts'
 __AUTHOR__ = 'HansBug, narugo1992'
 
 #: Email of the authors'.
-__AUTHOR_EMAIL__ = 'hansbug@buaa.edu.cn, narugo1992@hansbug.org'
+__AUTHOR_EMAIL__ = 'hansbug@buaa.edu.cn, narugo1992@deepghs.org'
