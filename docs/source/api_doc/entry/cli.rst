@@ -1,7 +1,20 @@
-cli
-===
+hubvault.entry.cli
+========================================================
+
+.. currentmodule:: hubvault.entry.cli
 
 .. automodule:: hubvault.entry.cli
-   :members:
-   :undoc-members:
-   :show-inheritance:
+
+
+cli
+-----------------------------------------------------
+
+.. autodata:: cli
+
+
+cli
+-----------------------------------------------------
+
+.. autodata:: cli
+
+

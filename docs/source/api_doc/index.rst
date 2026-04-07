@@ -1,7 +1,15 @@
 hubvault
-========
+========================================================
+
+.. currentmodule:: hubvault
 
 .. automodule:: hubvault
-   :members:
-   :undoc-members:
-   :show-inheritance:
+
+
+.. toctree::
+    :maxdepth: 3
+
+    config/index
+    entry
+    entry/index
+

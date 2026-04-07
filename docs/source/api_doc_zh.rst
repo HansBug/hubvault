@@ -1,5 +1,5 @@
 API 文档
-------
+-------------------------
 
 .. toctree::
     :maxdepth: 2
@@ -8,8 +8,7 @@ API 文档
 
     api_doc/config/index
     api_doc/entry/index
-    api_doc/entry
 
 * :doc:`api_doc/config/index`
 * :doc:`api_doc/entry/index`
-* :doc:`api_doc/entry`
+

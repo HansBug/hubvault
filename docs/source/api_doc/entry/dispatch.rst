@@ -1,7 +1,20 @@
-dispatch
-========
+hubvault.entry.dispatch
+========================================================
+
+.. currentmodule:: hubvault.entry.dispatch
 
 .. automodule:: hubvault.entry.dispatch
-   :members:
-   :undoc-members:
-   :show-inheritance:
+
+
+print\_version
+-----------------------------------------------------
+
+.. autofunction:: print_version
+
+
+hubvaultcli
+-----------------------------------------------------
+
+.. autofunction:: hubvaultcli
+
+

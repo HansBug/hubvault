@@ -18,4 +18,6 @@
 [![Contributors](https://img.shields.io/github/contributors/hansbug/hubvault)](https://github.com/hansbug/hubvault/graphs/contributors)
 [![GitHub license](https://img.shields.io/github/license/hansbug/hubvault)](https://github.com/hansbug/hubvault/blob/master/LICENSE)
 
-Useful utilities for huggingface
+API-first embedded versioned storage for local ML artifacts.
+
+This repository is still a work in progress, and the API/CLI surface may change before the first stable release.

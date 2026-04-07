@@ -1,7 +1,26 @@
-entry
-=====
+hubvault.entry
+========================================================
+
+.. currentmodule:: hubvault.entry
 
 .. automodule:: hubvault.entry
-   :members:
-   :undoc-members:
-   :show-inheritance:
+
+
+hubvaultcli
+-----------------------------------------------------
+
+.. autofunction:: hubvaultcli
+
+
+version\_command
+-----------------------------------------------------
+
+.. autofunction:: version_command
+
+
+about\_command
+-----------------------------------------------------
+
+.. autofunction:: about_command
+
+

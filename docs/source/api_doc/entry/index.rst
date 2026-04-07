@@ -1,7 +1,21 @@
-entry
-=====
+hubvault.entry
+========================================================
+
+.. currentmodule:: hubvault.entry
 
 .. automodule:: hubvault.entry
-   :members:
-   :undoc-members:
-   :show-inheritance:
+
+
+.. toctree::
+    :maxdepth: 3
+
+    base
+    cli
+    dispatch
+
+\_\_all\_\_
+-----------------------------------------------------
+
+.. autodata:: __all__
+
+

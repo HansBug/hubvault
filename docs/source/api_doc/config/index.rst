@@ -1,7 +1,13 @@
-config
-======
+hubvault.config
+========================================================
+
+.. currentmodule:: hubvault.config
 
 .. automodule:: hubvault.config
-   :members:
-   :undoc-members:
-   :show-inheritance:
+
+
+.. toctree::
+    :maxdepth: 3
+
+    meta
+
