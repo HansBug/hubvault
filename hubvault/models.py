@@ -8,16 +8,19 @@ layout of internal storage objects.
 The module contains:
 
 * :class:`RepoInfo` - Basic information about a local repository
-* :class:`CommitInfo` - Metadata for an immutable commit snapshot
+* :class:`CommitInfo` - HF-style commit creation result metadata
 * :class:`GitCommitInfo` - HF-style commit listing metadata
-* :class:`PathInfo` - Public file or directory metadata within a revision
+* :class:`LastCommitInfo` - Last-commit metadata compatible with HF path listings
+* :class:`BlobSecurityInfo` - Security metadata compatible with HF path listings
+* :class:`RepoFile` - HF-style file metadata entry
+* :class:`RepoFolder` - HF-style folder metadata entry
 * :class:`BlobLfsInfo` - Future-facing large-file metadata container
 * :class:`VerifyReport` - Result of repository verification
 """
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 
 @dataclass(frozen=True)
@@ -51,34 +54,91 @@ class RepoInfo:
     refs: List[str] = field(default_factory=list)
 
 
-@dataclass(frozen=True)
-class CommitInfo:
+@dataclass
+class CommitInfo(str):
     """
-    Describe an immutable commit snapshot.
+    Describe the result of a commit-creating operation.
 
-    :param commit_id: Commit object ID
-    :type commit_id: str
-    :param revision: Revision name used to resolve or create the commit
-    :type revision: str
-    :param tree_id: Root tree object ID for the snapshot
-    :type tree_id: str
-    :param parents: Parent commit IDs
-    :type parents: List[str]
-    :param message: Commit message
-    :type message: str
+    This model intentionally follows the public shape of
+    ``huggingface_hub.hf_api.CommitInfo``. It is returned by write-like public
+    APIs such as :meth:`hubvault.api.HubVaultApi.create_commit` and
+    :meth:`hubvault.api.HubVaultApi.reset_ref`, while
+    :class:`GitCommitInfo` remains the public model for history listings.
+
+    :param commit_url: Local commit URL string aligned with HF naming
+    :type commit_url: str
+    :param commit_message: Commit summary aligned with HF naming
+    :type commit_message: str
+    :param commit_description: Commit description/body aligned with HF naming
+    :type commit_description: str
+    :param oid: Commit object ID aligned with HF naming
+    :type oid: str
+    :param pr_url: Pull-request URL placeholder. Always ``None`` for the local
+        repository flow.
+    :type pr_url: Optional[str]
+    :param _url: Legacy string payload used for HF-style ``str`` compatibility.
+        Defaults to ``commit_url``.
+    :type _url: Optional[str]
+
+    :ivar repo_url: Local repository URL string aligned with HF naming
+    :vartype repo_url: str
+    :ivar pr_revision: Pull-request revision placeholder. Always ``None`` for
+        the local repository flow.
+    :vartype pr_revision: Optional[str]
+    :ivar pr_num: Pull-request number placeholder. Always ``None`` for the
+        local repository flow.
+    :vartype pr_num: Optional[int]
 
     Example::
 
-        >>> info = CommitInfo("sha256:c1", "main", "sha256:t1")
-        >>> info.revision
-        'main'
+        >>> info = CommitInfo(
+        ...     commit_url="file:///tmp/repo#commit=sha256:c1",
+        ...     commit_message="seed",
+        ...     commit_description="body",
+        ...     oid="sha256:c1",
+        ... )
+        >>> info.oid
+        'sha256:c1'
     """
 
-    commit_id: str
-    revision: str
-    tree_id: str
-    parents: List[str] = field(default_factory=list)
-    message: str = ""
+    commit_url: str
+    commit_message: str
+    commit_description: str
+    oid: str
+    pr_url: Optional[str] = None
+    repo_url: str = field(init=False)
+    pr_revision: Optional[str] = field(init=False)
+    pr_num: Optional[int] = field(init=False)
+    _url: Optional[str] = field(repr=False, default=None)
+
+    def __new__(cls, *args, commit_url: str, _url: Optional[str] = None, **kwargs):
+        """
+        Build the legacy string payload used by HF-style commit info objects.
+
+        :param commit_url: Public commit URL
+        :type commit_url: str
+        :param _url: Optional legacy URL override
+        :type _url: Optional[str]
+        :return: String-compatible commit info instance
+        :rtype: CommitInfo
+        """
+
+        return str.__new__(cls, _url or commit_url)
+
+    def __post_init__(self) -> None:
+        """
+        Populate computed HF-style attributes after initialization.
+
+        :return: ``None``.
+        :rtype: None
+        """
+
+        repo_url = self.commit_url.split("#commit=", 1)[0]
+        object.__setattr__(self, "repo_url", repo_url)
+        object.__setattr__(self, "pr_revision", None)
+        object.__setattr__(self, "pr_num", None)
+        if self._url is None:
+            object.__setattr__(self, "_url", self.commit_url)
 
 
 @dataclass(frozen=True)
@@ -132,43 +192,158 @@ class GitCommitInfo:
 
 
 @dataclass(frozen=True)
-class PathInfo:
+class LastCommitInfo:
     """
-    Describe a public path inside a repository revision.
+    Describe last-commit metadata for a repo path.
 
-    :param path: Repo-relative POSIX path
+    :param oid: Commit object ID
+    :type oid: str
+    :param title: Commit title
+    :type title: str
+    :param date: Commit creation time in UTC
+    :type date: datetime.datetime
+
+    Example::
+
+        >>> info = LastCommitInfo("oid", "seed", datetime(2024, 1, 1, 0, 0, 0))
+        >>> info.title
+        'seed'
+    """
+
+    oid: str
+    title: str
+    date: datetime
+
+
+@dataclass(frozen=True)
+class BlobSecurityInfo:
+    """
+    Describe security metadata for a repo file.
+
+    :param safe: Whether the file is considered safe
+    :type safe: bool
+    :param status: Security scan status string
+    :type status: str
+    :param av_scan: Antivirus scan metadata, if any
+    :type av_scan: Optional[Dict[str, object]]
+    :param pickle_import_scan: Pickle-import scan metadata, if any
+    :type pickle_import_scan: Optional[Dict[str, object]]
+
+    Example::
+
+        >>> info = BlobSecurityInfo(True, "safe", None, None)
+        >>> info.safe
+        True
+    """
+
+    safe: bool
+    status: str
+    av_scan: Optional[Dict[str, object]]
+    pickle_import_scan: Optional[Dict[str, object]]
+
+
+@dataclass(frozen=True)
+class RepoFile:
+    """
+    Describe a file entry in HF-style repo listings.
+
+    This model follows the main public field layout of
+    ``huggingface_hub.hf_api.RepoFile``. Local-only convenience fields
+    ``oid``, ``sha256``, and ``etag`` are retained because the local-path
+    design exposes them directly to callers.
+
+    :param path: Repo-relative path
     :type path: str
-    :param path_type: Path type, usually ``"file"`` or ``"directory"``
-    :type path_type: str
-    :param size: Logical file size in bytes, or ``0`` for directories
+    :param size: File size in bytes
     :type size: int
-    :param oid: Public file OID compatible with Hugging Face style metadata
+    :param blob_id: Git blob OID
+    :type blob_id: str
+    :param lfs: LFS-style checksum metadata, if available
+    :type lfs: Optional[BlobLfsInfo]
+    :param last_commit: Last-commit metadata, if available
+    :type last_commit: Optional[LastCommitInfo]
+    :param security: Security metadata, if available
+    :type security: Optional[BlobSecurityInfo]
+    :param oid: Local convenience alias for the blob OID
     :type oid: Optional[str]
-    :param blob_id: Public blob identifier. For the MVP whole-file mode this is
-        the same value as :attr:`oid`
-    :type blob_id: Optional[str]
-    :param sha256: Raw hexadecimal SHA-256 digest of the logical file content,
-        matching the public ``huggingface_hub`` ``lfs.sha256`` style without an
-        algorithm prefix
+    :param sha256: Raw hexadecimal SHA-256 digest of the logical file content
     :type sha256: Optional[str]
     :param etag: Public ETag value for download-facing APIs
     :type etag: Optional[str]
 
     Example::
 
-        >>> info = PathInfo("demo.txt", "file", 4, "oid", "blob", "abc", "etag")
-        >>> info.path
-        'demo.txt'
+        >>> info = RepoFile("demo.txt", 4, "oid", None)
+        >>> info.blob_id
+        'oid'
     """
 
     path: str
-    path_type: str
     size: int
-    oid: Optional[str]
-    blob_id: Optional[str]
-    sha256: Optional[str]
-    etag: Optional[str]
+    blob_id: str
+    lfs: Optional["BlobLfsInfo"] = None
+    last_commit: Optional[LastCommitInfo] = None
+    security: Optional[BlobSecurityInfo] = None
+    oid: Optional[str] = None
+    sha256: Optional[str] = None
+    etag: Optional[str] = None
 
+    @property
+    def rfilename(self) -> str:
+        """
+        Return the backward-compatible HF filename alias.
+
+        :return: Repo-relative path
+        :rtype: str
+        """
+
+        return self.path
+
+    @property
+    def lastCommit(self) -> Optional[LastCommitInfo]:
+        """
+        Return the backward-compatible HF camelCase alias.
+
+        :return: Last-commit metadata, if available
+        :rtype: Optional[LastCommitInfo]
+        """
+
+        return self.last_commit
+
+
+@dataclass(frozen=True)
+class RepoFolder:
+    """
+    Describe a folder entry in HF-style repo listings.
+
+    :param path: Repo-relative folder path
+    :type path: str
+    :param tree_id: Tree object ID
+    :type tree_id: str
+    :param last_commit: Last-commit metadata, if available
+    :type last_commit: Optional[LastCommitInfo]
+
+    Example::
+
+        >>> info = RepoFolder("configs", "tree-oid")
+        >>> info.tree_id
+        'tree-oid'
+    """
+
+    path: str
+    tree_id: str
+    last_commit: Optional[LastCommitInfo] = None
+
+    @property
+    def lastCommit(self) -> Optional[LastCommitInfo]:
+        """
+        Return the backward-compatible HF camelCase alias.
+
+        :return: Last-commit metadata, if available
+        :rtype: Optional[LastCommitInfo]
+        """
+
+        return self.last_commit
 
 @dataclass(frozen=True)
 class BlobLfsInfo:

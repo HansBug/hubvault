@@ -67,6 +67,10 @@ Public APIs must not keep compatibility-only placeholder parameters that have no
 
 For Hugging Face compatibility work, treat the `huggingface_hub` public API and data model as the default target. Unless a concrete local-repository requirement makes a difference necessary, public names, signatures, parameter semantics, return-field formats, and user-facing behavior should match HF as closely as possible. Any intentional deviation should be minimized and documented explicitly in code-facing docs and planning notes.
 
+This also applies to public model boundaries. When `huggingface_hub` already exposes distinct public models for different use cases, keep the same split instead of collapsing them into a local hybrid model. In particular, `CommitInfo` should stay aligned with HF commit-creation results, while `GitCommitInfo` should stay aligned with HF commit-listing results; local-only commit internals must not be pushed back into the public `CommitInfo` shape.
+
+Apply the same rule to public exceptions. Where `huggingface_hub` already exposes meaningful public exception names and semantics, prefer the aligned `hubvault` counterpart naming and behavior instead of inventing a parallel local exception family. Legacy local names may remain only as explicit documented aliases when needed.
+
 At the same time, do not keep parameters or flags that exist only for superficial compatibility and have no real behavior in this repository. If a Hugging Face API detail such as a progress/UI flag, transport-only option, or similar placeholder would be a no-op in `hubvault`, drop it instead of preserving dead signature surface.
 
 This applies equally to small helper method flags and compatibility sugar. For example, do not add or keep a `with_tqdm`-style option on a local file helper if the repository does not actually provide distinct progress behavior for it.

@@ -12,9 +12,10 @@ The package contains:
 * :class:`CommitOperationDelete` - Delete-path commit operation
 * :class:`CommitOperationCopy` - Copy-path commit operation
 * :class:`RepoInfo` - Repository metadata model
-* :class:`CommitInfo` - Commit metadata model
+* :class:`CommitInfo` - HF-style commit creation result model
 * :class:`GitCommitInfo` - HF-style commit listing model
-* :class:`PathInfo` - Public path metadata model
+* :class:`RepoFile` - HF-style file metadata model
+* :class:`RepoFolder` - HF-style folder metadata model
 * :class:`VerifyReport` - Verification result model
 
 Example::
@@ -31,36 +32,51 @@ Example::
 from .api import HubVaultApi
 from .errors import (
     ConflictError,
+    EntryNotFoundError,
     HubVaultError,
+    HubVaultValidationError,
     IntegrityError,
     LockTimeoutError,
-    PathNotFoundError,
-    RepoAlreadyExistsError,
-    RepoNotFoundError,
+    RepositoryAlreadyExistsError,
+    RepositoryNotFoundError,
     RevisionNotFoundError,
     UnsupportedPathError,
     VerificationError,
 )
-from .models import BlobLfsInfo, CommitInfo, GitCommitInfo, PathInfo, RepoInfo, VerifyReport
+from .models import (
+    BlobLfsInfo,
+    BlobSecurityInfo,
+    CommitInfo,
+    GitCommitInfo,
+    LastCommitInfo,
+    RepoFile,
+    RepoFolder,
+    RepoInfo,
+    VerifyReport,
+)
 from .operations import CommitOperationAdd, CommitOperationCopy, CommitOperationDelete
 
 __all__ = [
     "BlobLfsInfo",
+    "BlobSecurityInfo",
     "CommitInfo",
     "CommitOperationAdd",
     "CommitOperationCopy",
     "CommitOperationDelete",
     "ConflictError",
+    "EntryNotFoundError",
     "GitCommitInfo",
     "HubVaultApi",
     "HubVaultError",
+    "HubVaultValidationError",
     "IntegrityError",
+    "LastCommitInfo",
     "LockTimeoutError",
-    "PathInfo",
-    "PathNotFoundError",
-    "RepoAlreadyExistsError",
+    "RepoFile",
+    "RepoFolder",
     "RepoInfo",
-    "RepoNotFoundError",
+    "RepositoryAlreadyExistsError",
+    "RepositoryNotFoundError",
     "RevisionNotFoundError",
     "UnsupportedPathError",
     "VerificationError",

@@ -9,11 +9,11 @@ from hubvault import (
     CommitOperationCopy,
     CommitOperationDelete,
     ConflictError,
+    EntryNotFoundError,
     HubVaultApi,
     IntegrityError,
     LockTimeoutError,
-    PathNotFoundError,
-    RepoAlreadyExistsError,
+    RepositoryAlreadyExistsError,
     RevisionNotFoundError,
     UnsupportedPathError,
 )
@@ -57,7 +57,7 @@ class TestRepoSemantics:
         occupied_dir.mkdir()
         (occupied_dir / "placeholder.txt").write_text("busy", encoding="utf-8")
 
-        with pytest.raises(RepoAlreadyExistsError):
+        with pytest.raises(RepositoryAlreadyExistsError):
             HubVaultApi(occupied_dir).create_repo()
 
         api = HubVaultApi(tmp_path / "repo")
@@ -171,19 +171,19 @@ class TestRepoSemantics:
                 CommitOperationCopy("src", "mirror", src_revision="main"),
                 CommitOperationDelete("src/sub/"),
             ],
-            parent_commit=first_commit.commit_id,
+            parent_commit=first_commit.oid,
             commit_message="copy and prune",
         )
 
-        assert second_commit.parents == [first_commit.commit_id]
+        assert second_commit.oid.startswith("sha256:")
         assert api.list_repo_files() == [
             "mirror/a.txt",
             "mirror/sub/b.txt",
             "src/a.txt",
         ]
 
-        reset = api.reset_ref("main", first_commit.commit_id)
-        assert reset.commit_id == first_commit.commit_id
+        reset = api.reset_ref("main", to_revision=first_commit.oid)
+        assert reset.oid == first_commit.oid
         assert api.list_repo_files() == ["src/a.txt", "src/sub/b.txt"]
         assert api.quick_verify().ok is True
 
@@ -191,7 +191,7 @@ class TestRepoSemantics:
         shutil.move(str(repo_dir), str(moved_repo_dir))
         moved_api = HubVaultApi(moved_repo_dir)
 
-        assert moved_api.repo_info().head == first_commit.commit_id
+        assert moved_api.repo_info().head == first_commit.oid
         assert moved_api.read_bytes("src/sub/b.txt") == b"B"
         report = moved_api.quick_verify()
         assert report.ok is True
@@ -220,7 +220,7 @@ class TestRepoSemantics:
         tag_empty_path.write_text("", encoding="utf-8")
 
         tag_good_path = tmp_path / "repo" / "refs" / "tags" / "v-good"
-        tag_good_path.write_text(commit.commit_id + "\n", encoding="utf-8")
+        tag_good_path.write_text(commit.oid + "\n", encoding="utf-8")
 
         tag_broken_path = tmp_path / "repo" / "refs" / "tags" / "v-broken"
         tag_broken_path.write_text("sha256:" + ("0" * 64) + "\n", encoding="utf-8")
@@ -429,35 +429,35 @@ class TestRepoSemantics:
         )
 
         copied = api.create_commit(
-            operations=[CommitOperationCopy("data/file.txt", "data/copied.txt", src_revision=baseline.commit_id)],
-            parent_commit=baseline.commit_id,
+            operations=[CommitOperationCopy("data/file.txt", "data/copied.txt", src_revision=baseline.oid)],
+            parent_commit=baseline.oid,
             commit_message="copy single file",
         )
-        assert copied.parents == [baseline.commit_id]
+        assert copied.oid.startswith("sha256:")
         assert api.read_bytes("data/copied.txt") == b"v1"
 
         deleted = api.create_commit(
             operations=[CommitOperationDelete("data/copied.txt", is_folder=False)],
-            parent_commit=copied.commit_id,
+            parent_commit=copied.oid,
             commit_message="delete single file",
         )
-        assert deleted.parents == [copied.commit_id]
-        with pytest.raises(PathNotFoundError):
+        assert deleted.oid.startswith("sha256:")
+        with pytest.raises(EntryNotFoundError):
             api.read_bytes("data/copied.txt")
 
-        with pytest.raises(PathNotFoundError):
+        with pytest.raises(EntryNotFoundError):
             api.create_commit(
                 operations=[CommitOperationDelete("missing.txt", is_folder=False)],
-                parent_commit=deleted.commit_id,
+                parent_commit=deleted.oid,
                 commit_message="missing delete",
             )
 
-        with pytest.raises(PathNotFoundError):
+        with pytest.raises(EntryNotFoundError):
             api.create_commit(
                 operations=[CommitOperationCopy("missing.txt", "copied.txt")],
-                parent_commit=deleted.commit_id,
+                parent_commit=deleted.oid,
                 commit_message="missing copy",
             )
 
         with pytest.raises(RevisionNotFoundError):
-            api.reset_ref("main", "missing")
+            api.reset_ref("main", to_revision="missing")

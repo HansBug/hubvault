@@ -2,12 +2,13 @@ import pytest
 
 from hubvault.errors import (
     ConflictError,
+    EntryNotFoundError,
     HubVaultError,
+    HubVaultValidationError,
     IntegrityError,
     LockTimeoutError,
-    PathNotFoundError,
-    RepoAlreadyExistsError,
-    RepoNotFoundError,
+    RepositoryAlreadyExistsError,
+    RepositoryNotFoundError,
     RevisionNotFoundError,
     UnsupportedPathError,
     VerificationError,
@@ -18,10 +19,10 @@ from hubvault.errors import (
 class TestErrors:
     def test_public_error_hierarchy_and_messages(self):
         errors = [
-            RepoNotFoundError("repo"),
-            RepoAlreadyExistsError("exists"),
+            RepositoryNotFoundError("repo"),
+            RepositoryAlreadyExistsError("exists"),
             RevisionNotFoundError("revision"),
-            PathNotFoundError("path"),
+            EntryNotFoundError("path"),
             ConflictError("conflict"),
             IntegrityError("integrity"),
             VerificationError("verify"),
@@ -33,3 +34,6 @@ class TestErrors:
             assert isinstance(err, HubVaultError)
             assert str(err)
 
+    def test_validation_error_hierarchy(self):
+        assert issubclass(UnsupportedPathError, HubVaultValidationError)
+        assert issubclass(HubVaultValidationError, ValueError)

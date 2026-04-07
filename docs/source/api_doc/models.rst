@@ -17,7 +17,7 @@ CommitInfo
 -----------------------------------------------------
 
 .. autoclass:: CommitInfo
-    :members: commit_id,revision,tree_id,parents,message
+    :members: __new__,__post_init__,commit_url,commit_message,commit_description,oid,pr_url,repo_url,pr_revision,pr_num
 
 
 GitCommitInfo
@@ -27,11 +27,32 @@ GitCommitInfo
     :members: commit_id,authors,created_at,title,message,formatted_title,formatted_message
 
 
-PathInfo
+LastCommitInfo
 -----------------------------------------------------
 
-.. autoclass:: PathInfo
-    :members: path,path_type,size,oid,blob_id,sha256,etag
+.. autoclass:: LastCommitInfo
+    :members: oid,title,date
+
+
+BlobSecurityInfo
+-----------------------------------------------------
+
+.. autoclass:: BlobSecurityInfo
+    :members: safe,status,av_scan,pickle_import_scan
+
+
+RepoFile
+-----------------------------------------------------
+
+.. autoclass:: RepoFile
+    :members: rfilename,lastCommit,path,size,blob_id,lfs,last_commit,security,oid,sha256,etag
+
+
+RepoFolder
+-----------------------------------------------------
+
+.. autoclass:: RepoFolder
+    :members: lastCommit,path,tree_id,last_commit
 
 
 BlobLfsInfo

@@ -21,19 +21,19 @@ from datetime import datetime, timezone
 from html import escape as html_escape
 from hashlib import sha1, sha256
 from pathlib import Path, PurePosixPath
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 from .errors import (
     ConflictError,
+    EntryNotFoundError,
     IntegrityError,
     LockTimeoutError,
-    PathNotFoundError,
-    RepoAlreadyExistsError,
-    RepoNotFoundError,
+    RepositoryAlreadyExistsError,
+    RepositoryNotFoundError,
     RevisionNotFoundError,
     UnsupportedPathError,
 )
-from .models import CommitInfo, GitCommitInfo, PathInfo, RepoInfo, VerifyReport
+from .models import CommitInfo, GitCommitInfo, RepoFile, RepoFolder, RepoInfo, VerifyReport
 from .operations import CommitOperationAdd, CommitOperationCopy, CommitOperationDelete
 
 FORMAT_MARKER = "hubvault-repo/v1"
@@ -596,7 +596,6 @@ class _RepositoryBackend(object):
         self,
         default_branch: str = DEFAULT_BRANCH,
         exist_ok: bool = False,
-        metadata: Optional[Dict[str, str]] = None,
     ) -> RepoInfo:
         """
         Create a repository at the configured root path.
@@ -611,12 +610,9 @@ class _RepositoryBackend(object):
         :param exist_ok: Whether an existing repository may be reused,
             defaults to ``False``
         :type exist_ok: bool, optional
-        :param metadata: Optional repository metadata persisted in
-            ``repo.json``
-        :type metadata: Optional[Dict[str, str]], optional
         :return: Public metadata for the created or reused repository
         :rtype: RepoInfo
-        :raises RepoAlreadyExistsError: Raised when the target path already
+        :raises RepositoryAlreadyExistsError: Raised when the target path already
             contains a repository or any non-empty directory.
         :raises UnsupportedPathError: Raised when ``default_branch`` violates
             repository ref naming rules.
@@ -626,23 +622,22 @@ class _RepositoryBackend(object):
             >>> import tempfile
             >>> with tempfile.TemporaryDirectory() as tmpdir:
             ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
-            ...     info = backend.create_repo(metadata={"owner": "demo"})
+            ...     info = backend.create_repo()
             ...     info.default_branch
             'main'
         """
 
         default_branch = _validate_ref_name(default_branch)
-        metadata = metadata or {}
 
         if self._is_repo():
             if not exist_ok:
-                raise RepoAlreadyExistsError("repository already exists")
+                raise RepositoryAlreadyExistsError("repository already exists")
             return self.repo_info()
 
         if self._repo_path.exists():
             entries = list(self._repo_path.iterdir())
             if entries:
-                raise RepoAlreadyExistsError("target path is not empty")
+                raise RepositoryAlreadyExistsError("target path is not empty")
         else:
             self._repo_path.mkdir(parents=True)
 
@@ -656,7 +651,7 @@ class _RepositoryBackend(object):
                 "object_hash": OBJECT_HASH,
                 "file_mode": "whole-blob-first",
                 "large_file_threshold": LARGE_FILE_THRESHOLD,
-                "metadata": metadata,
+                "metadata": {},
             },
         )
         self._write_ref(default_branch, None)
@@ -675,7 +670,7 @@ class _RepositoryBackend(object):
         :type revision: Optional[str], optional
         :return: Current repository metadata view
         :rtype: RepoInfo
-        :raises RepoNotFoundError: Raised when the configured root is not a
+        :raises RepositoryNotFoundError: Raised when the configured root is not a
             valid repository.
         :raises RevisionNotFoundError: Raised when ``revision`` cannot be
             resolved.
@@ -706,12 +701,11 @@ class _RepositoryBackend(object):
 
     def create_commit(
         self,
-        revision: str,
         operations: Sequence[object],
+        commit_message: str,
+        commit_description: Optional[str] = None,
+        revision: Optional[str] = None,
         parent_commit: Optional[str] = None,
-        expected_head: Optional[str] = None,
-        commit_message: str = "",
-        metadata: Optional[Dict[str, str]] = None,
     ) -> CommitInfo:
         """
         Create a new commit on a branch revision.
@@ -719,19 +713,22 @@ class _RepositoryBackend(object):
         The backend stages all new objects in a transaction directory, publishes
         them atomically, and only then updates the branch ref and reflog.
 
-        :param revision: Branch name that will receive the new commit
-        :type revision: str
         :param operations: Add, delete, or copy operations to apply
         :type operations: Sequence[object]
+        :param commit_message: Commit summary/title to store. When
+            ``commit_description`` is omitted, embedded body text after a blank
+            line is preserved and split the same way Git and HF commit listings
+            interpret commit text.
+        :type commit_message: str
+        :param commit_description: Optional commit description/body
+        :type commit_description: Optional[str], optional
+        :param revision: Branch name that will receive the new commit,
+            defaults to the repository default branch
+        :type revision: Optional[str], optional
         :param parent_commit: Optional expected parent commit for optimistic
-            concurrency checks
+            concurrency checks. When omitted, the current branch head becomes
+            the implicit base revision.
         :type parent_commit: Optional[str], optional
-        :param expected_head: Optional explicit expected branch head
-        :type expected_head: Optional[str], optional
-        :param commit_message: Commit message to store in commit metadata
-        :type commit_message: str, optional
-        :param metadata: Optional commit metadata persisted in the commit object
-        :type metadata: Optional[Dict[str, str]], optional
         :return: Public metadata for the created commit
         :rtype: CommitInfo
         :raises ConflictError: Raised when no operations are supplied, an
@@ -739,12 +736,13 @@ class _RepositoryBackend(object):
             fail.
         :raises LockTimeoutError: Raised when another writer currently holds the
             repository write lock.
-        :raises PathNotFoundError: Raised when delete or copy operations refer
+        :raises EntryNotFoundError: Raised when delete or copy operations refer
             to missing paths.
         :raises RevisionNotFoundError: Raised when the target revision cannot be
             resolved.
         :raises UnsupportedPathError: Raised when revision names or repo paths
             are invalid.
+        :raises ValueError: Raised when ``commit_message`` is empty.
 
         Example::
 
@@ -753,28 +751,36 @@ class _RepositoryBackend(object):
             ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
             ...     _ = backend.create_repo()
             ...     commit = backend.create_commit(
-            ...         revision="main",
             ...         operations=[CommitOperationAdd("demo.txt", b"hello")],
             ...         commit_message="seed",
             ...     )
-            ...     commit.revision
-            'main'
+            ...     commit.commit_message
+            'seed'
         """
 
         self._ensure_repo()
         self._recover_transactions()
         if not operations:
             raise ConflictError("operations must not be empty")
+        if commit_message is None or len(commit_message) == 0:
+            raise ValueError("`commit_message` can't be empty, please pass a value.")
 
-        branch_name = _validate_ref_name(revision)
-        metadata = metadata or {}
+        repo_config = self._repo_config()
+        branch_name = _validate_ref_name(revision or str(repo_config["default_branch"]))
+        raw_commit_message = str(commit_message)
+        if commit_description is None:
+            stored_title, stored_description = self._split_commit_message(raw_commit_message)
+            full_commit_message = raw_commit_message
+        else:
+            stored_title = raw_commit_message
+            stored_description = str(commit_description)
+            full_commit_message = self._compose_commit_text(stored_title, stored_description)
 
         lock = self._acquire_write_lock()
-        txdir = self._create_txdir(branch_name, expected_head or parent_commit)
+        txdir = self._create_txdir(branch_name, parent_commit)
         try:
             current_head = self._read_ref(branch_name)
-            expected = self._resolve_expected_head(parent_commit, expected_head)
-            if expected != current_head:
+            if parent_commit is not None and parent_commit != current_head:
                 raise ConflictError("expected head does not match current branch head")
 
             snapshot = self._snapshot_for_commit(current_head)
@@ -811,8 +817,10 @@ class _RepositoryBackend(object):
                 "author": "",
                 "committer": "",
                 "created_at": _utc_now(),
-                "message": commit_message,
-                "metadata": metadata,
+                "message": full_commit_message,
+                "title": stored_title,
+                "description": stored_description,
+                "metadata": {},
             }
             commit_id = self._stage_json_object(txdir, "commits", commit_payload)
 
@@ -825,11 +833,10 @@ class _RepositoryBackend(object):
             self._write_tx_state(txdir, "COMMITTED")
 
             return CommitInfo(
-                commit_id=commit_id,
-                revision=branch_name,
-                tree_id=tree_id,
-                parents=[current_head] if current_head else [],
-                message=commit_message,
+                commit_url=self._commit_url(commit_id),
+                commit_message=stored_title,
+                commit_description=stored_description,
+                oid=commit_id,
             )
         finally:
             self._cleanup_txdir(txdir)
@@ -837,25 +844,24 @@ class _RepositoryBackend(object):
 
     def get_paths_info(
         self,
-        paths: Sequence[str],
+        paths: Union[Sequence[str], str],
         revision: str = DEFAULT_BRANCH,
-    ) -> List[PathInfo]:
+    ) -> List[Union[RepoFile, RepoFolder]]:
         """
         Return public metadata for the requested paths.
 
-        This method accepts both file paths and logical directory paths. A
-        directory is reported when the requested prefix exists transitively in
-        the flattened snapshot even if there is no explicit tree entry exposed
-        through the public API.
+        This method intentionally follows the main behavior of
+        :meth:`huggingface_hub.HfApi.get_paths_info`: existing file and folder
+        paths are returned in input order, while missing paths are ignored
+        instead of raising an exception.
 
-        :param paths: Repo-relative paths to inspect
-        :type paths: Sequence[str]
+        :param paths: Repo-relative path or paths to inspect
+        :type paths: Union[Sequence[str], str]
         :param revision: Revision to resolve, defaults to
             :data:`DEFAULT_BRANCH`
         :type revision: str, optional
-        :return: Path metadata in the same order as ``paths``
-        :rtype: List[PathInfo]
-        :raises PathNotFoundError: Raised when any requested path is absent.
+        :return: Path metadata in the same order as existing requested paths
+        :rtype: List[Union[RepoFile, RepoFolder]]
         :raises RevisionNotFoundError: Raised when ``revision`` cannot be
             resolved.
         :raises UnsupportedPathError: Raised when any supplied path is invalid.
@@ -871,56 +877,54 @@ class _RepositoryBackend(object):
             ...         operations=[CommitOperationAdd("nested/demo.txt", b"hello")],
             ...         commit_message="seed",
             ...     )
-            ...     backend.get_paths_info(["nested", "nested/demo.txt"])[0].path_type
-            'directory'
+            ...     type(backend.get_paths_info(["nested", "nested/demo.txt"])[0]).__name__
+            'RepoFolder'
         """
 
         snapshot = self._snapshot_for_revision(revision)
+        requested_paths = [paths] if isinstance(paths, str) else list(paths)
         infos = []
-        for raw_path in paths:
+        for raw_path in requested_paths:
             normalized_path = _normalize_repo_path(raw_path)
             if normalized_path in snapshot:
-                infos.append(self._path_info_for_file(normalized_path, snapshot[normalized_path]))
+                infos.append(self._repo_file_info(normalized_path, snapshot[normalized_path]))
                 continue
 
             prefix = normalized_path + "/"
             if any(path.startswith(prefix) for path in snapshot):
-                infos.append(
-                    PathInfo(
-                        path=normalized_path,
-                        path_type="directory",
-                        size=0,
-                        oid=None,
-                        blob_id=None,
-                        sha256=None,
-                        etag=None,
-                    )
-                )
-                continue
-            raise PathNotFoundError("path not found: %s" % normalized_path)
+                infos.append(self._repo_folder_info(revision, normalized_path))
         return infos
 
-    def list_repo_tree(self, path_in_repo: str = "", revision: str = DEFAULT_BRANCH) -> List[PathInfo]:
+    def list_repo_tree(
+        self,
+        path_in_repo: Optional[str] = None,
+        recursive: bool = False,
+        revision: str = DEFAULT_BRANCH,
+    ) -> List[Union[RepoFile, RepoFolder]]:
         """
-        List direct children under a repository directory.
+        List file and folder entries under a repository directory.
 
-        The returned list only contains the direct child names for the selected
-        directory, not a recursive traversal of the whole tree.
+        This method intentionally follows the main behavior of
+        :meth:`huggingface_hub.HfApi.list_repo_tree`, including the
+        ``recursive`` flag and the use of HF-style ``RepoFile`` /
+        ``RepoFolder`` return objects.
 
-        :param path_in_repo: Repo-relative directory path, or ``""`` for the
+        :param path_in_repo: Repo-relative directory path, or ``None`` for the
             repository root
-        :type path_in_repo: str, optional
+        :type path_in_repo: Optional[str], optional
+        :param recursive: Whether to include descendants recursively
+        :type recursive: bool, optional
         :param revision: Revision to inspect, defaults to
             :data:`DEFAULT_BRANCH`
         :type revision: str, optional
         :return: Sorted metadata entries for direct children
-        :rtype: List[PathInfo]
-        :raises PathNotFoundError: Raised when the requested directory does not
+        :rtype: List[Union[RepoFile, RepoFolder]]
+        :raises EntryNotFoundError: Raised when the requested directory does not
             exist.
         :raises RevisionNotFoundError: Raised when ``revision`` cannot be
             resolved.
-        :raises UnsupportedPathError: Raised when ``path_in_repo`` points to a
-            file or violates path rules.
+        :raises UnsupportedPathError: Raised when ``path_in_repo`` violates
+            path rules.
 
         Example::
 
@@ -937,44 +941,24 @@ class _RepositoryBackend(object):
             ['nested/demo.txt']
         """
 
-        snapshot = self._snapshot_for_revision(revision)
-        if not path_in_repo:
-            prefix = ""
-            base = ""
-        else:
-            base = _normalize_repo_path(path_in_repo)
-            if base in snapshot:
-                raise UnsupportedPathError("path_in_repo must refer to a directory")
-            prefix = base + "/"
-            if not any(path.startswith(prefix) for path in snapshot):
-                raise PathNotFoundError("directory not found: %s" % base)
+        self._ensure_repo()
+        self._recover_transactions()
 
-        items = {}
-        for repo_path, file_object_id in snapshot.items():
-            if base:
-                if not repo_path.startswith(prefix):
-                    continue
-                remainder = repo_path[len(prefix):]
-            else:
-                remainder = repo_path
-            head, _, tail = remainder.partition("/")
-            full_path = head if not base else base + "/" + head
-            if tail:
-                items.setdefault(
-                    full_path,
-                    PathInfo(
-                        path=full_path,
-                        path_type="directory",
-                        size=0,
-                        oid=None,
-                        blob_id=None,
-                        sha256=None,
-                        etag=None,
-                    ),
-                )
-            else:
-                items[full_path] = self._path_info_for_file(full_path, file_object_id)
-        return [items[key] for key in sorted(items)]
+        head_commit_id = self._resolve_revision(revision, allow_empty_ref=True)
+        if head_commit_id is None:
+            return []
+
+        commit_payload = self._read_object_payload("commits", head_commit_id)
+        root_tree_id = str(commit_payload["tree_id"])
+
+        if not path_in_repo:
+            tree_id = root_tree_id
+            prefix = ""
+        else:
+            prefix = _normalize_repo_path(path_in_repo)
+            tree_id = self._tree_id_for_directory(root_tree_id, prefix)
+
+        return self._list_tree_entries(tree_id, prefix=prefix, recursive=recursive)
 
     def list_repo_files(self, revision: str = DEFAULT_BRANCH) -> List[str]:
         """
@@ -1035,7 +1019,7 @@ class _RepositoryBackend(object):
         :type formatted: bool, optional
         :return: Commit entries ordered from newest to oldest
         :rtype: List[GitCommitInfo]
-        :raises RepoNotFoundError: Raised when the configured root is not a
+        :raises RepositoryNotFoundError: Raised when the configured root is not a
             valid repository.
         :raises RevisionNotFoundError: Raised when ``revision`` cannot be
             resolved.
@@ -1090,7 +1074,7 @@ class _RepositoryBackend(object):
         :type revision: str, optional
         :return: Read-only buffered binary stream
         :rtype: io.BufferedReader
-        :raises PathNotFoundError: Raised when the requested file is absent.
+        :raises EntryNotFoundError: Raised when the requested file is absent.
         :raises RevisionNotFoundError: Raised when ``revision`` cannot be
             resolved.
 
@@ -1129,7 +1113,7 @@ class _RepositoryBackend(object):
         :rtype: bytes
         :raises IntegrityError: Raised when persisted blob bytes do not match
             recorded checksums.
-        :raises PathNotFoundError: Raised when the requested file is absent.
+        :raises EntryNotFoundError: Raised when the requested file is absent.
         :raises RevisionNotFoundError: Raised when ``revision`` cannot be
             resolved.
 
@@ -1153,7 +1137,7 @@ class _RepositoryBackend(object):
         try:
             file_object_id = snapshot[normalized_path]
         except KeyError:
-            raise PathNotFoundError("path not found: %s" % normalized_path)
+            raise EntryNotFoundError("path not found: %s" % normalized_path)
         file_payload = self._read_object_payload("files", file_object_id)
         blob_object_id = file_payload["content_object_id"]
         blob_meta = self._read_object_payload("blobs", blob_object_id)
@@ -1186,7 +1170,7 @@ class _RepositoryBackend(object):
         :type local_dir: Optional[str], optional
         :return: Filesystem path to a detached readable file view
         :rtype: str
-        :raises PathNotFoundError: Raised when the requested file is absent.
+        :raises EntryNotFoundError: Raised when the requested file is absent.
         :raises RevisionNotFoundError: Raised when ``revision`` cannot be
             resolved.
         :raises UnsupportedPathError: Raised when ``filename`` is invalid.
@@ -1213,7 +1197,7 @@ class _RepositoryBackend(object):
         try:
             file_object_id = snapshot[normalized_path]
         except KeyError:
-            raise PathNotFoundError("path not found: %s" % normalized_path)
+            raise EntryNotFoundError("path not found: %s" % normalized_path)
 
         file_payload = self._read_object_payload("files", file_object_id)
         data = self.read_bytes(normalized_path, revision=resolved_revision)
@@ -1275,7 +1259,7 @@ class _RepositoryBackend(object):
             ...         operations=[CommitOperationAdd("demo.txt", b"hello")],
             ...         commit_message="seed",
             ...     )
-            ...     backend.reset_ref("main", commit.commit_id).commit_id == commit.commit_id
+            ...     backend.reset_ref("main", commit.oid).oid == commit.oid
             True
         """
 
@@ -1305,7 +1289,7 @@ class _RepositoryBackend(object):
 
         :return: Verification summary for the current repository state
         :rtype: VerifyReport
-        :raises RepoNotFoundError: Raised when the configured root is not a
+        :raises RepositoryNotFoundError: Raised when the configured root is not a
             valid repository.
 
         Example::
@@ -1459,7 +1443,7 @@ class _RepositoryBackend(object):
 
         :return: ``None``.
         :rtype: None
-        :raises RepoNotFoundError: Raised when the root does not contain a valid
+        :raises RepositoryNotFoundError: Raised when the root does not contain a valid
             repository marker set.
 
         Example::
@@ -1469,7 +1453,7 @@ class _RepositoryBackend(object):
         """
 
         if not self._is_repo():
-            raise RepoNotFoundError("repository not found")
+            raise RepositoryNotFoundError("repository not found")
         self._ensure_layout()
 
     def _repo_config(self) -> Dict[str, object]:
@@ -1728,30 +1712,6 @@ class _RepositoryBackend(object):
         if head is None and not allow_empty_ref:
             raise RevisionNotFoundError("revision has no commits yet: %s" % revision)
         return head
-
-    def _resolve_expected_head(self, parent_commit: Optional[str], expected_head: Optional[str]) -> Optional[str]:
-        """
-        Merge optimistic-concurrency head expectations.
-
-        :param parent_commit: Expected parent commit
-        :type parent_commit: Optional[str]
-        :param expected_head: Explicit expected head override
-        :type expected_head: Optional[str]
-        :return: Effective expected head
-        :rtype: Optional[str]
-        :raises ConflictError: Raised when both expectations are provided but
-            disagree.
-
-        Example::
-
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
-            >>> backend._resolve_expected_head("a", None)
-            'a'
-        """
-
-        if parent_commit is not None and expected_head is not None and parent_commit != expected_head:
-            raise ConflictError("parent_commit and expected_head disagree")
-        return expected_head if expected_head is not None else parent_commit
 
     def _object_json_path(self, object_type: str, object_id: str) -> Path:
         """
@@ -2065,33 +2025,191 @@ class _RepositoryBackend(object):
                 raise IntegrityError("unknown tree entry type")
         return snapshot
 
-    def _path_info_for_file(self, path: str, file_object_id: str) -> PathInfo:
+    def _compose_commit_text(self, commit_message: str, commit_description: str) -> str:
         """
-        Build public path metadata for a file object.
+        Compose the stored commit text from title and description parts.
+
+        :param commit_message: Commit title
+        :type commit_message: str
+        :param commit_description: Commit description/body
+        :type commit_description: str
+        :return: Stored commit text
+        :rtype: str
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend._compose_commit_text("seed", "body")
+            'seed\\n\\nbody'
+        """
+
+        if commit_description:
+            return "%s\n\n%s" % (commit_message, commit_description)
+        return commit_message
+
+    def _repo_url(self) -> str:
+        """
+        Build the local repository URL string used in commit results.
+
+        :return: Repository URL string
+        :rtype: str
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend._repo_url().startswith("file:")
+            True
+        """
+
+        return self._repo_path.resolve().as_uri()
+
+    def _commit_url(self, commit_id: str) -> str:
+        """
+        Build the local commit URL string used in commit results.
+
+        :param commit_id: Commit object identifier
+        :type commit_id: str
+        :return: Commit URL string
+        :rtype: str
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend._commit_url("sha256:" + "a" * 64).endswith("#commit=sha256:" + "a" * 64)
+            True
+        """
+
+        return self._repo_url() + "#commit=" + commit_id
+
+    def _repo_file_info(self, path: str, file_object_id: str) -> RepoFile:
+        """
+        Build HF-style public file metadata for a file object.
 
         :param path: Repo-relative file path
         :type path: str
         :param file_object_id: File object identifier
         :type file_object_id: str
         :return: Public file metadata
-        :rtype: PathInfo
+        :rtype: RepoFile
 
         Example::
 
             >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
-            >>> backend._path_info_for_file("demo.txt", "sha256:" + "a" * 64)  # doctest: +SKIP
+            >>> backend._repo_file_info("demo.txt", "sha256:" + "a" * 64)  # doctest: +SKIP
         """
 
         payload = self._read_object_payload("files", file_object_id)
-        return PathInfo(
+        sha256_hex = _public_sha256_hex(str(payload["sha256"]))
+        logical_size = int(payload["logical_size"])
+        return RepoFile(
             path=path,
-            path_type="file",
-            size=int(payload["logical_size"]),
-            oid=str(payload["oid"]),
+            size=logical_size,
             blob_id=str(payload["oid"]),
-            sha256=_public_sha256_hex(str(payload["sha256"])),
+            lfs=None,
+            last_commit=None,
+            security=None,
+            oid=str(payload["oid"]),
+            sha256=sha256_hex,
             etag=str(payload["etag"]),
         )
+
+    def _repo_folder_info(self, revision: str, path: str) -> RepoFolder:
+        """
+        Build HF-style public folder metadata for a repo path.
+
+        :param revision: Revision containing the folder
+        :type revision: str
+        :param path: Repo-relative folder path
+        :type path: str
+        :return: Public folder metadata
+        :rtype: RepoFolder
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._repo_folder_info("main", "nested")  # doctest: +SKIP
+        """
+
+        head_commit_id = self._resolve_revision(revision)
+        commit_payload = self._read_object_payload("commits", head_commit_id)
+        tree_id = self._tree_id_for_directory(str(commit_payload["tree_id"]), path)
+        return RepoFolder(path=path, tree_id=tree_id, last_commit=None)
+
+    def _tree_id_for_directory(self, root_tree_id: str, path_in_repo: str) -> str:
+        """
+        Resolve the tree object ID for a repo directory path.
+
+        :param root_tree_id: Root tree object ID for the selected revision
+        :type root_tree_id: str
+        :param path_in_repo: Repo-relative directory path
+        :type path_in_repo: str
+        :return: Tree object ID for the requested directory
+        :rtype: str
+        :raises EntryNotFoundError: Raised when the directory does not exist.
+        :raises UnsupportedPathError: Raised when the path points to a file.
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._tree_id_for_directory("sha256:" + "a" * 64, "nested")  # doctest: +SKIP
+        """
+
+        normalized_path = _normalize_repo_path(path_in_repo)
+        tree_id = root_tree_id
+        for part in normalized_path.split("/"):
+            tree_payload = self._read_object_payload("trees", tree_id)
+            next_tree_id = None
+            for entry in tree_payload.get("entries", []):
+                if entry["name"] != part:
+                    continue
+                if entry["entry_type"] == "file":
+                    raise UnsupportedPathError("path_in_repo must refer to a directory")
+                next_tree_id = str(entry["object_id"])
+                break
+            if next_tree_id is None:
+                raise EntryNotFoundError("directory not found: %s" % normalized_path)
+            tree_id = next_tree_id
+        return tree_id
+
+    def _list_tree_entries(
+        self,
+        tree_id: str,
+        prefix: str,
+        recursive: bool,
+    ) -> List[Union[RepoFile, RepoFolder]]:
+        """
+        Materialize HF-style file and folder entries for a tree object.
+
+        :param tree_id: Tree object identifier
+        :type tree_id: str
+        :param prefix: Repo-relative prefix for the tree
+        :type prefix: str
+        :param recursive: Whether to recurse into descendant trees
+        :type recursive: bool
+        :return: Tree entries ordered by path
+        :rtype: List[Union[RepoFile, RepoFolder]]
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._list_tree_entries("sha256:" + "a" * 64, "", False)  # doctest: +SKIP
+        """
+
+        items = []
+        tree_payload = self._read_object_payload("trees", tree_id)
+        for entry in tree_payload.get("entries", []):
+            name = str(entry["name"])
+            full_path = name if not prefix else prefix + "/" + name
+            if entry["entry_type"] == "file":
+                items.append(self._repo_file_info(full_path, str(entry["object_id"])))
+            elif entry["entry_type"] == "tree":
+                child_tree_id = str(entry["object_id"])
+                items.append(RepoFolder(path=full_path, tree_id=child_tree_id, last_commit=None))
+                if recursive:
+                    items.extend(self._list_tree_entries(child_tree_id, full_path, recursive=True))
+            else:
+                raise IntegrityError("unknown tree entry type")
+        return items
 
     def _stage_add_operation(
         self,
@@ -2157,7 +2275,7 @@ class _RepositoryBackend(object):
         :type is_folder: bool
         :return: ``None``.
         :rtype: None
-        :raises PathNotFoundError: Raised when the target path is absent.
+        :raises EntryNotFoundError: Raised when the target path is absent.
 
         Example::
 
@@ -2179,13 +2297,13 @@ class _RepositoryBackend(object):
                     del snapshot[path]
                     removed = True
             if not removed:
-                raise PathNotFoundError("path not found: %s" % normalized_path)
+                raise EntryNotFoundError("path not found: %s" % normalized_path)
             return
 
         try:
             del snapshot[normalized_path]
         except KeyError:
-            raise PathNotFoundError("path not found: %s" % normalized_path)
+            raise EntryNotFoundError("path not found: %s" % normalized_path)
 
     def _apply_copy(
         self,
@@ -2207,7 +2325,7 @@ class _RepositoryBackend(object):
         :type dst_path_in_repo: str
         :return: ``None``.
         :rtype: None
-        :raises PathNotFoundError: Raised when the source path is absent.
+        :raises EntryNotFoundError: Raised when the source path is absent.
 
         Example::
 
@@ -2228,7 +2346,7 @@ class _RepositoryBackend(object):
         prefix = src_path + "/"
         matches = [(path, object_id) for path, object_id in source_snapshot.items() if path.startswith(prefix)]
         if not matches:
-            raise PathNotFoundError("path not found: %s" % src_path)
+            raise EntryNotFoundError("path not found: %s" % src_path)
         for path, object_id in matches:
             suffix = path[len(prefix):]
             snapshot[dst_path + "/" + suffix] = object_id
@@ -2415,12 +2533,16 @@ class _RepositoryBackend(object):
         """
 
         commit_payload = self._read_object_payload("commits", commit_id)
+        raw_message = str(commit_payload.get("message", ""))
+        title = str(commit_payload.get("title", ""))
+        description = str(commit_payload.get("description", ""))
+        if not title:
+            title, description = self._split_commit_message(raw_message)
         return CommitInfo(
-            commit_id=commit_id,
-            revision=revision,
-            tree_id=str(commit_payload["tree_id"]),
-            parents=list(commit_payload.get("parents", [])),
-            message=str(commit_payload.get("message", "")),
+            commit_url=self._commit_url(commit_id),
+            commit_message=title,
+            commit_description=description,
+            oid=commit_id,
         )
 
     def _git_commit_info(self, commit_id: str, formatted: bool = False) -> GitCommitInfo:
@@ -2443,7 +2565,10 @@ class _RepositoryBackend(object):
 
         commit_payload = self._read_object_payload("commits", commit_id)
         raw_message = str(commit_payload.get("message", ""))
-        title, message = self._split_commit_message(raw_message)
+        title = str(commit_payload.get("title", ""))
+        message = str(commit_payload.get("description", ""))
+        if not title:
+            title, message = self._split_commit_message(raw_message)
         created_at = datetime.strptime(str(commit_payload["created_at"]), "%Y-%m-%dT%H:%M:%SZ").replace(
             tzinfo=timezone.utc
         )
@@ -2625,7 +2750,8 @@ class _RepositoryBackend(object):
 
         :param revision: Target revision for the transaction
         :type revision: str
-        :param expected_head: Expected branch head for optimistic concurrency
+        :param expected_head: Expected branch head recorded for crash recovery
+            and optimistic-concurrency diagnostics
         :type expected_head: Optional[str]
         :return: Absolute transaction directory path
         :rtype: pathlib.Path

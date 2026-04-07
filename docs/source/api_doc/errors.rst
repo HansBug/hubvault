@@ -12,16 +12,16 @@ HubVaultError
 .. autoclass:: HubVaultError
 
 
-RepoNotFoundError
+RepositoryNotFoundError
 -----------------------------------------------------
 
-.. autoclass:: RepoNotFoundError
+.. autoclass:: RepositoryNotFoundError
 
 
-RepoAlreadyExistsError
+RepositoryAlreadyExistsError
 -----------------------------------------------------
 
-.. autoclass:: RepoAlreadyExistsError
+.. autoclass:: RepositoryAlreadyExistsError
 
 
 RevisionNotFoundError
@@ -30,10 +30,10 @@ RevisionNotFoundError
 .. autoclass:: RevisionNotFoundError
 
 
-PathNotFoundError
+EntryNotFoundError
 -----------------------------------------------------
 
-.. autoclass:: PathNotFoundError
+.. autoclass:: EntryNotFoundError
 
 
 ConflictError
@@ -58,6 +58,12 @@ LockTimeoutError
 -----------------------------------------------------
 
 .. autoclass:: LockTimeoutError
+
+
+HubVaultValidationError
+-----------------------------------------------------
+
+.. autoclass:: HubVaultValidationError
 
 
 UnsupportedPathError

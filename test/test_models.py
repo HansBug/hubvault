@@ -3,7 +3,17 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from hubvault.models import BlobLfsInfo, CommitInfo, GitCommitInfo, PathInfo, RepoInfo, VerifyReport
+from hubvault.models import (
+    BlobLfsInfo,
+    BlobSecurityInfo,
+    CommitInfo,
+    GitCommitInfo,
+    LastCommitInfo,
+    RepoFile,
+    RepoFolder,
+    RepoInfo,
+    VerifyReport,
+)
 
 
 @pytest.mark.unittest
@@ -20,24 +30,41 @@ class TestModels:
         with pytest.raises(FrozenInstanceError):
             info.default_branch = "dev"
 
-    def test_commit_info_path_info_blob_lfs_and_verify_report(self):
+    def test_public_models_align_with_hf_style_fields(self):
         commit = CommitInfo(
-            commit_id="sha256:c1",
-            revision="main",
-            tree_id="sha256:t1",
-            parents=["sha256:p1"],
-            message="hello",
+            commit_url="file:///tmp/repo#commit=sha256:c1",
+            commit_message="hello",
+            commit_description="world",
+            oid="sha256:c1",
         )
-        path = PathInfo(
+        lfs = BlobLfsInfo(size=1024, sha256="def", pointer_size=128)
+        last_commit = LastCommitInfo(
+            oid="sha256:c1",
+            title="seed",
+            date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        )
+        security = BlobSecurityInfo(
+            safe=True,
+            status="safe",
+            av_scan=None,
+            pickle_import_scan=None,
+        )
+        repo_file = RepoFile(
             path="model.bin",
-            path_type="file",
             size=3,
-            oid="oid",
             blob_id="blob",
+            lfs=lfs,
+            last_commit=last_commit,
+            security=security,
+            oid="blob",
             sha256="abc",
             etag="etag",
         )
-        lfs = BlobLfsInfo(size=1024, sha256="def", pointer_size=128)
+        repo_folder = RepoFolder(
+            path="folder",
+            tree_id="tree",
+            last_commit=last_commit,
+        )
         git_commit = GitCommitInfo(
             commit_id="sha256:c2",
             authors=["tester"],
@@ -49,10 +76,16 @@ class TestModels:
         )
         report = VerifyReport(ok=True)
 
-        assert commit.parents == ["sha256:p1"]
+        assert commit.oid == "sha256:c1"
+        assert commit.commit_message == "hello"
+        assert commit.commit_description == "world"
+        assert commit.repo_url == "file:///tmp/repo"
+        assert str(commit) == commit.commit_url
         assert git_commit.authors == ["tester"]
-        assert path.path_type == "file"
         assert lfs.pointer_size == 128
+        assert repo_file.rfilename == "model.bin"
+        assert repo_file.lastCommit == last_commit
+        assert repo_folder.tree_id == "tree"
         assert report.checked_refs == []
         assert report.warnings == []
         assert report.errors == []

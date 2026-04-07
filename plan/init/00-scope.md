@@ -2,19 +2,19 @@
 
 ## 1. 当前仓库基线
 
-当前仓库还没有真正的 repo/storage 内核，现状更接近“工程骨架”：
+当前仓库已经具备 Phase 0-1 的本地 repo/storage MVP，不再只是“工程骨架”：
 
 | 领域 | 当前状态 | 备注 |
 | --- | --- | --- |
 | 包元信息 | 已有 | `hubvault.config.meta` 可用 |
 | CLI 壳层 | 已有 | `hubvault.entry` 能输出版本与帮助 |
 | 打包/测试基础设施 | 已有 | `Makefile`、`pytest.ini`、`setup.py` 已就位 |
-| 公开仓库 API | 缺失 | `HubVaultApi` 及相关模型尚未实现 |
-| 存储引擎 | 缺失 | commit/tree/blob/chunk 均未落地 |
-| 事务协议 | 缺失 | 锁、恢复、回滚、校验尚未实现 |
-| GC/verify/merge | 缺失 | 仍停留在设计阶段 |
+| 公开仓库 API | 已有 | `HubVaultApi`、`CommitOperation*`、`RepoFile/RepoFolder`、异常模型已落地 |
+| 存储引擎 | MVP 已有 | whole-file commit/tree/blob 已落地，chunk/pack 尚未实现 |
+| 事务协议 | MVP 已有 | 锁、事务目录、恢复、回滚、快速校验已落地 |
+| GC/verify/merge | 部分缺失 | `quick_verify()` 已有，GC/full verify/merge 仍在后续 phase |
 
-因此，本项目的初始化规划必须优先解决“如何从 0 到 1 做出可运行 MVP”，而不是一开始就把 pack、GC、merge、原生加速全部做完。
+因此，当前初始化规划的重点已经从“如何从 0 到 1 做出 MVP”转成“如何在不破坏已落地 MVP 的前提下，继续补齐 HF 风格兼容和后续 phase”。
 
 ## 2. 项目目标
 
@@ -56,7 +56,8 @@ MVP 只要求打通以下最短路径：
 - `create_repo()` 初始化本地仓库
 - `repo_info()` 返回格式版本、默认分支和 head 信息
 - `create_commit()` 支持公开 `CommitOperationAdd` / `CommitOperationDelete`
-- `list_repo_tree()` / `list_repo_files()` 能列目录与文件
+- `list_repo_tree()` / `get_paths_info()` 返回 `RepoFile` / `RepoFolder`
+- `list_repo_files()` 能列文件
 - `open_file()` / `read_bytes()` / `hf_hub_download()` 能读取内容
 - `reset_ref()` 能把分支回退到历史 commit
 - `quick_verify()` 能做最小一致性体检
@@ -64,6 +65,8 @@ MVP 只要求打通以下最短路径：
 - 通过公开文件信息接口拿到 `oid` / `sha256`
 - 公开 `sha256` 的格式要与 HF 一致，使用裸 64 位 hex，而不是 `sha256:<hex>`
 - `hf_hub_download()` 返回的文件路径以 repo 内原始相对路径结尾，而不是内部 blob 名
+- 缺失路径查询遵守 HF 风格，直接忽略不存在项而不是抛异常
+- 公开异常优先对齐 `RepositoryNotFoundError` / `EntryNotFoundError` / `RevisionNotFoundError` / 验证错误族
 
 ### 5.2 MVP 明确不做
 
@@ -116,6 +119,7 @@ content = api.read_bytes("weights/config.json", revision="main")
 - 发生异常中断后不会破坏已提交版本
 - 仓库关闭后整体搬迁路径或打包迁移后仍可正常打开、读取、校验
 - 对单个文件可以稳定拿到 HF 风格 `oid` / `sha256`，其中 `sha256` 为裸 hex
+- `get_paths_info()` 与 `list_repo_tree()` 返回的核心字段与 HF `RepoFile` / `RepoFolder` 主语义一致
 - `hf_hub_download()` 与快照导出路径保持 repo 相对路径层级与文件名保真
 - 单元测试能通过公开 API 覆盖新增能力
 - `make unittest` 通过

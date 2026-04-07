@@ -18,15 +18,15 @@ Example::
     ...     operations=[CommitOperationAdd("demo.txt", b"hello")],
     ...     commit_message="seed",
     ... )
-    >>> commit.revision
-    'main'
+    >>> commit.oid.startswith("sha256:")
+    True
 """
 
 from os import PathLike
 from pathlib import Path
-from typing import BinaryIO, Dict, Optional, Sequence, Union
+from typing import BinaryIO, List, Optional, Sequence, Union
 
-from .models import CommitInfo, GitCommitInfo, PathInfo, RepoInfo, VerifyReport
+from .models import CommitInfo, GitCommitInfo, RepoFile, RepoFolder, RepoInfo, VerifyReport
 from .repo import _RepositoryBackend
 
 
@@ -51,8 +51,8 @@ class HubVaultApi:
         ...     ],
         ...     commit_message="add example",
         ... )
-        >>> commit.revision
-        'main'
+        >>> commit.oid.startswith("sha256:")
+        True
     """
 
     def __init__(self, repo_path: Union[str, PathLike], revision: str = "main") -> None:
@@ -79,9 +79,9 @@ class HubVaultApi:
 
     def create_repo(
         self,
+        *,
         default_branch: str = "main",
         exist_ok: bool = False,
-        metadata: Optional[Dict[str, str]] = None,
     ) -> RepoInfo:
         """
         Create a local repository.
@@ -90,11 +90,9 @@ class HubVaultApi:
         :type default_branch: str
         :param exist_ok: Whether an existing repository may be reused
         :type exist_ok: bool
-        :param metadata: Optional repository metadata
-        :type metadata: Optional[Dict[str, str]]
         :return: Information about the created repository
         :rtype: RepoInfo
-        :raises hubvault.errors.RepoAlreadyExistsError: Raised when the target
+        :raises hubvault.errors.RepositoryAlreadyExistsError: Raised when the target
             path already contains a repository or non-empty directory.
         :raises hubvault.errors.UnsupportedPathError: Raised when the default
             branch name is invalid.
@@ -107,9 +105,9 @@ class HubVaultApi:
             'main'
         """
 
-        return self._backend.create_repo(default_branch=default_branch, exist_ok=exist_ok, metadata=metadata)
+        return self._backend.create_repo(default_branch=default_branch, exist_ok=exist_ok)
 
-    def repo_info(self, revision: Optional[str] = None) -> RepoInfo:
+    def repo_info(self, *, revision: Optional[str] = None) -> RepoInfo:
         """
         Return metadata about the repository.
 
@@ -117,7 +115,7 @@ class HubVaultApi:
         :type revision: Optional[str]
         :return: Repository metadata
         :rtype: RepoInfo
-        :raises hubvault.errors.RepoNotFoundError: Raised when the repository
+        :raises hubvault.errors.RepositoryNotFoundError: Raised when the repository
             root does not contain a valid ``hubvault`` repository.
         :raises hubvault.errors.RevisionNotFoundError: Raised when the selected
             revision does not exist.
@@ -134,38 +132,41 @@ class HubVaultApi:
 
     def create_commit(
         self,
-        revision: str = "main",
         operations: Sequence[object] = (),
+        *,
+        commit_message: str,
+        commit_description: Optional[str] = None,
+        revision: Optional[str] = None,
         parent_commit: Optional[str] = None,
-        expected_head: Optional[str] = None,
-        commit_message: str = "",
-        metadata: Optional[Dict[str, str]] = None,
     ) -> CommitInfo:
         """
         Create a new commit on a branch.
 
-        :param revision: Target branch name
-        :type revision: str
         :param operations: Commit operations to apply
         :type operations: Sequence[object]
-        :param parent_commit: Expected parent commit for optimistic concurrency
-        :type parent_commit: Optional[str]
-        :param expected_head: Explicit expected branch head
-        :type expected_head: Optional[str]
-        :param commit_message: Commit message
+        :param commit_message: Commit summary/title. When
+            ``commit_description`` is omitted, embedded body text after a blank
+            line is preserved and split the same way Git and HF commit listings
+            interpret commit text.
         :type commit_message: str
-        :param metadata: Optional commit metadata
-        :type metadata: Optional[Dict[str, str]]
+        :param commit_description: Optional commit description/body
+        :type commit_description: Optional[str]
+        :param revision: Target branch name, defaults to the API default revision
+        :type revision: Optional[str]
+        :param parent_commit: Expected parent commit for optimistic concurrency.
+            When omitted, the commit is applied against the current branch head.
+        :type parent_commit: Optional[str]
         :return: Metadata for the created commit
         :rtype: CommitInfo
         :raises hubvault.errors.ConflictError: Raised when the operation set is
             empty, unsupported, or optimistic concurrency checks fail.
-        :raises hubvault.errors.PathNotFoundError: Raised when delete/copy
+        :raises hubvault.errors.EntryNotFoundError: Raised when delete/copy
             operations refer to missing paths.
         :raises hubvault.errors.RevisionNotFoundError: Raised when the target
             revision cannot be resolved.
         :raises hubvault.errors.UnsupportedPathError: Raised when revision or
             path inputs are invalid.
+        :raises ValueError: Raised when ``commit_message`` is empty.
 
         Example::
 
@@ -175,35 +176,33 @@ class HubVaultApi:
             ...     operations=[CommitOperationAdd("demo.txt", b"hello")],
             ...     commit_message="seed",
             ... )
-            >>> commit.revision
-            'main'
+            >>> commit.oid.startswith("sha256:")
+            True
         """
 
         return self._backend.create_commit(
-            revision=revision,
             operations=operations,
-            parent_commit=parent_commit,
-            expected_head=expected_head,
             commit_message=commit_message,
-            metadata=metadata,
+            commit_description=commit_description,
+            revision=revision or self._default_revision,
+            parent_commit=parent_commit,
         )
 
     def get_paths_info(
         self,
-        paths: Sequence[str],
+        paths: Union[Sequence[str], str],
+        *,
         revision: Optional[str] = None,
-    ) -> Sequence[PathInfo]:
+    ) -> List[Union[RepoFile, RepoFolder]]:
         """
         Return public metadata for selected paths.
 
-        :param paths: Repo-relative paths to inspect
-        :type paths: Sequence[str]
+        :param paths: Repo-relative path or paths to inspect
+        :type paths: Union[Sequence[str], str]
         :param revision: Revision to resolve, defaults to the API default revision
         :type revision: Optional[str]
-        :return: Path metadata in input order
-        :rtype: Sequence[PathInfo]
-        :raises hubvault.errors.PathNotFoundError: Raised when any requested
-            path is absent from the selected revision.
+        :return: Metadata for the existing requested paths
+        :rtype: List[Union[RepoFile, RepoFolder]]
         :raises hubvault.errors.RevisionNotFoundError: Raised when the revision
             cannot be resolved.
         :raises hubvault.errors.UnsupportedPathError: Raised when a requested
@@ -223,17 +222,25 @@ class HubVaultApi:
 
         return self._backend.get_paths_info(paths=paths, revision=revision or self._default_revision)
 
-    def list_repo_tree(self, path_in_repo: str = "", revision: Optional[str] = None) -> Sequence[PathInfo]:
+    def list_repo_tree(
+        self,
+        path_in_repo: Optional[str] = None,
+        *,
+        recursive: bool = False,
+        revision: Optional[str] = None,
+    ) -> List[Union[RepoFile, RepoFolder]]:
         """
         List direct children under a repository directory.
 
         :param path_in_repo: Repo-relative directory path, defaults to the root
-        :type path_in_repo: str
+        :type path_in_repo: Optional[str]
+        :param recursive: Whether to include descendant entries recursively
+        :type recursive: bool, optional
         :param revision: Revision to resolve, defaults to the API default revision
         :type revision: Optional[str]
         :return: Direct child path metadata
-        :rtype: Sequence[PathInfo]
-        :raises hubvault.errors.PathNotFoundError: Raised when the directory is
+        :rtype: List[Union[RepoFile, RepoFolder]]
+        :raises hubvault.errors.EntryNotFoundError: Raised when the directory is
             missing from the selected revision.
         :raises hubvault.errors.RevisionNotFoundError: Raised when the revision
             cannot be resolved.
@@ -248,9 +255,13 @@ class HubVaultApi:
             []
         """
 
-        return self._backend.list_repo_tree(path_in_repo=path_in_repo, revision=revision or self._default_revision)
+        return self._backend.list_repo_tree(
+            path_in_repo=path_in_repo,
+            recursive=recursive,
+            revision=revision or self._default_revision,
+        )
 
-    def list_repo_files(self, revision: Optional[str] = None) -> Sequence[str]:
+    def list_repo_files(self, *, revision: Optional[str] = None) -> Sequence[str]:
         """
         List all file paths in a revision.
 
@@ -273,6 +284,7 @@ class HubVaultApi:
 
     def list_repo_commits(
         self,
+        *,
         revision: Optional[str] = None,
         formatted: bool = False,
     ) -> Sequence[GitCommitInfo]:
@@ -291,7 +303,7 @@ class HubVaultApi:
         :type formatted: bool, optional
         :return: Commit entries ordered from newest to oldest
         :rtype: Sequence[GitCommitInfo]
-        :raises hubvault.errors.RepoNotFoundError: Raised when the repository
+        :raises hubvault.errors.RepositoryNotFoundError: Raised when the repository
             root does not contain a valid ``hubvault`` repository.
         :raises hubvault.errors.RevisionNotFoundError: Raised when the revision
             cannot be resolved.
@@ -313,7 +325,7 @@ class HubVaultApi:
             formatted=formatted,
         )
 
-    def open_file(self, path_in_repo: str, revision: Optional[str] = None) -> BinaryIO:
+    def open_file(self, path_in_repo: str, *, revision: Optional[str] = None) -> BinaryIO:
         """
         Open a file as a read-only binary stream.
 
@@ -323,7 +335,7 @@ class HubVaultApi:
         :type revision: Optional[str]
         :return: Read-only binary stream
         :rtype: BinaryIO
-        :raises hubvault.errors.PathNotFoundError: Raised when the file is not
+        :raises hubvault.errors.EntryNotFoundError: Raised when the file is not
             present in the selected revision.
         :raises hubvault.errors.RevisionNotFoundError: Raised when the revision
             cannot be resolved.
@@ -343,7 +355,7 @@ class HubVaultApi:
 
         return self._backend.open_file(path_in_repo=path_in_repo, revision=revision or self._default_revision)
 
-    def read_bytes(self, path_in_repo: str, revision: Optional[str] = None) -> bytes:
+    def read_bytes(self, path_in_repo: str, *, revision: Optional[str] = None) -> bytes:
         """
         Read the full content of a file.
 
@@ -355,7 +367,7 @@ class HubVaultApi:
         :rtype: bytes
         :raises hubvault.errors.IntegrityError: Raised when stored blob content
             fails validation checks.
-        :raises hubvault.errors.PathNotFoundError: Raised when the file is not
+        :raises hubvault.errors.EntryNotFoundError: Raised when the file is not
             present in the selected revision.
         :raises hubvault.errors.RevisionNotFoundError: Raised when the revision
             cannot be resolved.
@@ -377,6 +389,7 @@ class HubVaultApi:
     def hf_hub_download(
         self,
         filename: str,
+        *,
         revision: Optional[str] = None,
         local_dir: Optional[Union[str, PathLike]] = None,
     ) -> str:
@@ -391,7 +404,7 @@ class HubVaultApi:
         :type local_dir: Optional[Union[str, os.PathLike[str]]]
         :return: A filesystem path that can be read safely without mutating repo truth
         :rtype: str
-        :raises hubvault.errors.PathNotFoundError: Raised when the requested
+        :raises hubvault.errors.EntryNotFoundError: Raised when the requested
             file does not exist in the selected revision.
         :raises hubvault.errors.RevisionNotFoundError: Raised when the revision
             cannot be resolved.
@@ -417,7 +430,7 @@ class HubVaultApi:
             local_dir=local_dir_str,
         )
 
-    def reset_ref(self, ref_name: str, to_revision: str) -> CommitInfo:
+    def reset_ref(self, ref_name: str, *, to_revision: str) -> CommitInfo:
         """
         Reset a branch to another revision.
 
@@ -442,7 +455,7 @@ class HubVaultApi:
             ...     operations=[CommitOperationAdd("demo.txt", b"hello")],
             ...     commit_message="seed",
             ... )
-            >>> api.reset_ref("main", commit.commit_id).commit_id == commit.commit_id
+            >>> api.reset_ref("main", to_revision=commit.oid).oid == commit.oid
             True
         """
 
@@ -454,7 +467,7 @@ class HubVaultApi:
 
         :return: Verification result
         :rtype: VerifyReport
-        :raises hubvault.errors.RepoNotFoundError: Raised when the repository
+        :raises hubvault.errors.RepositoryNotFoundError: Raised when the repository
             root does not contain a valid ``hubvault`` repository.
 
         Example::

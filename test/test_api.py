@@ -7,11 +7,13 @@ import pytest
 from hubvault import (
     CommitOperationAdd,
     ConflictError,
+    EntryNotFoundError,
     HubVaultApi,
-    PathNotFoundError,
-    RepoAlreadyExistsError,
+    RepoFile,
+    RepoFolder,
     RepoInfo,
-    RepoNotFoundError,
+    RepositoryAlreadyExistsError,
+    RepositoryNotFoundError,
     RevisionNotFoundError,
     UnsupportedPathError,
 )
@@ -32,13 +34,13 @@ class TestApi:
         repo_dir = tmp_path / "portable-repo"
         api = HubVaultApi(repo_dir, revision="release/v1")
 
-        created = api.create_repo(default_branch="release/v1", metadata={"owner": "tester"})
+        created = api.create_repo(default_branch="release/v1")
         assert isinstance(created, RepoInfo)
         assert created.default_branch == "release/v1"
         assert created.head is None
         assert created.refs == ["refs/heads/release/v1"]
 
-        with pytest.raises(RepoAlreadyExistsError):
+        with pytest.raises(RepositoryAlreadyExistsError):
             api.create_repo(default_branch="release/v1")
 
         reused = api.create_repo(default_branch="release/v1", exist_ok=True)
@@ -50,20 +52,25 @@ class TestApi:
         model_bytes = b"tensor-content-v1"
 
         commit = api.create_commit(
-            revision="release/v1",
             operations=[
                 CommitOperationAdd("models/core/model.safetensors", model_bytes),
                 CommitOperationAdd("artifacts/weights.bin", str(source_file)),
                 CommitOperationAdd("configs/model.json", stream),
             ],
             commit_message="add api assets",
+            revision="release/v1",
         )
 
         info = api.repo_info()
-        assert info.head == commit.commit_id
+        assert info.head == commit.oid
+        assert commit.oid.startswith("sha256:")
+        assert commit.commit_message == "add api assets"
+        assert commit.commit_description == ""
+        assert commit.repo_url.startswith("file:")
+        assert "#commit=" in commit.commit_url
         commit_history = api.list_repo_commits()
         assert len(commit_history) == 1
-        assert commit_history[0].commit_id == commit.commit_id
+        assert commit_history[0].commit_id == commit.oid
         assert commit_history[0].title == "add api assets"
         assert commit_history[0].message == ""
         assert commit_history[0].formatted_title is None
@@ -76,18 +83,32 @@ class TestApi:
 
         root_items = {item.path: item for item in api.list_repo_tree()}
         assert sorted(root_items) == ["artifacts", "configs", "models"]
-        assert root_items["models"].path_type == "directory"
+        assert isinstance(root_items["models"], RepoFolder)
+        assert root_items["models"].tree_id.startswith("sha256:")
 
         nested_items = api.list_repo_tree("models/core")
         assert len(nested_items) == 1
+        assert isinstance(nested_items[0], RepoFile)
         assert nested_items[0].path == "models/core/model.safetensors"
         assert nested_items[0].oid == _git_blob_oid(model_bytes)
         assert nested_items[0].blob_id == _git_blob_oid(model_bytes)
         assert nested_items[0].sha256 == _sha256_value(model_bytes)
         assert nested_items[0].etag == _git_blob_oid(model_bytes)
+        assert nested_items[0].lfs is None
+
+        recursive_tree = api.list_repo_tree("models", recursive=True)
+        assert [item.path for item in recursive_tree] == [
+            "models/core",
+            "models/core/model.safetensors",
+        ]
 
         path_items = api.get_paths_info(["models", "models/core/model.safetensors"])
-        assert [item.path_type for item in path_items] == ["directory", "file"]
+        assert [type(item).__name__ for item in path_items] == ["RepoFolder", "RepoFile"]
+        assert isinstance(path_items[0], RepoFolder)
+        assert isinstance(path_items[1], RepoFile)
+        assert path_items[1].sha256 == _sha256_value(model_bytes)
+        assert api.get_paths_info("models/core/model.safetensors")[0].blob_id == _git_blob_oid(model_bytes)
+        assert api.get_paths_info(["missing.txt"]) == []
         assert api.read_bytes("models/core/model.safetensors") == model_bytes
 
         with api.open_file("models/core/model.safetensors") as fileobj:
@@ -105,8 +126,10 @@ class TestApi:
 
     def test_public_api_error_paths(self, tmp_path):
         missing_api = HubVaultApi(tmp_path / "missing-repo")
-        with pytest.raises(RepoNotFoundError):
+        with pytest.raises(RepositoryNotFoundError):
             missing_api.repo_info()
+        with pytest.raises(RepositoryNotFoundError):
+            missing_api.quick_verify()
 
         invalid_branch_api = HubVaultApi(tmp_path / "invalid-branch-repo")
         with pytest.raises(UnsupportedPathError):
@@ -137,40 +160,37 @@ class TestApi:
                 commit_message="stale parent",
             )
 
-        with pytest.raises(ConflictError):
+        with pytest.raises(ValueError):
             api.create_commit(
                 operations=[CommitOperationAdd("data/file.txt", b"v2")],
-                parent_commit=first_commit.commit_id,
-                expected_head="sha256:another",
-                commit_message="mismatch",
+                commit_message="",
             )
 
-        with pytest.raises(PathNotFoundError):
-            api.get_paths_info(["missing.txt"])
+        assert api.get_paths_info(["missing.txt"]) == []
 
-        with pytest.raises(PathNotFoundError):
+        with pytest.raises(EntryNotFoundError):
             api.read_bytes("missing.txt")
 
-        with pytest.raises(PathNotFoundError):
+        with pytest.raises(EntryNotFoundError):
             api.open_file("missing.txt")
 
-        with pytest.raises(PathNotFoundError):
+        with pytest.raises(EntryNotFoundError):
             api.hf_hub_download("missing.txt")
 
-        with pytest.raises(PathNotFoundError):
+        with pytest.raises(EntryNotFoundError):
             api.list_repo_tree("missing-dir")
 
         with pytest.raises(UnsupportedPathError):
             api.create_commit(
                 operations=[CommitOperationAdd("../bad.txt", b"x")],
-                parent_commit=first_commit.commit_id,
+                parent_commit=first_commit.oid,
                 commit_message="bad path",
             )
 
         with pytest.raises(ConflictError):
             api.create_commit(
                 operations=[object()],
-                parent_commit=first_commit.commit_id,
+                parent_commit=first_commit.oid,
                 commit_message="unsupported operation",
             )
 
@@ -190,6 +210,22 @@ class TestApi:
         with pytest.raises(RevisionNotFoundError):
             api.list_repo_commits(revision="missing")
 
+    def test_create_commit_defaults_to_current_head_when_parent_is_omitted(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        first_commit = api.create_commit(
+            operations=[CommitOperationAdd("notes.txt", b"v1")],
+            commit_message="seed",
+        )
+
+        second_commit = api.create_commit(
+            operations=[CommitOperationAdd("notes.txt", b"v2")],
+            commit_message="advance without explicit parent",
+        )
+
+        assert api.repo_info().head == second_commit.oid
+        assert api.read_bytes("notes.txt") == b"v2"
+
     def test_list_repo_commits_supports_hf_style_formatted_fields(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")
         api.create_repo()
@@ -200,7 +236,7 @@ class TestApi:
 
         plain_history = api.list_repo_commits()
         assert len(plain_history) == 1
-        assert plain_history[0].commit_id == commit.commit_id
+        assert plain_history[0].commit_id == commit.oid
         assert plain_history[0].title == "document <api>"
         assert plain_history[0].message == "body & tail"
         assert plain_history[0].formatted_title is None
@@ -212,3 +248,5 @@ class TestApi:
         assert formatted_history[0].message == "body & tail"
         assert formatted_history[0].formatted_title == "document &lt;api&gt;"
         assert formatted_history[0].formatted_message == "body &amp; tail"
+        assert commit.commit_message == "document <api>"
+        assert commit.commit_description == "body & tail"

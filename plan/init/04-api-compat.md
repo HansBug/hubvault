@@ -2,18 +2,39 @@
 
 ## 1. 设计目标
 
-API 目标不是逐行复制 `huggingface_hub`，而是：
+当前 `hubvault` 的公开 Python API 采用一条明确原则：
 
-- 保留 repo/file 操作的主要调用手感
-- 以 `HubVaultApi` 为统一公开入口
-- 去掉依赖远端 HTTP 平台的能力
-- 增加适合本地嵌入式仓库的 `verify`、`gc`、`compact`、`reset` 等能力
-- 确保单元测试可以只通过公开 API 完成，不需要触碰 private / protected 实现
-- 明确仓库是自包含 artifact，API 不能把仓库正确性建立在外部路径状态之上
+- 只要 `huggingface_hub` 有真实对标对象，就默认以它为兼容基准
+- 除非本地嵌入式仓库场景确有必要，否则不主动发明另一套公开语义
+- 仅保留在本地仓库中有真实行为的参数、字段和返回值
+- 任何偏差都必须是“有原因的最小偏差”，并在本文件和 `AGENTS.md` 中明确记录
 
-## 2. 推荐公开入口
+这里说的“兼容”不是逐字复制远端 Hub 的 HTTP/鉴权/PR 机制，而是：
 
-建议对外主入口保持极简：
+- 方法名和主要参数形状尽量一致
+- 返回对象字段名和核心语义尽量一致
+- 文件路径、`blob_id`、`oid`、`sha256` 等公开元数据尽量一致
+- 缺失路径、commit 列表、树遍历、下载路径等用户可感知行为尽量一致
+
+## 2. 真实 HF 基准
+
+本仓库已直接用真实 `huggingface_hub` 调用公开仓库做过运行验证，当前对齐基线如下：
+
+- `HfApi.repo_info("bert-base-uncased", files_metadata=True)` 返回 `ModelInfo`，不是通用 `RepoInfo`
+- `HfApi.get_paths_info("bert-base-uncased", ["config.json", "nonexistent.file", "onnx"])`
+  只返回存在路径，缺失路径会被忽略，不抛异常
+- `HfApi.list_repo_tree("bert-base-uncased")` 返回 `RepoFile` / `RepoFolder`
+- `HfApi.list_repo_tree("gpt2", path_in_repo="onnx", recursive=True)` 会递归返回子树
+- `HfApi.list_repo_commits("gpt2", formatted=True)` 返回 `GitCommitInfo`，并填充
+  `formatted_title` / `formatted_message`
+- `hf_hub_download("gpt2", "config.json")` 返回普通文件路径，并保留
+  `.../config.json` 这样的 repo 相对路径后缀
+
+这几条就是 `hubvault` 当前 Phase 0-1 API 对齐的直接行为基准。
+
+## 3. 当前公开入口
+
+当前推荐从包根导入的公开入口如下：
 
 ```python
 from hubvault import (
@@ -24,405 +45,310 @@ from hubvault import (
     RepoInfo,
     CommitInfo,
     GitCommitInfo,
-    PathInfo,
+    RepoFile,
+    RepoFolder,
+    LastCommitInfo,
+    BlobLfsInfo,
+    BlobSecurityInfo,
     VerifyReport,
+    RepositoryNotFoundError,
+    RepositoryAlreadyExistsError,
+    EntryNotFoundError,
+    RevisionNotFoundError,
+    HubVaultValidationError,
+    ConflictError,
+    IntegrityError,
+    VerificationError,
+    LockTimeoutError,
 )
 ```
 
-`hubvault.__init__` 应只做薄 re-export，不承载业务逻辑。
+兼容层说明：
 
-### 2.1 当前已落地公开入口
+- 路径相关公开返回值统一为 `RepoFile` / `RepoFolder`
+- 异常名统一收敛到与 HF 更接近的 `RepositoryNotFoundError`、`EntryNotFoundError`、`RevisionNotFoundError`
 
-当前 MVP 已经对外暴露如下公开入口与模型：
+## 4. 模型对齐结论
 
-- `HubVaultApi`
-- `CommitOperationAdd`
-- `CommitOperationDelete`
-- `CommitOperationCopy`
+### 4.1 文件与目录模型
+
+当前公开返回值已经统一对齐到 HF 风格：
+
+| hubvault | HF 对标 | 当前状态 |
+| --- | --- | --- |
+| `RepoFile.path` | `RepoFile.path` | 已对齐 |
+| `RepoFile.size` | `RepoFile.size` | 已对齐 |
+| `RepoFile.blob_id` | `RepoFile.blob_id` | 已对齐 |
+| `RepoFile.lfs` | `RepoFile.lfs` | 已对齐 |
+| `RepoFile.last_commit` | `RepoFile.last_commit` | 字段已对齐，当前 Phase 1 默认未填充 |
+| `RepoFile.security` | `RepoFile.security` | 字段已对齐，当前 Phase 1 默认未填充 |
+| `RepoFolder.path` | `RepoFolder.path` | 已对齐 |
+| `RepoFolder.tree_id` | `RepoFolder.tree_id` | 已对齐 |
+| `RepoFolder.last_commit` | `RepoFolder.last_commit` | 字段已对齐，当前 Phase 1 默认未填充 |
+
+本地扩展字段：
+
+- `RepoFile.oid`
+- `RepoFile.sha256`
+- `RepoFile.etag`
+
+这些字段保留的原因是本地仓库明确把文件身份、下载 ETag 和逻辑内容哈希作为公开契约的一部分，且用户已经要求必须能直接拿到。
+
+### 4.2 Commit 列表模型
+
+`GitCommitInfo` 已对齐 HF 公开字段：
+
+- `commit_id`
+- `authors`
+- `created_at`
+- `title`
+- `message`
+- `formatted_title`
+- `formatted_message`
+
+当前行为约束：
+
+- `formatted=False` 时，两个 `formatted_*` 字段为 `None`
+- `formatted=True` 时，按 HF 风格填入 HTML 转义后的内容
+- 当存储的 commit 文本包含空行正文时，会自动拆成 title/body，与 Git/HF 列表语义一致
+
+### 4.3 Commit 创建结果模型
+
+`CommitInfo` 现在直接沿用 HF 的公开职责边界，不再混入本地内部 commit 元数据。
+
+公开字段：
+
+- `commit_url`
+- `commit_message`
+- `commit_description`
+- `oid`
+- `pr_url`
+- `repo_url`
+- `pr_revision`
+- `pr_num`
+
+额外对齐点：
+
+- `CommitInfo` 保持 HF 风格的 `str` 兼容外观
+- `repo_url`、`pr_revision`、`pr_num` 作为计算/派生字段保留
+- 本地内部的 revision/tree/parents/message 不再暴露到公开 `CommitInfo`
+
+与 `GitCommitInfo` 的关系：
+
+- `CommitInfo`：用于 `create_commit()`、`reset_ref()` 这类“产生或指向某个 commit 结果”的 API
+- `GitCommitInfo`：用于 `list_repo_commits()` 这类“枚举历史记录”的 API
+
+二者同时存在不是本地双轨设计，而是直接遵循 HF 本身就存在的两套公开模型。
+
+### 4.4 本地专属模型
+
+以下模型当前没有直接 HF 对标，因此保持本地设计：
+
 - `RepoInfo`
-- `CommitInfo`
-- `GitCommitInfo`
-- `PathInfo`
-- `BlobLfsInfo`
 - `VerifyReport`
-- `HubVaultError` 及其公开子类
 
-这些符号当前已经由 `hubvault.__init__` 统一 re-export，测试也应优先从这里或其对应公开模块导入。
+其中：
 
-## 3. 公开数据模型
+- `RepoInfo` 面向本地嵌入式仓库，不复用远端 `ModelInfo` / `DatasetInfo`
+- `VerifyReport` 面向本地校验与诊断
 
-建议优先定义以下公开 dataclass：
+## 5. CommitOperation 对齐结论
 
-- `RepoInfo`
-- `RefInfo`
-- `CommitInfo`
-- `GitCommitInfo`
-- `PathInfo`
-- `BlobLfsInfo`
-- `VerifyReport`
-- `MergeResult`
-
-### 3.1 模型草图
+### 5.1 当前签名
 
 ```python
-from dataclasses import dataclass
-from datetime import datetime
-from typing import Dict, List, Optional
-
-
-@dataclass(frozen=True)
-class RepoInfo:
-    repo_path: str
-    format_version: int
-    default_branch: str
-    head: Optional[str]
-    refs: List[str]
-
-
-@dataclass(frozen=True)
-class PathInfo:
-    path: str
-    path_type: str
-    size: int
-    oid: Optional[str]
-    blob_id: Optional[str]
-    sha256: Optional[str]
-    etag: Optional[str]
-
-
-@dataclass(frozen=True)
-class GitCommitInfo:
-    commit_id: str
-    authors: List[str]
-    created_at: datetime
-    title: str
-    message: str
-    formatted_title: Optional[str]
-    formatted_message: Optional[str]
-
-
-@dataclass(frozen=True)
-class BlobLfsInfo:
-    size: int
-    sha256: str
-    pointer_size: int
-
-
-@dataclass(frozen=True)
-class VerifyReport:
-    ok: bool
-    checked_refs: List[str]
-    warnings: List[str]
-    errors: List[str]
+CommitOperationAdd(path_in_repo, path_or_fileobj)
+CommitOperationDelete(path_in_repo, is_folder="auto")
+CommitOperationCopy(src_path_in_repo, path_in_repo, src_revision=None)
 ```
 
-## 4. Commit 操作模型
+### 5.2 与 HF 的对比
 
-建议兼容下列公开操作类：
+- `CommitOperationAdd`：已对齐 HF 主签名
+- `CommitOperationDelete`：已对齐 HF 主签名
+- `CommitOperationCopy`：已对齐 HF 主签名
 
-- `CommitOperationAdd`
-- `CommitOperationDelete`
-- `CommitOperationCopy`
+刻意未保留的 HF 内部参数：
 
-必要时后续可增加：
+- `CommitOperationCopy._src_oid`
+- `CommitOperationCopy._dest_oid`
 
-- `CommitOperationMove`
+原因：
 
-但内部实现可以退化为 `copy + delete`。
+- 它们在本地仓库中没有真实公开行为
+- 保留只会形成死参数，违反“无效兼容参数必须删除”的规则
 
-### 4.1 `CommitOperationAdd` 设计
+## 6. HubVaultApi 方法对齐结论
 
-默认应直接对齐 HF 的公开入口：
-
-- `CommitOperationAdd(path_in_repo, path_or_fileobj)`
-
-其中 `path_or_fileobj` 支持：
-
-- 本地文件路径
-- `bytes`
-- 二进制 file object
-
-约束：
-
-- 本地文件路径只把外部文件当作导入源，不把其宿主路径写入仓库元数据
-- file object 只消费字节内容，不把来源路径作为持久化元数据
-- 这三种输入最终都必须产出一致的公开 `oid` / `sha256`
-- 辅助方法仅保留真实有用的本地行为，因此不会为了外观兼容额外挂一个无效果的 `with_tqdm` 参数
-
-代表性草图：
+### 6.1 当前公开方法
 
 ```python
-@dataclass
-class CommitOperationAdd:
-    path_in_repo: str
-    path_or_fileobj: Union[str, Path, bytes, BinaryIO]
-```
-
-### 4.2 `CommitOperationDelete` / `CommitOperationCopy`
-
-默认也应尽量贴近 HF：
-
-- `CommitOperationDelete(path_in_repo, is_folder="auto")`
-- `CommitOperationCopy(src_path_in_repo, path_in_repo, src_revision=None)`
-
-当前本地实现刻意不暴露 HF 内部优化字段，例如 `CommitOperationCopy` 上的 `_src_oid` / `_dest_oid`，因为它们在本地仓库中不承载任何真实公开语义，只会变成空兼容参数。
-
-如果本地实现需要在行为上扩展，例如支持 subtree copy，也应保留 HF 风格签名，并把扩展点文档化，而不是重新发明另一套公开形态。
-
-## 5. `HubVaultApi` 方法分层
-
-### 5.1 MVP 必做方法
-
-- `create_repo()`
-- `repo_info()`
-- `create_commit()`
-- `get_paths_info()`
-- `list_repo_tree()`
-- `list_repo_files()`
-- `open_file()`
-- `read_bytes()`
-- `list_repo_commits()`
-- `hf_hub_download()`
-- `reset_ref()`
-- `quick_verify()`
-
-当前状态：
-
-- 上述方法都已经在 `HubVaultApi` 中落地并接入本地嵌入式仓库实现
-- `list_repo_commits()` 当前使用 HF 同名方法名，并保留本地真正有语义的主要参数 `revision` 与 `formatted`
-- `hf_hub_download()` 已保证默认返回路径和 `local_dir` 模式都保留 repo 相对路径后缀
-- `open_file()` 返回只读二进制流；下载类接口返回的是与 repo 真相隔离、可重建的用户视图路径
-
-MVP 的修改语义必须保持明确：
-
-- 读取类 API：`open_file()`、`read_bytes()`、`hf_hub_download()`
-- 读取类 API：`open_file()`、`read_bytes()`、`list_repo_commits()`、`hf_hub_download()`
-- 写入类 API：`create_commit()` 以及后续的 `upload_*()` / `delete_*()`
-- 不提供“改了下载路径上的文件就自动写回 repo”的工作区语义
-
-### 5.2 紧随 MVP 的方法
-
-- `create_branch()`
-- `delete_branch()`
-- `create_tag()`
-- `delete_tag()`
-- `list_repo_refs()`
-- `upload_file()`
-- `upload_folder()`
-- `delete_file()`
-- `delete_folder()`
-- `snapshot_download()`
-
-### 5.3 后续阶段方法
-
-- `upload_large_folder()`
-- `read_range()`
-- `merge()`
-- `revert_commit()`
-- `full_verify()`
-- `gc()`
-- `compact()`
-- `prune_history()`
-
-## 6. 关键方法签名草图
-
-```python
-from typing import BinaryIO, Dict, Iterable, Optional, Sequence, Union
-
-
 class HubVaultApi:
-    def __init__(self, repo_path: Union[str, "os.PathLike[str]"], revision: str = "main") -> None:
-        ...
+    def __init__(self, repo_path, revision="main") -> None: ...
 
-    def create_repo(
-        self,
-        *,
-        default_branch: str = "main",
-        exist_ok: bool = False,
-        metadata: Optional[Dict[str, str]] = None,
-    ) -> RepoInfo:
-        ...
-
-    def repo_info(self, *, revision: Optional[str] = None) -> RepoInfo:
-        ...
+    def create_repo(self, *, default_branch="main", exist_ok=False) -> RepoInfo: ...
+    def repo_info(self, *, revision=None) -> RepoInfo: ...
 
     def create_commit(
         self,
+        operations=(),
         *,
-        revision: str = "main",
-        operations: Sequence["CommitOperation"],
-        parent_commit: Optional[str] = None,
-        expected_head: Optional[str] = None,
-        commit_message: str = "",
-        metadata: Optional[Dict[str, str]] = None,
-    ) -> CommitInfo:
-        ...
+        commit_message,
+        commit_description=None,
+        revision=None,
+        parent_commit=None,
+    ) -> CommitInfo: ...
 
-    def list_repo_tree(self, path_in_repo: str = "", *, revision: str = "main") -> Sequence[PathInfo]:
-        ...
-
-    def get_paths_info(
+    def get_paths_info(self, paths, *, revision=None) -> List[Union[RepoFile, RepoFolder]]: ...
+    def list_repo_tree(
         self,
-        paths: Sequence[str],
+        path_in_repo=None,
         *,
-        revision: str = "main",
-    ) -> Sequence[PathInfo]:
-        ...
-
-    def open_file(self, path_in_repo: str, *, revision: str = "main") -> BinaryIO:
-        ...
-
-    def read_bytes(self, path_in_repo: str, *, revision: str = "main") -> bytes:
-        ...
-
-    def list_repo_commits(
-        self,
-        *,
-        revision: Optional[str] = None,
-        formatted: bool = False,
-    ) -> Sequence[GitCommitInfo]:
-        ...
-
-    def hf_hub_download(
-        self,
-        filename: str,
-        *,
-        revision: Optional[str] = None,
-        local_dir: Optional[Union[str, "os.PathLike[str]"]] = None,
-    ) -> str:
-        ...
-
-    def reset_ref(self, ref_name: str, *, to_revision: str) -> CommitInfo:
-        ...
-
-    def quick_verify(self) -> VerifyReport:
-        ...
+        recursive=False,
+        revision=None,
+    ) -> List[Union[RepoFile, RepoFolder]]: ...
+    def list_repo_files(self, *, revision=None) -> Sequence[str]: ...
+    def list_repo_commits(self, *, revision=None, formatted=False) -> Sequence[GitCommitInfo]: ...
+    def open_file(self, path_in_repo, *, revision=None) -> BinaryIO: ...
+    def read_bytes(self, path_in_repo, *, revision=None) -> bytes: ...
+    def hf_hub_download(self, filename, *, revision=None, local_dir=None) -> str: ...
+    def reset_ref(self, ref_name, *, to_revision) -> CommitInfo: ...
+    def quick_verify(self) -> VerifyReport: ...
 ```
 
-`repo_path` 是运行时打开仓库的位置，不是仓库内部持久化协议的一部分。仓库被整体移动到新路径后，只需用新的 `repo_path` 重新打开即可。
+### 6.2 已对齐行为
 
-下载路径语义建议严格对齐 `huggingface_hub` 的主流使用方式：
+#### `create_commit`
 
-- `filename` 是 repo root 下的相对路径
-- 返回值是可直接打开读取的文件路径
-- 默认仓库内缓存布局与 `snapshot_download()` 都要保留 repo 相对路径层级
-- 即使底层实际指向内容寻址 blob，最终返回给用户的路径也必须以 `filename` 结尾
-- `local_dir` 模式下同样要在目标目录内复制 repo 相对路径结构
-- 返回路径必须是“只读或可重建视图”，而不是正式对象文件本身
-- 用户手动删除或改写返回路径后，后续下载应重建视图，而不是影响 repo 真相
+当前公开语义：
 
-`open_file()` / `read_bytes()` 语义也需要明确：
+- `commit_message` 是主标题参数，命名与 HF 一致
+- `commit_description` 独立提供正文，命名与 HF 一致
+- `parent_commit` 用作乐观并发保护，命名与 HF 一致
+- 若 `commit_description` 未提供，但 `commit_message` 自身包含空行正文，仍会按 Git/HF 习惯拆成 title/body
+- 若 `parent_commit` 省略，则默认基于当前 branch head 提交，不强制要求显式传入
 
-- `open_file()` 只返回只读二进制流
-- 不支持通过返回的句柄执行写入、截断或回写
-- 如果调用方需要修改内容，应先读出数据或导出到外部路径，再通过 `create_commit()` 等 API 提交新版本
+刻意删除的旧本地参数：
 
-公开文件哈希字段语义也需要明确：
-
-- `blob_id` / `oid` 使用 HF 风格的 git OID 裸 hex
-- `sha256` 使用与 HF `BlobLfsInfo.sha256` 一致的裸 64 位 hex
-- 公开 `sha256` 不带 `sha256:` 算法前缀
-- `sha256:<hex>` 只用于仓库内部对象 ID、payload 校验和等内部完整性字段
-
-## 7. 关键参数语义
-
-建议保留以下关键参数：
-
-- `revision`
-- `parent_commit`
 - `expected_head`
-- `allow_patterns`
-- `ignore_patterns`
-- `delete_patterns`
+- `metadata`
 
-不要保留以下“兼容外观但当前没有真实语义”的参数：
+原因：
+
+- `expected_head` 与 `parent_commit` 重复
+- `metadata` 当前没有真实落盘和公开语义
+
+#### `get_paths_info`
+
+当前公开语义已经贴齐 HF：
+
+- 接受 `str` 或 `Sequence[str]`
+- 缺失路径被忽略，不抛异常
+- 返回 `RepoFile` / `RepoFolder`
+
+#### `list_repo_tree`
+
+当前公开语义：
+
+- `path_in_repo=None` 表示根目录
+- `recursive=False` 默认只返回直接子项
+- `recursive=True` 会递归展开
+- 返回 `RepoFile` / `RepoFolder`
+
+当前保留的最小偏差：
+
+- HF 返回可迭代对象；本地当前直接返回具体 `list`
+- HF 存在 `expand=True`，可填 `last_commit` / `security`
+- 本地当前未提供 `expand`，因为 Phase 1 还没有独立实现这组增强行为
+
+#### `list_repo_commits`
+
+当前公开语义：
+
+- 方法名与 HF 一致
+- 保留 `revision`、`formatted` 这两个真实有意义的参数
+- 丢弃 `repo_id`、`repo_type`、`token` 这类远端/传输参数
+
+#### `hf_hub_download`
+
+虽然是本地仓库 API，但仍保留 HF 同名方法，因为它对应的是用户最熟悉的单文件下载入口。
+
+当前行为约束：
+
+- 返回值必须是普通文件路径
+- 路径末尾必须保留 repo 相对路径与文件名
+- 返回的路径必须是与 repo 真相隔离的用户视图
+- 用户删除或改写该路径，不得破坏正式对象
+- 再次调用时必须能重建该用户视图
+
+### 6.3 当前未保留的远端参数
+
+以下参数当前明确不保留：
 
 - `repo_id`
-- `expand`
-- `with_tqdm`
-- 其他不会改变本地仓库行为的 transport / progress / UI 占位参数
+- `repo_type`
+- `token`
+- `create_pr`
+- `num_threads`
+- `run_as_future`
+- `expand`（当前阶段未实现真实增强行为，因此不保留）
 
-语义约束：
+删除原则：
 
-- `revision` 可以是 branch、tag 或 commit id
-- `parent_commit` 与 `expected_head` 用于乐观并发控制
-- `allow_patterns` / `ignore_patterns` / `delete_patterns` 优先服务 `upload_folder()` 与 `snapshot_download()`
-- `oid` 指对外文件 OID，推荐与 HF `RepoFile.blob_id` 对齐
-- `sha256` 指真实文件内容的 SHA-256，格式与 HF `BlobLfsInfo.sha256` 一样使用裸 hex
-- 对 LFS 兼容文件，`etag` 推荐等于 `sha256`；对普通文件，`etag` 推荐等于 `oid`
-- 对下载出的文件路径进行本地改写，不构成对 repo 的有效修改
+- 只要参数在本地 repo 设计中不会改变验证、存储、输出或用户体验，就不应保留
 
-## 8. 典型公开使用示例
+## 7. 异常模型对齐结论
 
-### 8.1 初始化与提交
+### 7.1 已对齐或接近对齐的异常
 
-```python
-from hubvault import HubVaultApi, CommitOperationAdd
+| hubvault | HF 对标 | 说明 |
+| --- | --- | --- |
+| `RepositoryNotFoundError` | `RepositoryNotFoundError` | 语义已对齐 |
+| `EntryNotFoundError` | `EntryNotFoundError` | 语义已对齐 |
+| `RevisionNotFoundError` | `RevisionNotFoundError` | 语义已对齐 |
+| `HubVaultValidationError` | `HFValidationError` | 名字改为项目名，但语义一致；并继承 `ValueError` |
+| `UnsupportedPathError` | `HFValidationError` 子类语义 | 作为本地更细的路径/引用名校验错误 |
 
-api = HubVaultApi("/data/repos/demo")
-api.create_repo()
-commit = api.create_commit(
-    revision="main",
-    operations=[
-        CommitOperationAdd(
-            path_in_repo="weights/config.json",
-            path_or_fileobj=b'{"dtype":"float16","hidden_size":4096}',
-        ),
-    ],
-    commit_message="add config",
-)
-```
+### 7.2 本地专属异常
 
-### 8.2 读取与导出
+以下异常没有直接 HF 公开对标，属于本地嵌入式仓库额外能力：
 
-```python
-payload = api.read_bytes("weights/config.json", revision="main")
-download_path = api.hf_hub_download(
-    filename="weights/config.json",
-    revision=commit.commit_id,
-)
-```
-
-期望语义：
-
-- `download_path` 可以是缓存中的符号链接、reflink/COW clone 或普通文件
-- 但它必须以 `weights/config.json` 结尾，而不是 `.../blobs/<opaque-id>`
-- 如果 `download_path` 被用户删除或编辑，重新调用 `hf_hub_download()` 后应由 repo 服务重建它
-
-### 8.3 回滚与校验
-
-```python
-api.reset_ref("main", to_revision=commit.commit_id)
-report = api.quick_verify()
-assert report.ok
-```
-
-## 9. 与 `huggingface_hub` 的兼容边界
-
-建议明确如下策略：
-
-- 尽量兼容 repo/file 主操作的命名和参数习惯
-- 不兼容远端平台能力，例如 token、discussion、PR、space
-- `snapshot_download()` 返回的是本地只读快照缓存，不是工作区
-- `hf_hub_download()` 返回的是缓存文件或目标导出文件
-- 不保留像 `repo_id` 这类仅为兼容外观而存在、但不会影响本地仓库行为的空参数
-- 不保留像 `with_tqdm` 这类仅改变兼容外观、但不会触发本地真实进度/UI 行为的空 flags
-- 仓库的全部正确性信息都保存在 repo root 内；导出文件、外部下载目标和调用时传入的源路径都不是仓库真相
-- `path` / `blob_id` / `sha256` / `lfs.pointer_size` 等文件公开字段应尽量与 Hugging Face `RepoFile` 语义对齐，其中 `sha256` 使用裸 hex，不带算法前缀
-- 真正有效的 repo 变更只能通过 commit 风格 API 显式提交，不能通过修改下载结果或快照目录隐式生效
-
-## 10. 错误模型
-
-建议定义以下公开异常：
-
-- `RepoNotFoundError`
-- `RepoAlreadyExistsError`
-- `RevisionNotFoundError`
-- `PathNotFoundError`
+- `RepositoryAlreadyExistsError`
 - `ConflictError`
 - `IntegrityError`
 - `VerificationError`
 - `LockTimeoutError`
-- `UnsupportedPathError`
 
-这样调用方可以只依赖公开异常类型来做恢复与重试，不必窥探内部实现细节。
+这些异常保留的原因都是真实存在的本地事务/校验需求，而不是兼容外观。
+
+## 8. 文件身份与下载语义
+
+当前文件公开语义固定如下：
+
+- `blob_id`：Git 风格 blob OID
+- `oid`：当前公开 alias，同样指向 Git 风格 blob OID
+- `sha256`：逻辑文件内容的裸 64 位 hex 摘要
+- `etag`：下载接口面向用户的稳定 ETag
+- `hf_hub_download()` 返回的路径：保留 repo 相对路径与文件名，不暴露内部 blob 名
+
+注意：
+
+- `sha256` 不带 `sha256:` 前缀，这是为了与 HF 公开字段风格保持一致
+- repo 内部对象 ID 仍然允许使用带算法前缀的对象命名，不与公开字段混淆
+
+## 9. 当前阶段的明确延后项
+
+以下内容与 HF 还有差距，但当前是有意识延后，而不是遗漏：
+
+- `list_repo_tree(..., expand=True)` / `get_paths_info(..., expand=True)`
+- `snapshot_download()`
+- branch/tag 全生命周期 API
+- upload/delete 便捷 API
+- 基于安全扫描的 `RepoFile.security`
+- 基于历史反查的 `last_commit` 自动填充
+
+这些项进入后续 phase 时，仍然要遵守同一条原则：
+
+- 能对齐 HF 的地方优先对齐
+- 真无意义的参数和字段不保留
+- 偏差必须有本地设计理由且写入文档

@@ -91,7 +91,7 @@ GC 启动前必须确认没有活跃写事务。
 1. 获取写锁
 2. 打开仓库并执行轻量恢复
 3. 读取目标 ref 当前 head
-4. 校验 `expected_head` 或 `parent_commit`
+4. 若调用方提供 `parent_commit`，校验其与当前 head 一致
 5. 创建 `txn/<txid>/`
 6. 将新增 blob/tree/file/commit 写入 `txn/<txid>/objects/`
 7. 对所有新文件执行 `flush` 与必要的 `fsync`
@@ -113,11 +113,8 @@ GC 启动前必须确认没有活跃写事务。
 def create_commit(self, revision, operations, parent_commit=None):
     with self._txn_manager.begin_write() as txn:
         current_head = self._refs.resolve(revision)
-        self._refs.check_expected_head(
-            revision=revision,
-            current_head=current_head,
-            expected_head=parent_commit,
-        )
+        if parent_commit is not None and parent_commit != current_head:
+            raise ConflictError("expected head does not match current branch head")
 
         staged = self._commit_service.stage_commit(
             txn=txn,

@@ -51,11 +51,11 @@ hubvault/
 - `errors.py`
   公开异常模型，避免调用方依赖内部实现细节。
 - `models.py`
-  公开 `RepoInfo`、`CommitInfo`、`PathInfo`、`BlobLfsInfo`、`VerifyReport`。
+  公开 `RepoInfo`、`CommitInfo`、`GitCommitInfo`、`RepoFile`、`RepoFolder`、`BlobLfsInfo`、`VerifyReport`。
 - `operations.py`
   公开 `CommitOperationAdd/Delete/Copy`。
 - `repo.py`
-  当前 MVP 的嵌入式本地仓库后端，负责磁盘格式、事务、对象读写、下载视图和快速校验。
+  当前 MVP 的嵌入式本地仓库后端，负责磁盘格式、事务、对象读写、下载视图、HF 风格路径查询和快速校验。
 
 ### 2.2 后续推荐拆分结构
 
@@ -127,7 +127,7 @@ hubvault/
 - 打开或初始化仓库
 - 执行 commit / reset / branch / tag
 - 维护 ref 与 reflog
-- 构造 `RepoInfo`、`CommitInfo`、`PathInfo`
+- 构造 `RepoInfo`、`CommitInfo`、`GitCommitInfo`、`RepoFile`、`RepoFolder`
 - 确保持久化记录只写逻辑路径、对象 ID 与相对布局，不写宿主绝对路径
 - 为下载类 API 生成保留 repo 相对路径后缀的可读文件路径
 - 维护公开文件 `oid` / `sha256` 与内部对象引用之间的映射
@@ -203,7 +203,8 @@ hubvault/
 
 ```python
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence
+from datetime import datetime
+from typing import List, Optional, Sequence, Union
 
 
 @dataclass(frozen=True)
@@ -214,21 +215,36 @@ class RepoInfo:
     format_version: int
 
 
+@dataclass
+class CommitInfo(str):
+    commit_url: str
+    commit_message: str
+    commit_description: str
+    oid: str
+
+
 @dataclass(frozen=True)
-class CommitInfo:
+class GitCommitInfo:
     commit_id: str
-    revision: str
-    tree_id: str
-    parents: List[str]
+    authors: List[str]
+    created_at: datetime
+    title: str
     message: str
 
 
 @dataclass(frozen=True)
-class PathInfo:
+class RepoFile:
     path: str
     size: int
+    blob_id: str
     oid: Optional[str]
     sha256: Optional[str]
+
+
+@dataclass(frozen=True)
+class RepoFolder:
+    path: str
+    tree_id: str
 
 
 class HubVaultApi:
@@ -240,13 +256,21 @@ class HubVaultApi:
 
     def create_commit(
         self,
+        operations: Sequence["CommitOperation"] = (),
         *,
-        revision: str = "main",
-        operations: Sequence["CommitOperation"],
+        commit_message: str,
+        commit_description: Optional[str] = None,
+        revision: Optional[str] = None,
         parent_commit: Optional[str] = None,
-        commit_message: str = "",
-        metadata: Optional[Dict[str, str]] = None,
     ) -> CommitInfo:
+        ...
+
+    def get_paths_info(
+        self,
+        paths: Union[Sequence[str], str],
+        *,
+        revision: Optional[str] = None,
+    ) -> Sequence[Union[RepoFile, RepoFolder]]:
         ...
 ```
 
@@ -265,7 +289,7 @@ class HubVaultApi:
 ### 8.1 写路径
 
 1. `HubVaultApi.create_commit()` 校验参数并规范化路径
-2. 仓库服务层解析 revision 和 `expected_head`
+2. 仓库服务层解析 revision，并在提供 `parent_commit` 时执行乐观并发校验
 3. 事务层获取写锁并创建 `txn/<txid>/`
 4. 存储层生成 blob/tree/commit 对象并先写入事务目录
 5. 事务层发布对象并原子更新 ref
