@@ -98,6 +98,7 @@ hubvault/
 
 职责：
 
+- 固定 repo root 下各子目录的组织结构与命名规则
 - commit/tree/file/blob 对象编码与存储
 - whole-file blob 读写
 - Phase 3 之后的 chunk / pack / index 能力
@@ -151,6 +152,7 @@ hubvault/
 - `upload_large_folder()` 在 Phase 3 前可退化为多次 whole-file 提交
 - 所有缓存、事务和诊断状态都放在 repo root 下，保证仓库整体搬迁后仍然自洽
 - 默认下载路径可以使用 symlink、hardlink 或实体文件，但用户拿到的最终路径必须保留 repo 相对路径后缀
+- 先把 refs / objects / txn / cache 的内部组织结构冻结到文件级命名规则，再开始实现读写逻辑
 
 这样可以先把一致性、对象关系、公开 API 和公开测试体系做稳。
 
@@ -234,3 +236,29 @@ class HubVaultApi:
 4. 读取 blob 或未来的 chunk range
 
 读路径只读取“已发布对象”，永远不读事务暂存目录。
+
+## 9. 仓库内部组织职责分工
+
+为了避免后续实现时出现“目录有了但命名规则还在飘”的问题，建议把 repo root 下的组织职责固定如下：
+
+- `refs/`
+  只保存当前可见的 branch/tag 头指针，文件内容保持最小化。
+- `logs/refs/`
+  保存 append-only reflog，负责审计、恢复和保留策略输入。
+- `objects/`
+  保存 commit/tree/file/blob 的正式不可变对象，是仓库真相主体之一。
+- `txn/`
+  保存未提交或待清理事务的 staging 内容，是唯一允许出现半成品文件的区域。
+- `cache/`
+  保存公开 API 使用的派生只读路径，例如 snapshot 目录树和下载路径映射。
+- `quarantine/`
+  保存待删除对象或 pack 的隔离副本，不参与正常读路径。
+- `chunks/`
+  仅在 Phase 3 之后启用，用于 pack 与索引组织。
+
+这个分工意味着：
+
+- “当前可见版本”只看 `refs/`
+- “历史不可变内容”只看 `objects/`
+- “事务中间态”只看 `txn/`
+- “用户可读导出路径”优先看 `cache/`

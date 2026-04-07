@@ -82,7 +82,233 @@ repo_root/
 
 这样可以保证 Phase 1 的格式已经可运行，同时为 Phase 3 预留稳定扩展点。
 
-## 2. 对象 ID 与哈希策略
+## 2. 仓库内部组织结构规范
+
+仅给出目录名还不够，首版就应固定到“每类文件应该落在哪儿、叫什么、按什么分片”的粒度。
+
+### 2.1 顶层固定文件
+
+- `FORMAT`
+  单行文本，记录仓库格式版本，例如 `hubvault-repo/v1`。
+- `repo.json`
+  仓库级配置文件，保存默认分支、格式版本、对象哈希算法、大小阈值与兼容开关。
+
+建议 `repo.json` 最小结构如下：
+
+```json
+{
+  "format_version": 1,
+  "default_branch": "main",
+  "object_hash": "sha256",
+  "file_mode": "whole-blob-first",
+  "large_file_threshold": 16777216
+}
+```
+
+### 2.2 `refs/` 组织
+
+`refs/` 只保存当前可见头指针，不混入历史与冗余字段：
+
+```text
+refs/
+  heads/
+    main
+    release
+  tags/
+    v1.0.0
+```
+
+规则：
+
+- branch 名直接映射为 `refs/heads/<branch_name>`
+- tag 名直接映射为 `refs/tags/<tag_name>`
+- ref 文件内容只保存目标 commit ID 和结尾换行
+- ref 名校验必须拒绝空段、`.`、`..` 与平台不安全名称
+
+示例：
+
+```text
+sha256:7cb3...d5f1
+```
+
+### 2.3 `logs/refs/` 组织
+
+reflog 采用与 `refs/` 对称的目录结构：
+
+```text
+logs/
+  refs/
+    heads/
+      main.log
+    tags/
+      v1.0.0.log
+```
+
+规则：
+
+- 每条日志一行，推荐使用 JSON Lines
+- 文件名与 ref 一一对应，避免额外索引
+- 追加写，不做原地编辑
+
+### 2.4 `objects/` 组织
+
+对象必须按“对象类型 + 哈希算法 + 前缀分片”组织，避免单目录文件数失控。
+
+推荐布局：
+
+```text
+objects/
+  commits/
+    sha256/
+      ab/
+        cdef...7890.json
+  trees/
+    sha256/
+      12/
+        3456...abcd.json
+  files/
+    sha256/
+      98/
+        76ab...cdef.json
+  blobs/
+    sha256/
+      54/
+        3210...fedc.meta.json
+        3210...fedc.data
+```
+
+规则：
+
+- 第一层按对象类型分目录
+- 第二层按哈希算法分目录，为后续算法升级留接口
+- 第三层使用摘要前 2 个 hex 字符做前缀分片
+- commit/tree/file 建议保存为单个 `.json`
+- blob 建议拆为 `.meta.json` 与 `.data` 两个文件
+
+### 2.5 `txn/` 组织
+
+事务目录必须能独立表达一个正在进行的提交。
+
+推荐布局：
+
+```text
+txn/
+  20260408T102233Z-3f9a2c1d/
+    STATE.json
+    meta.json
+    objects/
+    refs/
+    logs/
+```
+
+规则：
+
+- `txid` 推荐使用 `UTC 时间戳 + 随机后缀`
+- `STATE.json` 保存状态机状态与最近步骤
+- `meta.json` 保存事务级元数据，例如目标 revision、预期 head、创建时间
+- `objects/` 内部布局与正式 `objects/` 保持同构，便于发布时原子迁移
+
+### 2.6 `locks/` 组织
+
+锁目录保持极简：
+
+```text
+locks/
+  write.lock/
+    owner.json
+  gc.lock/
+    owner.json
+```
+
+规则：
+
+- 锁是否存在，以目录创建成功与否为准
+- `owner.json` 只用于诊断与接管判断
+- 不允许在锁目录中保存仓库正确性所依赖的状态
+
+### 2.7 `cache/` 组织
+
+`cache/` 要同时满足两个目标：
+
+- 保持 repo 相对路径保真
+- 允许内部共享底层内容对象
+
+推荐布局：
+
+```text
+cache/
+  materialized/
+    sha256/
+      ab/
+        cdef...7890.data
+  snapshots/
+    <snapshot_key>/
+      xxx/
+        yyy/
+          zzz.safetensors
+  files/
+    <snapshot_key>/
+      xxx/
+        yyy/
+          zzz.safetensors
+```
+
+规则：
+
+- `materialized/` 是按内容去重后的共享实体文件池
+- `snapshots/<snapshot_key>/<repo_relative_path>` 提供完整只读目录树
+- `files/<snapshot_key>/<repo_relative_path>` 可作为 `hf_hub_download()` 的单文件返回路径根
+- `snapshots/` 与 `files/` 下的实际文件可以是 symlink、hardlink 或实体复制
+- 但用户最终拿到的路径必须总是保留 `repo_relative_path`
+
+### 2.8 `quarantine/` 组织
+
+隔离区按来源类型分目录，便于恢复与人工检查：
+
+```text
+quarantine/
+  objects/
+  packs/
+  manifests/
+```
+
+规则：
+
+- 进入 `quarantine/` 的内容默认不参与读路径
+- 删除前必须保留来源信息，例如原路径、隔离时间、原因
+
+### 2.9 `chunks/` Phase 3 组织
+
+大文件能力启用后，推荐固定如下布局：
+
+```text
+chunks/
+  packs/
+    20260408T102233Z-000001.pack
+  index/
+    MANIFEST
+    L0/
+      seg-20260408T102233Z-000001.idx
+    L1/
+    L2/
+```
+
+规则：
+
+- pack 文件名按生成时间和序号排序
+- 索引段文件名与生成批次绑定，避免覆写
+- `MANIFEST` 是当前可见索引段集合的唯一真相
+
+### 2.10 组织结构设计原则
+
+内部组织结构应持续满足以下原则：
+
+- 当前视图与历史对象分离
+- 正式对象与事务中间态分离
+- 用户可见路径与内部对象名分离
+- 所有查找都可由 repo root 内固定规则推导
+- 单个目录中的文件数量可通过前缀分片或时间分桶控制
+## 3. 对象 ID 与哈希策略
 
 ### 2.1 MVP 选择
 
@@ -107,7 +333,7 @@ repo_root/
 
 但格式上始终保留“算法标签 + 十六进制摘要”的模式。
 
-## 3. 核心对象定义
+## 4. 核心对象定义
 
 ### 3.1 Commit 对象
 
@@ -196,7 +422,7 @@ Phase 3 之后，chunk 元信息通过索引维护：
 - `compression`
 - `checksum`
 
-## 4. 对象编码格式
+## 5. 对象编码格式
 
 ### 4.1 MVP 编码策略
 
@@ -252,7 +478,7 @@ def canonical_lfs_pointer(file_sha256, size):
     ) % (file_sha256, size)
 ```
 
-## 5. 文件内容存储策略
+## 6. 文件内容存储策略
 
 ### 5.1 MVP
 
@@ -275,7 +501,7 @@ def canonical_lfs_pointer(file_sha256, size):
 
 阈值设为 `16 MiB` 而不是更小，是为了让 MVP 阶段的大多数测试和典型模型配置文件直接走 blob，减少早期复杂度。
 
-## 6. 索引设计
+## 7. 索引设计
 
 ### 6.1 MVP
 
@@ -294,7 +520,7 @@ chunk 索引采用文件版 LSM：
 - 读路径按 `MANIFEST` 查找
 - compact 时做多段合并
 
-## 7. 路径规范化与跨平台约束
+## 8. 路径规范化与跨平台约束
 
 仓库逻辑路径统一使用 POSIX 风格 `/`。
 
@@ -328,7 +554,7 @@ def normalize_repo_path(path_in_repo):
     return "/".join(parts)
 ```
 
-## 8. 缓存设计
+## 9. 缓存设计
 
 缓存始终不是仓库真相，损坏后必须可重建。
 

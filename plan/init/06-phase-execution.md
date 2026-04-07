@@ -22,6 +22,7 @@
 ### Todo
 
 * [ ] 冻结 `plan/init` 中的对象模型、目录布局、事务状态机和 API 命名。
+* [ ] 冻结 repo root 下 `refs/`、`logs/refs/`、`objects/`、`txn/`、`locks/`、`cache/`、`quarantine/`、`chunks/` 的组织结构与命名规则。
 * [ ] 明确 `HubVaultApi`、`CommitOperation*`、`RepoInfo`、`CommitInfo`、`PathInfo`、`VerifyReport` 的公开字段。
 * [ ] 固化 `AGENTS.md` 中的测试制度、公开表面约束和回归要求。
 * [ ] 冻结“repo root 自包含且可整体搬迁/归档恢复”的格式红线，禁止把真相写到仓库外部。
@@ -35,6 +36,7 @@
 * [ ] 新增测试只依赖公开文件和公开表面，不使用 private / protected 细节。
 * [ ] 自包含/可搬迁要求已经在范围、格式、API 和测试路线图中明确落地。
 * [ ] 下载路径保真和文件 `oid` / `sha256` 语义已经写入 API 与存储设计。
+* [ ] 仓库内部组织结构已经细化到目录、文件名和分片规则级别。
 * [ ] 单元测试只覆盖 `hubvault/` 源码路径下的公开行为。
 * [ ] `make unittest` 通过。
 
@@ -50,6 +52,7 @@
 * [ ] 新增 `hubvault/models.py` 与 `hubvault/operations.py`，定义公开 dataclass 和 `CommitOperation*`。
 * [ ] 新增 `hubvault/api.py` 与 `hubvault/repo.py`，提供 `HubVaultApi` 公开入口。
 * [ ] 实现 repo 初始化、打开、`repo_info()` 与默认分支解析。
+* [ ] 按固定组织结构创建 `FORMAT`、`repo.json`、`refs/`、`logs/refs/`、`objects/`、`txn/`、`locks/`、`cache/`、`quarantine/`。
 * [ ] 实现 whole-file blob 存储、commit/tree/file/blob 对象写入和读取。
 * [ ] 实现 `create_commit()`、`get_paths_info()`、`list_repo_tree()`、`list_repo_files()`、`open_file()`、`read_bytes()`、`hf_hub_download()`。
 * [ ] 实现 `reset_ref()` 与最小 `quick_verify()`。
@@ -61,6 +64,7 @@
 ### Checklist
 
 * [ ] 可以在空目录中初始化仓库并生成 `FORMAT`、`repo.json`、`refs/`、`objects/`、`txn/`、`locks/`。
+* [ ] `refs/`、`logs/refs/`、`objects/`、`txn/`、`cache/` 的内部组织符合已冻结命名规则。
 * [ ] 可以提交新增文件并通过公开 API 读回内容。
 * [ ] 可以列出目录树和文件清单。
 * [ ] 可以将分支回退到历史 commit。
