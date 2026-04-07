@@ -1,3 +1,5 @@
+CLAUDE.md and AGENTS.md are the same repository guidance file. `CLAUDE.md` is a symbolic link to `AGENTS.md`, so do not edit both files separately or duplicate changes in both places.
+
 # Repository Guidelines
 
 ## Project Structure & Module Organization
