@@ -65,6 +65,7 @@ class TestRepoSemantics:
 
         invalid_paths = [
             "",
+            ".",
             "/abs.txt",
             "C:/abs.txt",
             "bad?.txt",
@@ -206,6 +207,7 @@ class TestRepoSemantics:
         assert report.errors == []
         assert report.checked_refs == ["refs/heads/main"]
         assert created.head is None
+        assert api.list_repo_tree() == []
 
         with pytest.raises(RevisionNotFoundError):
             api.list_repo_files(revision="refs/heads/main")
@@ -239,6 +241,52 @@ class TestRepoSemantics:
         assert "refs/tags/v-good" in report.checked_refs
         assert "refs/tags/v-broken" in report.checked_refs
         assert any(item.startswith("refs/tags/v-broken:") for item in report.errors)
+
+    def test_repo_supports_explicit_commit_description_and_hf_style_commit_fallbacks(self, tmp_path):
+        api, repo_dir = _single_file_repo(tmp_path, repo_name="commit-fallbacks", payload=b"payload")
+
+        second_commit = api.create_commit(
+            operations=[CommitOperationAdd("file.bin", b"payload-v2")],
+            parent_commit=api.repo_info().head,
+            commit_message="subject line",
+            commit_description="body line",
+        )
+
+        assert second_commit.commit_message == "subject line"
+        assert second_commit.commit_description == "body line"
+        assert api.list_repo_commits()[0].title == "subject line"
+        assert api.list_repo_commits()[0].message == "body line"
+
+        commit_object_path = _object_json_path(repo_dir, "commits", second_commit.oid)
+        commit_payload = _read_json(commit_object_path)
+        del commit_payload["payload"]["title"]
+        del commit_payload["payload"]["description"]
+        _write_json(commit_object_path, commit_payload)
+
+        rebuilt_commit = api.reset_ref("main", to_revision=second_commit.oid)
+        assert rebuilt_commit.commit_message == "subject line"
+        assert rebuilt_commit.commit_description == "body line"
+
+        history_after_fallback = api.list_repo_commits()
+        assert history_after_fallback[0].title == "subject line"
+        assert history_after_fallback[0].message == "body line"
+
+        third_commit = api.create_commit(
+            operations=[CommitOperationAdd("other.bin", b"payload-v3")],
+            parent_commit=second_commit.oid,
+            commit_message="empty description",
+            commit_description="",
+        )
+        assert third_commit.commit_message == "empty description"
+        assert third_commit.commit_description == ""
+
+        commit_payload = _read_json(commit_object_path)
+        commit_payload["payload"]["message"] = ""
+        _write_json(commit_object_path, commit_payload)
+
+        empty_history = api.list_repo_commits(revision=second_commit.oid)
+        assert empty_history[0].title == ""
+        assert empty_history[0].message == ""
 
     def test_repo_recovers_transaction_leftovers_and_lock_conflicts(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")
@@ -313,6 +361,8 @@ class TestRepoSemantics:
         _write_json(tree_object_path, tree_payload)
         with pytest.raises(IntegrityError):
             api.list_repo_files()
+        with pytest.raises(IntegrityError):
+            api.list_repo_tree()
 
         api, repo_dir = _single_file_repo(tmp_path, repo_name="missing-commit-object", payload=b"payload")
         commit_object_path = _only_path(repo_dir / "objects" / "commits" / "sha256", "*.json")
@@ -450,6 +500,13 @@ class TestRepoSemantics:
                 operations=[CommitOperationDelete("missing.txt", is_folder=False)],
                 parent_commit=deleted.oid,
                 commit_message="missing delete",
+            )
+
+        with pytest.raises(EntryNotFoundError):
+            api.create_commit(
+                operations=[CommitOperationDelete("missing-folder/", is_folder=True)],
+                parent_commit=deleted.oid,
+                commit_message="missing folder delete",
             )
 
         with pytest.raises(EntryNotFoundError):
