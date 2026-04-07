@@ -1,19 +1,35 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-`hubvault/` contains the Python package. The only implemented module today is `hubvault/config/meta.py`, which holds package metadata. `test/` mirrors the package layout and currently contains pytest-based checks under `test/config/`. Repository automation lives in `.github/workflows/`. Packaging files are at the root: `setup.py`, `requirements*.txt`, `pytest.ini`, and `Makefile`. Design notes and scope drafts live in `plan/` and should be treated as reference material, not runtime code.
+`hubvault/` contains the Python package. Current runtime modules include `hubvault/config/meta.py` for package metadata and `hubvault/entry/` for the CLI surface (`base.py`, `cli.py`, `dispatch.py`, and package re-exports in `__init__.py`). `test/` contains pytest-based checks; right now `test/config/test_meta.py` covers metadata and `test/test_entry.py` covers the exported CLI entry surface. Repository automation lives in `.github/workflows/`. Packaging files are at the root: `setup.py`, `requirements*.txt`, `pytest.ini`, and `Makefile`. CLI packaging helpers and smoke-test tooling live under `tools/`. Design notes and scope drafts live in `plan/` and should be treated as reference material, not runtime code.
 
 ## Build, Test, and Development Commands
 Create a local environment and install dependencies with `pip install -r requirements.txt -r requirements-test.txt`.
 
 Use these commands during development:
 
-- `make unittest`: run the default pytest suite with coverage and retry settings from the Makefile.
+- `make help`: print the maintained command list from the Makefile.
+- `make test`: alias for `make unittest`.
+- `make unittest`: run the default pytest suite with coverage and junit settings from the Makefile.
 - `pytest test -sv -m unittest --cov=hubvault`: run tests directly when iterating on a specific change.
+- `make unittest RANGE_DIR=./config`: run a narrowed test/source subtree.
+- `make unittest WORKERS=4 MIN_COVERAGE=80`: run the suite with xdist workers and a coverage floor.
+- `make build`: build the standalone CLI executable with PyInstaller.
+- `make test_cli`: smoke-test the built CLI executable in `dist/`.
 - `make package`: build source and wheel distributions into `dist/`.
+- `make docs`, `make docs_en`, `make docs_zh`: build documentation with the repo's current docs entrypoints.
+- `make pdocs`: build production/multi-version docs when the local environment supports it.
+- `make rst_auto`: regenerate `docs/source/api_doc/*.rst` from Python source.
 - `make clean`: remove build artifacts such as `build/`, `dist/`, and `*.egg-info`.
 
-`make build` is intended for standalone CLI packaging through PyInstaller, but contributors should verify the required build helpers exist before relying on it.
+Common Make variables:
+
+- `RANGE_DIR=<dir>`: narrow `make unittest` or `make rst_auto` to a subtree.
+- `COV_TYPES="xml term-missing"`: choose coverage report outputs.
+- `MIN_COVERAGE=<n>`: enforce a coverage threshold during `make unittest`.
+- `WORKERS=<n>`: run pytest with xdist workers when available.
+
+`make build` is intended for standalone CLI packaging through PyInstaller, but contributors should verify the required build helpers exist before relying on it. `make test_cli` expects `make build` to have produced `dist/hubvault` or `dist/hubvault.exe` first.
 
 ## Coding Style & Naming Conventions
 Use 4-space indentation and follow existing Python style: snake_case for modules, functions, and variables; PascalCase for test classes; UPPER_CASE for exported constants such as `__VERSION__`. Keep modules small and explicit. Prefer short docstrings and comments only where intent is not obvious. No formatter configuration is checked in, so match the surrounding code and keep imports clean and grouped.
@@ -245,8 +261,7 @@ update docstrings when code changes.
 Organize tests so they mirror the source tree wherever practical.
 
 - `hubvault/config/meta.py` → `test/config/test_meta.py`
-- `hubvault/entry/cli.py` → `test/entry/test_cli.py`
-- `hubvault/entry/dispatch.py` → `test/entry/test_dispatch.py`
+- `hubvault/entry/__init__.py` → `test/test_entry.py`
 
 For package-level public surfaces, it is acceptable to keep one top-level test file that exercises the exported API directly.
 
@@ -293,11 +308,26 @@ make unittest RANGE_DIR=./config                     # Specific directory
 make unittest COV_TYPES="xml term-missing"           # With coverage types
 make unittest MIN_COVERAGE=80                        # With minimum coverage
 make unittest WORKERS=4                              # With parallel workers
+make build                                           # Build standalone CLI
+make test_cli                                        # Smoke-test built CLI executable
+make package                                         # Build sdist and wheel
+make rst_auto RANGE_DIR=entry                        # Regenerate API rst for a subtree
 
 # Run a single test file or function directly:
 pytest test/test_entry.py -v
 pytest test/test_entry.py::TestEntryCli::test_help_flag -v
 ```
+
+## Regression Rules
+
+After writing code, run regression checks before considering the work complete. The minimum expected command depends on the change surface:
+
+- Python source changes under `hubvault/`: run `make unittest` unless a narrower scope is explicitly justified during iteration.
+- CLI entry changes under `hubvault/entry/`, `hubvault_cli.py`, or standalone packaging logic: run `make unittest`, and if the standalone path is affected, also run `make build` followed by `make test_cli`.
+- Packaging or dependency changes (`setup.py`, `requirements*.txt`, workflow packaging logic): run `make unittest` and `make package`.
+- Docstring/public API surface changes that affect generated API docs: run `make rst_auto` and then run at least the relevant regression tests.
+
+Do not claim a change is finished if the relevant regression command set has not been run, unless the environment is missing required tooling; in that case, explicitly record what could not be executed and why.
 
 **Commit Message Style**: Follow the dominant repository convention from recent history.
 
