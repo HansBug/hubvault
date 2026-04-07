@@ -45,6 +45,9 @@ from hubvault import (
     RepoInfo,
     CommitInfo,
     GitCommitInfo,
+    GitRefInfo,
+    GitRefs,
+    ReflogEntry,
     RepoFile,
     RepoFolder,
     LastCommitInfo,
@@ -142,9 +145,28 @@ from hubvault import (
 
 ### 4.4 本地专属模型
 
+### 4.4 Git refs 与 reflog
+
+当前 Phase 2 已新增：
+
+- `GitRefInfo`
+- `GitRefs`
+- `ReflogEntry`
+
+对齐结论：
+
+- `GitRefInfo` / `GitRefs` 直接按 HF 公开字段命名实现
+- `GitRefs.pull_requests` 与 HF 一致，默认 `None`，仅在 `include_pull_requests=True` 时返回 `[]`
+- 本地必要偏差只有一处：
+  empty branch 在第一次 commit 前是合法的，因此 `GitRefInfo.target_commit` 在本地允许为 `None`
+- `ReflogEntry` 没有直接 HF 对标，属于本地审计/恢复模型
+
+### 4.5 本地专属模型
+
 以下模型当前没有直接 HF 对标，因此保持本地设计：
 
 - `RepoInfo`
+- `ReflogEntry`
 - `VerifyReport`
 
 其中：
@@ -209,9 +231,64 @@ class HubVaultApi:
     ) -> List[Union[RepoFile, RepoFolder]]: ...
     def list_repo_files(self, *, revision=None) -> Sequence[str]: ...
     def list_repo_commits(self, *, revision=None, formatted=False) -> Sequence[GitCommitInfo]: ...
+    def list_repo_refs(self, *, include_pull_requests=False) -> GitRefs: ...
+    def create_branch(self, *, branch, revision=None, exist_ok=False) -> None: ...
+    def delete_branch(self, *, branch) -> None: ...
+    def create_tag(self, *, tag, tag_message=None, revision=None, exist_ok=False) -> None: ...
+    def delete_tag(self, *, tag) -> None: ...
+    def list_repo_reflog(self, ref_name, *, limit=None) -> Sequence[ReflogEntry]: ...
     def open_file(self, path_in_repo, *, revision=None) -> BinaryIO: ...
     def read_bytes(self, path_in_repo, *, revision=None) -> bytes: ...
     def hf_hub_download(self, filename, *, revision=None, local_dir=None) -> str: ...
+    def snapshot_download(
+        self,
+        *,
+        revision=None,
+        local_dir=None,
+        allow_patterns=None,
+        ignore_patterns=None,
+    ) -> str: ...
+    def upload_file(
+        self,
+        *,
+        path_or_fileobj,
+        path_in_repo,
+        revision=None,
+        commit_message=None,
+        commit_description=None,
+        parent_commit=None,
+    ) -> CommitInfo: ...
+    def upload_folder(
+        self,
+        *,
+        folder_path,
+        path_in_repo=None,
+        commit_message=None,
+        commit_description=None,
+        revision=None,
+        parent_commit=None,
+        allow_patterns=None,
+        ignore_patterns=None,
+        delete_patterns=None,
+    ) -> CommitInfo: ...
+    def delete_file(
+        self,
+        path_in_repo,
+        *,
+        revision=None,
+        commit_message=None,
+        commit_description=None,
+        parent_commit=None,
+    ) -> CommitInfo: ...
+    def delete_folder(
+        self,
+        path_in_repo,
+        *,
+        revision=None,
+        commit_message=None,
+        commit_description=None,
+        parent_commit=None,
+    ) -> CommitInfo: ...
     def reset_ref(self, ref_name, *, to_revision) -> CommitInfo: ...
     def quick_verify(self) -> VerifyReport: ...
 ```
@@ -269,6 +346,71 @@ class HubVaultApi:
 - 保留 `revision`、`formatted` 这两个真实有意义的参数
 - 丢弃 `repo_id`、`repo_type`、`token` 这类远端/传输参数
 
+#### `list_repo_refs` / `create_branch` / `delete_branch` / `create_tag` / `delete_tag`
+
+当前公开语义：
+
+- 方法名、主参数名和返回模型与 HF 一致
+- `list_repo_refs()` 返回 `GitRefs`
+- `create_branch()` / `delete_branch()` / `create_tag()` / `delete_tag()` 返回 `None`
+- `create_*` 的 `exist_ok` 保留，因为在本地确有真实行为
+- `include_pull_requests` 保留，但本地只在请求时返回空列表，不伪造 PR refs
+
+必要偏差：
+
+- 本地 default branch 允许为空 ref，因此 branch 列表里的 `target_commit` 可以是 `None`
+- 删除 default branch 会直接抛本地 `ConflictError`
+
+#### `upload_file` / `upload_folder`
+
+当前公开语义：
+
+- 方法名、主要参数名和返回类型对齐 HF
+- 都返回 `CommitInfo`
+- 默认 commit message 也采用 HF 同类风格，只把品牌前缀从 `huggingface_hub` 换成 `hubvault`
+- `upload_folder()` 保留 `allow_patterns` / `ignore_patterns` / `delete_patterns`
+- `.git/` 子目录会被忽略
+
+当前刻意删除的远端参数：
+
+- `repo_id`
+- `repo_type`
+- `token`
+- `create_pr`
+- `run_as_future`
+
+#### `delete_file` / `delete_folder`
+
+当前公开语义：
+
+- 方法名、主要参数名和返回类型对齐 HF
+- 默认 commit message 延续 HF 模板，只把品牌从 `huggingface_hub` 换成 `hubvault`
+- 返回值直接是 `CommitInfo`
+
+#### `snapshot_download`
+
+当前公开语义：
+
+- 方法名、主要参数名和返回职责对齐 HF
+- 保留 `revision`、`local_dir`、`allow_patterns`、`ignore_patterns`
+- 默认返回 repo 内部缓存快照目录；传入 `local_dir` 时返回外部目录真实路径
+- 外部 `local_dir` 模式会在目录下写入 `.cache/hubvault/snapshot.json` 以维护受管文件清单
+- 返回目录中的文件路径仍保留 repo 相对路径
+
+本地必要偏差：
+
+- 不保留 `cache_dir`、`local_files_only`、`force_download`、`local_dir_use_symlinks`、`tqdm_class` 等远端/缓存策略参数
+- 为避免把用户读取视图变成 repo 内部可写别名，`local_dir` 不允许指向 repo root 内部
+
+#### `list_repo_reflog`
+
+这是本地专属公开 API，没有直接 HF 对标，但遵循同一个公开原则：
+
+- 只暴露真实可用且可测试的行为
+- 返回稳定的 dataclass 模型 `ReflogEntry`
+- 支持 branch/tag 的短名查询和完整 ref 名查询
+- 当 branch 与 tag 短名冲突时，要求调用方显式传完整 ref 名
+
 #### `hf_hub_download`
 
 虽然是本地仓库 API，但仍保留 HF 同名方法，因为它对应的是用户最熟悉的单文件下载入口。
@@ -291,6 +433,10 @@ class HubVaultApi:
 - `create_pr`
 - `num_threads`
 - `run_as_future`
+- `cache_dir`
+- `force_download`
+- `local_files_only`
+- `local_dir_use_symlinks`
 - `expand`（当前阶段未实现真实增强行为，因此不保留）
 
 删除原则：
@@ -341,11 +487,9 @@ class HubVaultApi:
 以下内容与 HF 还有差距，但当前是有意识延后，而不是遗漏：
 
 - `list_repo_tree(..., expand=True)` / `get_paths_info(..., expand=True)`
-- `snapshot_download()`
-- branch/tag 全生命周期 API
-- upload/delete 便捷 API
 - 基于安全扫描的 `RepoFile.security`
 - 基于历史反查的 `last_commit` 自动填充
+- 远端 Hub 的 PR / token / repo_type / endpoint 体系
 
 这些项进入后续 phase 时，仍然要遵守同一条原则：
 

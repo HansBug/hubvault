@@ -189,6 +189,8 @@ reflog 用途：
 - 恢复补偿
 - GC 保留窗口
 
+当前 Phase 2 已通过公开 API 暴露 `list_repo_reflog()`，并同时覆盖 branch 与 tag 的 append-only 日志查询。
+
 ## 8. 校验与体检
 
 ### 8.1 quick verify
@@ -202,6 +204,7 @@ MVP 的 `quick_verify()` 重点检查：
 - 仓库内没有要求访问 repo root 外持久化状态的格式残留
 - 文件 `oid` / `sha256` / `etag` 与持久化文件对象记录一致
 - 用户视图目录如果存在，对应视图元数据与正式对象的一致性可被校验并可被修复
+- `cache/views/snapshots/` 中记录的 detached snapshot 也会被体检并在污染后允许重建
 
 ### 8.2 full verify
 

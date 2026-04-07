@@ -79,13 +79,23 @@ repo_root/
   cache/materialized/sha256/<prefix>/<digest>.data
   cache/materialized/meta/<content_key>.json
   cache/views/files/<view_key>.json
-  cache/views/snapshots/
+  cache/views/snapshots/<view_key>.json
   cache/files/<view_key>/<repo_relative_path>
-  cache/snapshots/
+  cache/snapshots/<view_key>/<repo_relative_path>
   quarantine/{objects,packs,manifests}/
 ```
 
-当前版本的 `hf_hub_download()` 默认使用 `cache/files/<view_key>/<repo_relative_path>` 作为返回路径根，从而保证用户拿到的最终文件路径保留原始 repo 相对路径后缀。
+当前版本的 `hf_hub_download()` 默认使用 `cache/files/<view_key>/<repo_relative_path>` 作为返回路径根，`snapshot_download()` 默认使用 `cache/snapshots/<view_key>/<repo_relative_path>` 作为返回路径根，从而保证用户拿到的最终文件/目录路径保留原始 repo 相对路径后缀。
+
+当 `snapshot_download(local_dir=...)` 导出到仓库外目录时，会在导出目录下写入：
+
+```text
+.cache/
+  hubvault/
+    snapshot.json
+```
+
+这个元数据只服务于外部用户视图的重建与清理，不属于 repo 真相。
 
 ### 1.2 自包含与可搬迁约束
 

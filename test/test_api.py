@@ -1,4 +1,5 @@
 import io
+import os
 from hashlib import sha1, sha256
 from pathlib import Path
 
@@ -250,3 +251,140 @@ class TestApi:
         assert formatted_history[0].formatted_message == "body &amp; tail"
         assert commit.commit_message == "document <api>"
         assert commit.commit_description == "body & tail"
+
+    def test_phase2_public_refs_upload_delete_snapshot_and_reflog_methods(self, tmp_path):
+        repo_dir = tmp_path / "repo"
+        api = HubVaultApi(repo_dir)
+        api.create_repo()
+
+        upload_commit = api.upload_file(
+            path_or_fileobj=b"weights-v1",
+            path_in_repo="models/model.bin",
+        )
+
+        assert upload_commit.commit_message == "Upload models/model.bin with hubvault"
+        assert upload_commit.commit_description == ""
+        assert str(upload_commit).endswith("#blob=main:models/model.bin")
+
+        refs_after_upload = api.list_repo_refs()
+        assert [item.name for item in refs_after_upload.branches] == ["main"]
+        assert refs_after_upload.branches[0].ref == "refs/heads/main"
+        assert refs_after_upload.branches[0].target_commit == upload_commit.oid
+        assert refs_after_upload.tags == []
+        assert refs_after_upload.pull_requests is None
+        assert api.list_repo_reflog("main", limit=1)[0].message == "Upload models/model.bin with hubvault"
+
+        api.create_branch(branch="dev", revision=upload_commit.oid)
+        api.create_branch(branch="dev", exist_ok=True)
+        api.create_tag(tag="v1", revision=upload_commit.oid, tag_message="release")
+
+        refs = api.list_repo_refs(include_pull_requests=True)
+        assert sorted(item.name for item in refs.branches) == ["dev", "main"]
+        assert [item.name for item in refs.tags] == ["v1"]
+        assert refs.tags[0].target_commit == upload_commit.oid
+        assert refs.pull_requests == []
+
+        staging_dir = tmp_path / "staging"
+        staging_dir.mkdir()
+        (staging_dir / "keep.txt").write_text("keep\n", encoding="utf-8")
+        (staging_dir / "drop.log").write_text("drop\n", encoding="utf-8")
+        (staging_dir / "nested").mkdir()
+        (staging_dir / "nested" / "inner.txt").write_text("inner\n", encoding="utf-8")
+        (staging_dir / "nested" / ".git").mkdir()
+        (staging_dir / "nested" / ".git" / "ignored.txt").write_text("ignored\n", encoding="utf-8")
+
+        folder_commit = api.upload_folder(
+            folder_path=staging_dir,
+            path_in_repo="bundle",
+            revision="dev",
+            allow_patterns="*.txt",
+        )
+
+        assert folder_commit.commit_message == "Upload folder using hubvault"
+        assert str(folder_commit).endswith("#tree=dev:bundle")
+        assert api.list_repo_files(revision="dev") == [
+            "bundle/keep.txt",
+            "bundle/nested/inner.txt",
+            "models/model.bin",
+        ]
+
+        snapshot_dir = Path(
+            api.snapshot_download(
+                revision="dev",
+                local_dir=tmp_path / "snapshot-export",
+            )
+        )
+        assert snapshot_dir == Path(os.path.realpath(str(tmp_path / "snapshot-export")))
+        assert (snapshot_dir / "models" / "model.bin").read_bytes() == b"weights-v1"
+        assert (snapshot_dir / "bundle" / "keep.txt").read_text(encoding="utf-8") == "keep\n"
+        assert (snapshot_dir / "bundle" / "nested" / "inner.txt").read_text(encoding="utf-8") == "inner\n"
+        assert (snapshot_dir / ".cache" / "hubvault" / "snapshot.json").is_file()
+
+        delete_file_commit = api.delete_file("models/model.bin", revision="dev")
+        delete_folder_commit = api.delete_folder("bundle", revision="dev")
+
+        assert delete_file_commit.commit_message == "Delete models/model.bin with hubvault"
+        assert delete_folder_commit.commit_message == "Delete folder bundle with hubvault"
+        assert api.list_repo_files(revision="dev") == []
+        assert [item.title for item in api.list_repo_commits(revision="dev")] == [
+            "Delete folder bundle with hubvault",
+            "Delete models/model.bin with hubvault",
+            "Upload folder using hubvault",
+            "Upload models/model.bin with hubvault",
+        ]
+
+        api.delete_tag(tag="v1")
+        api.delete_branch(branch="dev")
+
+        final_refs = api.list_repo_refs()
+        assert [item.name for item in final_refs.branches] == ["main"]
+        assert final_refs.tags == []
+        tag_reflog = api.list_repo_reflog("refs/tags/v1")
+        assert [item.message for item in tag_reflog] == ["delete tag", "release"]
+        assert tag_reflog[0].new_head is None
+        assert tag_reflog[1].new_head == upload_commit.oid
+
+    def test_phase2_public_api_error_paths(self, tmp_path):
+        repo_dir = tmp_path / "repo"
+        api = HubVaultApi(repo_dir)
+        api.create_repo()
+
+        assert api.list_repo_reflog("main") == []
+
+        with pytest.raises(RevisionNotFoundError):
+            api.create_branch(branch="dev", revision="missing")
+
+        with pytest.raises(RevisionNotFoundError):
+            api.create_tag(tag="v1")
+
+        first_commit = api.upload_file(path_or_fileobj=b"payload", path_in_repo="file.txt")
+        api.create_branch(branch="same", revision=first_commit.oid)
+        api.create_tag(tag="same", revision=first_commit.oid)
+        api.create_branch(branch="same", exist_ok=True)
+        api.create_tag(tag="same", revision=first_commit.oid, exist_ok=True)
+
+        with pytest.raises(ConflictError):
+            api.create_branch(branch="same")
+
+        with pytest.raises(ConflictError):
+            api.create_tag(tag="same", revision=first_commit.oid)
+
+        with pytest.raises(ConflictError):
+            api.list_repo_reflog("same")
+
+        assert api.list_repo_reflog("refs/tags/same")[0].ref_name == "refs/tags/same"
+
+        with pytest.raises(ConflictError):
+            api.delete_branch(branch="main")
+
+        with pytest.raises(ValueError):
+            api.list_repo_reflog("main", limit=-1)
+
+        with pytest.raises(RevisionNotFoundError):
+            api.list_repo_reflog("missing")
+
+        with pytest.raises(UnsupportedPathError):
+            api.snapshot_download(local_dir=repo_dir / "unsafe")
+
+        with pytest.raises(ValueError):
+            api.upload_folder(folder_path=tmp_path / "missing-folder")

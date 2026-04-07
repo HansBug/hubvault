@@ -14,6 +14,9 @@ The package contains:
 * :class:`RepoInfo` - Repository metadata model
 * :class:`CommitInfo` - HF-style commit creation result model
 * :class:`GitCommitInfo` - HF-style commit listing model
+* :class:`GitRefInfo` - HF-style git reference model
+* :class:`GitRefs` - HF-style git reference collection model
+* :class:`ReflogEntry` - Local reflog entry model
 * :class:`RepoFile` - HF-style file metadata model
 * :class:`RepoFolder` - HF-style folder metadata model
 * :class:`VerifyReport` - Verification result model
@@ -48,7 +51,10 @@ from .models import (
     BlobSecurityInfo,
     CommitInfo,
     GitCommitInfo,
+    GitRefInfo,
+    GitRefs,
     LastCommitInfo,
+    ReflogEntry,
     RepoFile,
     RepoFolder,
     RepoInfo,
@@ -66,12 +72,15 @@ __all__ = [
     "ConflictError",
     "EntryNotFoundError",
     "GitCommitInfo",
+    "GitRefInfo",
+    "GitRefs",
     "HubVaultApi",
     "HubVaultError",
     "HubVaultValidationError",
     "IntegrityError",
     "LastCommitInfo",
     "LockTimeoutError",
+    "ReflogEntry",
     "RepoFile",
     "RepoFolder",
     "RepoInfo",

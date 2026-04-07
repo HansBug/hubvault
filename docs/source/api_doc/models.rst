@@ -27,6 +27,27 @@ GitCommitInfo
     :members: commit_id,authors,created_at,title,message,formatted_title,formatted_message
 
 
+GitRefInfo
+-----------------------------------------------------
+
+.. autoclass:: GitRefInfo
+    :members: name,ref,target_commit
+
+
+GitRefs
+-----------------------------------------------------
+
+.. autoclass:: GitRefs
+    :members: branches,converts,tags,pull_requests
+
+
+ReflogEntry
+-----------------------------------------------------
+
+.. autoclass:: ReflogEntry
+    :members: timestamp,ref_name,old_head,new_head,message,checksum
+
+
 LastCommitInfo
 -----------------------------------------------------
 

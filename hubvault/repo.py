@@ -17,6 +17,7 @@ import re
 import secrets
 import shutil
 import stat
+from fnmatch import fnmatch
 from datetime import datetime, timezone
 from html import escape as html_escape
 from hashlib import sha1, sha256
@@ -33,7 +34,17 @@ from .errors import (
     RevisionNotFoundError,
     UnsupportedPathError,
 )
-from .models import CommitInfo, GitCommitInfo, RepoFile, RepoFolder, RepoInfo, VerifyReport
+from .models import (
+    CommitInfo,
+    GitCommitInfo,
+    GitRefInfo,
+    GitRefs,
+    ReflogEntry,
+    RepoFile,
+    RepoFolder,
+    RepoInfo,
+    VerifyReport,
+)
 from .operations import CommitOperationAdd, CommitOperationCopy, CommitOperationDelete
 
 FORMAT_MARKER = "hubvault-repo/v1"
@@ -210,6 +221,115 @@ def _git_blob_oid(data: bytes) -> str:
 
     header = "blob %d\0" % len(data)
     return sha1(header.encode("utf-8") + data).hexdigest()
+
+
+def _add_wildcard_to_directories(pattern: str) -> str:
+    """
+    Normalize a glob pattern so directory paths include their descendants.
+
+    This mirrors the small compatibility helper used by
+    ``huggingface_hub.utils.filter_repo_objects``.
+
+    :param pattern: Input glob pattern
+    :type pattern: str
+    :return: Normalized glob pattern
+    :rtype: str
+
+    Example::
+
+        >>> _add_wildcard_to_directories("nested/")
+        'nested/*'
+    """
+
+    text = str(pattern)
+    if text.endswith("/"):
+        return text + "*"
+    return text
+
+
+def _normalize_glob_patterns(patterns: Optional[Union[Sequence[str], str]]) -> Optional[List[str]]:
+    """
+    Normalize optional glob patterns to a list of strings.
+
+    :param patterns: Raw pattern or patterns
+    :type patterns: Optional[Union[Sequence[str], str]]
+    :return: Normalized pattern list, or ``None`` when omitted
+    :rtype: Optional[List[str]]
+
+    Example::
+
+        >>> _normalize_glob_patterns("*.bin")
+        ['*.bin']
+    """
+
+    if patterns is None:
+        return None
+    if isinstance(patterns, str):
+        values = [patterns]
+    else:
+        values = [str(item) for item in patterns]
+    return [_add_wildcard_to_directories(item) for item in values]
+
+
+def _filter_repo_paths(
+    items: Sequence[str],
+    *,
+    allow_patterns: Optional[Union[Sequence[str], str]] = None,
+    ignore_patterns: Optional[Union[Sequence[str], str]] = None,
+) -> List[str]:
+    """
+    Filter repo-relative paths using HF-style glob semantics.
+
+    :param items: Candidate repo-relative paths
+    :type items: Sequence[str]
+    :param allow_patterns: Optional allowlist patterns
+    :type allow_patterns: Optional[Union[Sequence[str], str]]
+    :param ignore_patterns: Optional denylist patterns
+    :type ignore_patterns: Optional[Union[Sequence[str], str]]
+    :return: Filtered repo-relative paths
+    :rtype: List[str]
+
+    Example::
+
+        >>> _filter_repo_paths(["a.bin", "nested/b.txt"], allow_patterns="*.bin")
+        ['a.bin']
+    """
+
+    normalized_allow = _normalize_glob_patterns(allow_patterns)
+    normalized_ignore = _normalize_glob_patterns(ignore_patterns)
+
+    filtered = []
+    for item in items:
+        if normalized_allow is not None and not any(fnmatch(item, rule) for rule in normalized_allow):
+            continue
+        if normalized_ignore is not None and any(fnmatch(item, rule) for rule in normalized_ignore):
+            continue
+        filtered.append(item)
+    return filtered
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    """
+    Check whether a path is inside another path.
+
+    :param path: Candidate absolute path
+    :type path: pathlib.Path
+    :param root: Candidate ancestor directory
+    :type root: pathlib.Path
+    :return: Whether ``path`` is contained by ``root``
+    :rtype: bool
+
+    Example::
+
+        >>> _is_relative_to(Path("/tmp/a/b"), Path("/tmp"))
+        True
+    """
+
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 def _write_bytes_atomic(path: Path, data: bytes) -> None:
@@ -1059,6 +1179,376 @@ class _RepositoryBackend(object):
             current_commit_id = str(parents[0]) if parents else None
         return commits
 
+    def list_repo_refs(self, include_pull_requests: bool = False) -> GitRefs:
+        """
+        List visible branch and tag refs in HF-style form.
+
+        The local repository does not support convert refs or pull requests, but
+        keeps the same top-level return shape as
+        :meth:`huggingface_hub.HfApi.list_repo_refs`.
+
+        :param include_pull_requests: Whether pull-request refs should be
+            included. The local repository returns ``[]`` when requested and
+            ``None`` otherwise.
+        :type include_pull_requests: bool, optional
+        :return: Visible repository refs
+        :rtype: GitRefs
+        :raises RepositoryNotFoundError: Raised when the configured root is not
+            a valid repository.
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     _ = backend.create_repo()
+            ...     backend.list_repo_refs().branches[0].ref
+            'refs/heads/main'
+        """
+
+        self._ensure_repo()
+        self._recover_transactions()
+
+        branches = [
+            GitRefInfo(
+                name=name,
+                ref="refs/heads/" + name,
+                target_commit=self._read_ref(name),
+            )
+            for name in self._list_branch_names()
+        ]
+        tags = [
+            GitRefInfo(
+                name=name,
+                ref="refs/tags/" + name,
+                target_commit=self._read_tag_ref(name),
+            )
+            for name in self._list_tag_names()
+        ]
+        return GitRefs(
+            branches=branches,
+            converts=[],
+            tags=tags,
+            pull_requests=[] if include_pull_requests else None,
+        )
+
+    def create_branch(
+        self,
+        *,
+        branch: str,
+        revision: Optional[str] = None,
+        exist_ok: bool = False,
+    ) -> None:
+        """
+        Create a new branch from an existing revision.
+
+        The public method name and main parameters intentionally mirror
+        :meth:`huggingface_hub.HfApi.create_branch`, while omitting remote-only
+        parameters such as ``repo_id``, ``repo_type``, and ``token``.
+
+        :param branch: Branch name to create
+        :type branch: str
+        :param revision: Starting revision, defaults to the repository default
+            branch
+        :type revision: Optional[str], optional
+        :param exist_ok: Whether an existing branch should be accepted
+        :type exist_ok: bool, optional
+        :return: ``None``.
+        :rtype: None
+        :raises ConflictError: Raised when the branch already exists and
+            ``exist_ok`` is ``False``.
+        :raises RevisionNotFoundError: Raised when ``revision`` cannot be
+            resolved.
+        :raises UnsupportedPathError: Raised when ``branch`` is invalid.
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     _ = backend.create_repo()
+            ...     backend.create_branch(branch="dev")
+            ...     sorted(ref.name for ref in backend.list_repo_refs().branches)
+            ['dev', 'main']
+        """
+
+        self._ensure_repo()
+        self._recover_transactions()
+
+        branch_name = _validate_ref_name(branch)
+        branch_path = self._ref_path(branch_name)
+        if branch_path.exists():
+            if exist_ok:
+                return
+            raise ConflictError("branch already exists: %s" % branch_name)
+
+        repo_config = self._repo_config()
+        base_revision = revision or str(repo_config["default_branch"])
+        target_commit = self._resolve_revision(base_revision, allow_empty_ref=True)
+
+        lock = self._acquire_write_lock()
+        txdir = self._create_txdir(branch_name, target_commit)
+        try:
+            self._write_ref(branch_name, target_commit)
+            self._append_reflog(
+                branch_name,
+                None,
+                target_commit,
+                "create branch",
+                ref_kind="branch",
+            )
+            self._write_tx_state(txdir, "COMMITTED")
+        finally:
+            self._cleanup_txdir(txdir)
+            lock.release()
+
+    def delete_branch(self, *, branch: str) -> None:
+        """
+        Delete a branch ref from the repository.
+
+        The current default branch is protected from deletion, mirroring the
+        practical behavior users expect from the HF Hub.
+
+        :param branch: Branch name to delete
+        :type branch: str
+        :return: ``None``.
+        :rtype: None
+        :raises ConflictError: Raised when attempting to delete the default
+            branch.
+        :raises RevisionNotFoundError: Raised when the branch does not exist.
+        :raises UnsupportedPathError: Raised when ``branch`` is invalid.
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     _ = backend.create_repo()
+            ...     backend.create_branch(branch="dev")
+            ...     backend.delete_branch(branch="dev")
+            ...     [ref.name for ref in backend.list_repo_refs().branches]
+            ['main']
+        """
+
+        self._ensure_repo()
+        self._recover_transactions()
+
+        repo_config = self._repo_config()
+        branch_name = _validate_ref_name(branch)
+        if branch_name == str(repo_config["default_branch"]):
+            raise ConflictError("default branch cannot be deleted")
+
+        old_head = self._read_ref(branch_name)
+        lock = self._acquire_write_lock()
+        txdir = self._create_txdir(branch_name, old_head)
+        try:
+            self._append_reflog(
+                branch_name,
+                old_head,
+                None,
+                "delete branch",
+                ref_kind="branch",
+            )
+            self._delete_ref_file(self._ref_path(branch_name), self._repo_path / "refs" / "heads")
+            self._write_tx_state(txdir, "COMMITTED")
+        finally:
+            self._cleanup_txdir(txdir)
+            lock.release()
+
+    def create_tag(
+        self,
+        *,
+        tag: str,
+        tag_message: Optional[str] = None,
+        revision: Optional[str] = None,
+        exist_ok: bool = False,
+    ) -> None:
+        """
+        Create a lightweight tag pointing at a revision.
+
+        :param tag: Tag name to create
+        :type tag: str
+        :param tag_message: Optional tag message stored in the reflog
+        :type tag_message: Optional[str], optional
+        :param revision: Target revision, defaults to the repository default
+            branch
+        :type revision: Optional[str], optional
+        :param exist_ok: Whether an existing tag should be accepted
+        :type exist_ok: bool, optional
+        :return: ``None``.
+        :rtype: None
+        :raises ConflictError: Raised when the tag already exists and
+            ``exist_ok`` is ``False``.
+        :raises RevisionNotFoundError: Raised when the target revision does not
+            resolve to a commit.
+        :raises UnsupportedPathError: Raised when ``tag`` is invalid.
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     _ = backend.create_repo()
+            ...     _ = backend.create_commit(
+            ...         operations=[CommitOperationAdd("demo.txt", b"hello")],
+            ...         commit_message="seed",
+            ...     )
+            ...     backend.create_tag(tag="v1")
+            ...     [ref.name for ref in backend.list_repo_refs().tags]
+            ['v1']
+        """
+
+        self._ensure_repo()
+        self._recover_transactions()
+
+        tag_name = _validate_ref_name(tag)
+        tag_path = self._tag_ref_path(tag_name)
+        if tag_path.exists():
+            if exist_ok:
+                return
+            raise ConflictError("tag already exists: %s" % tag_name)
+
+        repo_config = self._repo_config()
+        target_revision = revision or str(repo_config["default_branch"])
+        target_commit = self._resolve_revision(target_revision)
+
+        lock = self._acquire_write_lock()
+        txdir = self._create_txdir(tag_name, target_commit)
+        try:
+            self._write_tag_ref(tag_name, target_commit)
+            self._append_reflog(
+                tag_name,
+                None,
+                target_commit,
+                tag_message or "create tag",
+                ref_kind="tag",
+            )
+            self._write_tx_state(txdir, "COMMITTED")
+        finally:
+            self._cleanup_txdir(txdir)
+            lock.release()
+
+    def delete_tag(self, *, tag: str) -> None:
+        """
+        Delete a tag ref from the repository.
+
+        :param tag: Tag name to delete
+        :type tag: str
+        :return: ``None``.
+        :rtype: None
+        :raises RevisionNotFoundError: Raised when the tag does not exist.
+        :raises UnsupportedPathError: Raised when ``tag`` is invalid.
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     _ = backend.create_repo()
+            ...     _ = backend.create_commit(
+            ...         operations=[CommitOperationAdd("demo.txt", b"hello")],
+            ...         commit_message="seed",
+            ...     )
+            ...     backend.create_tag(tag="v1")
+            ...     backend.delete_tag(tag="v1")
+            ...     backend.list_repo_refs().tags
+            []
+        """
+
+        self._ensure_repo()
+        self._recover_transactions()
+
+        tag_name = _validate_ref_name(tag)
+        old_head = self._read_tag_ref(tag_name)
+
+        lock = self._acquire_write_lock()
+        txdir = self._create_txdir(tag_name, old_head)
+        try:
+            self._append_reflog(
+                tag_name,
+                old_head,
+                None,
+                "delete tag",
+                ref_kind="tag",
+            )
+            self._delete_ref_file(self._tag_ref_path(tag_name), self._repo_path / "refs" / "tags")
+            self._write_tx_state(txdir, "COMMITTED")
+        finally:
+            self._cleanup_txdir(txdir)
+            lock.release()
+
+    def list_repo_reflog(
+        self,
+        ref_name: str,
+        limit: Optional[int] = None,
+    ) -> List[ReflogEntry]:
+        """
+        List reflog entries for a branch or tag.
+
+        This is a local repository extension with no direct HF public
+        counterpart. It exists to support audit and recovery workflows for the
+        embedded on-disk repository.
+
+        :param ref_name: Full ref name such as ``refs/heads/main`` or a short
+            branch/tag name when unambiguous
+        :type ref_name: str
+        :param limit: Optional maximum number of newest entries to return
+        :type limit: Optional[int], optional
+        :return: Reflog entries ordered from newest to oldest
+        :rtype: List[ReflogEntry]
+        :raises ConflictError: Raised when a short ref name is ambiguous across
+            branches and tags.
+        :raises RevisionNotFoundError: Raised when the ref or reflog does not
+            exist.
+        :raises ValueError: Raised when ``limit`` is negative.
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     _ = backend.create_repo()
+            ...     _ = backend.create_commit(
+            ...         operations=[CommitOperationAdd("demo.txt", b"hello")],
+            ...         commit_message="seed",
+            ...     )
+            ...     backend.list_repo_reflog("main")[0].ref_name
+            'refs/heads/main'
+        """
+
+        self._ensure_repo()
+        self._recover_transactions()
+
+        if limit is not None and limit < 0:
+            raise ValueError("limit must be >= 0")
+
+        reflog_path, _ = self._resolve_reflog_query(ref_name)
+        if not reflog_path.exists():
+            return []
+
+        entries = []
+        for line in reflog_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            entries.append(
+                ReflogEntry(
+                    timestamp=datetime.strptime(str(payload["timestamp"]), "%Y-%m-%dT%H:%M:%SZ").replace(
+                        tzinfo=timezone.utc
+                    ),
+                    ref_name=str(payload["ref_name"]),
+                    old_head=payload.get("old_head"),
+                    new_head=payload.get("new_head"),
+                    message=str(payload.get("message", "")),
+                    checksum=str(payload["checksum"]),
+                )
+            )
+
+        entries.reverse()
+        if limit is not None:
+            return entries[:limit]
+        return entries
+
     def open_file(self, path_in_repo: str, revision: str = DEFAULT_BRANCH) -> io.BufferedReader:
         """
         Open a file from a revision as a read-only binary stream.
@@ -1205,6 +1695,7 @@ class _RepositoryBackend(object):
 
         if local_dir is not None:
             target_root = Path(local_dir)
+            self._validate_detached_target_root(target_root)
             target_path = target_root / normalized_path
             self._ensure_detached_view(target_path, data, file_payload)
             return str(target_path)
@@ -1227,6 +1718,404 @@ class _RepositoryBackend(object):
             },
         )
         return str(target_path)
+
+    def snapshot_download(
+        self,
+        revision: Optional[str] = None,
+        local_dir: Optional[str] = None,
+        allow_patterns: Optional[Union[Sequence[str], str]] = None,
+        ignore_patterns: Optional[Union[Sequence[str], str]] = None,
+    ) -> str:
+        """
+        Materialize a detached snapshot directory for a revision.
+
+        The return value intentionally follows the role of
+        :func:`huggingface_hub.snapshot_download` while omitting remote-only
+        parameters that have no local behavior.
+
+        :param revision: Revision to inspect, defaults to the default branch
+        :type revision: Optional[str], optional
+        :param local_dir: Optional external directory where the detached
+            snapshot should be materialized
+        :type local_dir: Optional[str], optional
+        :param allow_patterns: Optional allowlist for repo-relative paths
+        :type allow_patterns: Optional[Union[Sequence[str], str]], optional
+        :param ignore_patterns: Optional denylist for repo-relative paths
+        :type ignore_patterns: Optional[Union[Sequence[str], str]], optional
+        :return: Filesystem path to the snapshot directory
+        :rtype: str
+        :raises RevisionNotFoundError: Raised when ``revision`` cannot be
+            resolved.
+        :raises UnsupportedPathError: Raised when ``local_dir`` points into the
+            repository root.
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     _ = backend.create_repo()
+            ...     _ = backend.create_commit(
+            ...         operations=[CommitOperationAdd("nested/demo.txt", b"hello")],
+            ...         commit_message="seed",
+            ...     )
+            ...     path = backend.snapshot_download()
+            ...     path.endswith("cache/snapshots/" + path.split("cache/snapshots/")[-1])
+            True
+        """
+
+        self._ensure_repo()
+        self._recover_transactions()
+
+        selected_revision = revision or DEFAULT_BRANCH
+        resolved_head = self._resolve_revision(selected_revision, allow_empty_ref=True)
+        snapshot = self._snapshot_for_commit(resolved_head)
+        selected_paths = _filter_repo_paths(
+            sorted(snapshot),
+            allow_patterns=allow_patterns,
+            ignore_patterns=ignore_patterns,
+        )
+        normalized_allow = _normalize_glob_patterns(allow_patterns) or []
+        normalized_ignore = _normalize_glob_patterns(ignore_patterns) or []
+
+        view_key = _sha256_hex(
+            _stable_json_bytes(
+                {
+                    "revision": selected_revision,
+                    "commit_id": resolved_head,
+                    "allow_patterns": normalized_allow,
+                    "ignore_patterns": normalized_ignore,
+                }
+            )
+        )
+
+        if local_dir is None:
+            target_root = self._repo_path / "cache" / "snapshots" / view_key
+            meta_path = self._repo_path / "cache" / "views" / "snapshots" / (view_key + ".json")
+            target_metadata_path = str(target_root.relative_to(self._repo_path))
+        else:
+            target_root = Path(local_dir)
+            self._validate_detached_target_root(target_root)
+            meta_path = target_root / ".cache" / "hubvault" / "snapshot.json"
+            target_metadata_path = os.path.realpath(str(target_root))
+
+        previous_paths = []
+        if meta_path.exists():
+            try:
+                previous_meta = _read_json(meta_path)
+                previous_paths = [str(item["path"]) for item in previous_meta.get("files", [])]
+            except Exception:
+                previous_paths = []
+
+        target_root.mkdir(parents=True, exist_ok=True)
+        current_paths = set(selected_paths)
+        for stale_path in previous_paths:
+            if stale_path in current_paths:
+                continue
+            self._remove_detached_path(target_root / stale_path, target_root)
+
+        file_entries = []
+        for repo_path in selected_paths:
+            file_object_id = snapshot[repo_path]
+            file_payload = self._read_object_payload("files", file_object_id)
+            data = self.read_bytes(repo_path, revision=selected_revision)
+            self._materialize_content_pool(file_payload, data)
+            self._ensure_detached_view(target_root / repo_path, data, file_payload)
+            file_entries.append(
+                {
+                    "path": repo_path,
+                    "sha256": _public_sha256_hex(str(file_payload["sha256"])),
+                    "oid": str(file_payload["oid"]),
+                    "size": int(file_payload["logical_size"]),
+                }
+            )
+
+        metadata = {
+            "view_key": view_key,
+            "revision": selected_revision,
+            "commit_id": resolved_head,
+            "allow_patterns": normalized_allow,
+            "ignore_patterns": normalized_ignore,
+            "target_path": target_metadata_path,
+            "files": file_entries,
+            "created_at": _utc_now(),
+        }
+        _write_json_atomic(meta_path, metadata)
+
+        if local_dir is not None:
+            return os.path.realpath(str(target_root))
+        return str(target_root)
+
+    def upload_file(
+        self,
+        *,
+        path_or_fileobj: Union[str, Path, bytes, io.BufferedIOBase],
+        path_in_repo: str,
+        revision: Optional[str] = None,
+        commit_message: Optional[str] = None,
+        commit_description: Optional[str] = None,
+        parent_commit: Optional[str] = None,
+    ) -> CommitInfo:
+        """
+        Upload a single file through the public commit API.
+
+        :param path_or_fileobj: File content source
+        :type path_or_fileobj: Union[str, pathlib.Path, bytes, io.BufferedIOBase]
+        :param path_in_repo: Target repo-relative path
+        :type path_in_repo: str
+        :param revision: Target branch name, defaults to the default branch
+        :type revision: Optional[str], optional
+        :param commit_message: Optional commit summary
+        :type commit_message: Optional[str], optional
+        :param commit_description: Optional commit description/body
+        :type commit_description: Optional[str], optional
+        :param parent_commit: Optional optimistic-concurrency parent commit
+        :type parent_commit: Optional[str], optional
+        :return: Public commit metadata for the created commit
+        :rtype: CommitInfo
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     _ = backend.create_repo()
+            ...     info = backend.upload_file(path_or_fileobj=b"hello", path_in_repo="demo.txt")
+            ...     info.commit_message
+            'Upload demo.txt with hubvault'
+        """
+
+        self._ensure_repo()
+        self._recover_transactions()
+
+        repo_config = self._repo_config()
+        normalized_path = _normalize_repo_path(path_in_repo)
+        selected_revision = revision or str(repo_config["default_branch"])
+        commit_info = self.create_commit(
+            operations=[CommitOperationAdd(path_in_repo=normalized_path, path_or_fileobj=path_or_fileobj)],
+            commit_message=commit_message or "Upload %s with hubvault" % normalized_path,
+            commit_description=commit_description,
+            revision=selected_revision,
+            parent_commit=parent_commit,
+        )
+        return CommitInfo(
+            commit_url=commit_info.commit_url,
+            commit_message=commit_info.commit_message,
+            commit_description=commit_info.commit_description,
+            oid=commit_info.oid,
+            pr_url=commit_info.pr_url,
+            _url=self._blob_url(selected_revision, normalized_path),
+        )
+
+    def upload_folder(
+        self,
+        *,
+        folder_path: Union[str, Path],
+        path_in_repo: Optional[str] = None,
+        commit_message: Optional[str] = None,
+        commit_description: Optional[str] = None,
+        revision: Optional[str] = None,
+        parent_commit: Optional[str] = None,
+        allow_patterns: Optional[Union[Sequence[str], str]] = None,
+        ignore_patterns: Optional[Union[Sequence[str], str]] = None,
+        delete_patterns: Optional[Union[Sequence[str], str]] = None,
+    ) -> CommitInfo:
+        """
+        Upload a local folder while preserving its relative layout.
+
+        Any nested ``.git`` directory is ignored automatically, matching the
+        broad public behavior of :meth:`huggingface_hub.HfApi.upload_folder`.
+
+        :param folder_path: Local folder to upload
+        :type folder_path: Union[str, pathlib.Path]
+        :param path_in_repo: Optional target directory in the repo root
+        :type path_in_repo: Optional[str], optional
+        :param commit_message: Optional commit summary
+        :type commit_message: Optional[str], optional
+        :param commit_description: Optional commit description/body
+        :type commit_description: Optional[str], optional
+        :param revision: Target branch name, defaults to the default branch
+        :type revision: Optional[str], optional
+        :param parent_commit: Optional optimistic-concurrency parent commit
+        :type parent_commit: Optional[str], optional
+        :param allow_patterns: Optional allowlist for local relative paths
+        :type allow_patterns: Optional[Union[Sequence[str], str]], optional
+        :param ignore_patterns: Optional denylist for local relative paths
+        :type ignore_patterns: Optional[Union[Sequence[str], str]], optional
+        :param delete_patterns: Optional denylist applied to already uploaded
+            repo files beneath ``path_in_repo`` before new files are added
+        :type delete_patterns: Optional[Union[Sequence[str], str]], optional
+        :return: Public commit metadata for the created commit
+        :rtype: CommitInfo
+        :raises ValueError: Raised when ``folder_path`` is not a local
+            directory.
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     repo_root = Path(tmpdir)
+            ...     source = repo_root / "source"
+            ...     source.mkdir()
+            ...     (source / "demo.txt").write_text("hello", encoding="utf-8")
+            ...     backend = _RepositoryBackend(repo_root / "repo")
+            ...     _ = backend.create_repo()
+            ...     info = backend.upload_folder(folder_path=source)
+            ...     info.commit_message
+            'Upload folder using hubvault'
+        """
+
+        self._ensure_repo()
+        self._recover_transactions()
+
+        root = Path(folder_path)
+        if not root.is_dir():
+            raise ValueError("folder_path must point to an existing local directory")
+
+        repo_config = self._repo_config()
+        selected_revision = revision or str(repo_config["default_branch"])
+        base_path = "" if path_in_repo in (None, "") else _normalize_repo_path(path_in_repo)
+
+        local_paths = []
+        for current_root, dirnames, filenames in os.walk(str(root)):
+            dirnames[:] = sorted(name for name in dirnames if name != ".git")
+            current_root_path = Path(current_root)
+            for filename in sorted(filenames):
+                relative_path = (current_root_path / filename).relative_to(root).as_posix()
+                local_paths.append(relative_path)
+
+        filtered_local_paths = _filter_repo_paths(
+            local_paths,
+            allow_patterns=allow_patterns,
+            ignore_patterns=ignore_patterns,
+        )
+
+        add_operations = []
+        for relative_path in filtered_local_paths:
+            repo_path = relative_path if not base_path else base_path + "/" + relative_path
+            add_operations.append(
+                CommitOperationAdd(
+                    path_in_repo=repo_path,
+                    path_or_fileobj=str(root / relative_path),
+                )
+            )
+
+        delete_operations = []
+        if delete_patterns is not None:
+            delete_rules = _normalize_glob_patterns(delete_patterns) or []
+            target_head = self._resolve_revision(selected_revision, allow_empty_ref=True)
+            existing_snapshot = self._snapshot_for_commit(target_head)
+            for existing_path in sorted(existing_snapshot):
+                relative_existing_path = existing_path
+                if base_path:
+                    prefix = base_path + "/"
+                    if not existing_path.startswith(prefix):
+                        continue
+                    relative_existing_path = existing_path[len(prefix):]
+                if relative_existing_path == ".gitattributes":
+                    continue
+                if any(fnmatch(relative_existing_path, rule) for rule in delete_rules):
+                    delete_operations.append(CommitOperationDelete(path_in_repo=existing_path))
+
+        if add_operations:
+            added_paths = {operation.path_in_repo for operation in add_operations}
+            delete_operations = [
+                operation
+                for operation in delete_operations
+                if operation.path_in_repo not in added_paths
+            ]
+
+        commit_info = self.create_commit(
+            operations=delete_operations + add_operations,
+            commit_message=commit_message or "Upload folder using hubvault",
+            commit_description=commit_description,
+            revision=selected_revision,
+            parent_commit=parent_commit,
+        )
+        return CommitInfo(
+            commit_url=commit_info.commit_url,
+            commit_message=commit_info.commit_message,
+            commit_description=commit_info.commit_description,
+            oid=commit_info.oid,
+            pr_url=commit_info.pr_url,
+            _url=self._tree_url(selected_revision, base_path),
+        )
+
+    def delete_file(
+        self,
+        path_in_repo: str,
+        revision: Optional[str] = None,
+        commit_message: Optional[str] = None,
+        commit_description: Optional[str] = None,
+        parent_commit: Optional[str] = None,
+    ) -> CommitInfo:
+        """
+        Delete a single file through the public commit API.
+
+        :param path_in_repo: Repo-relative file path
+        :type path_in_repo: str
+        :param revision: Target branch name, defaults to the default branch
+        :type revision: Optional[str], optional
+        :param commit_message: Optional commit summary
+        :type commit_message: Optional[str], optional
+        :param commit_description: Optional commit description/body
+        :type commit_description: Optional[str], optional
+        :param parent_commit: Optional optimistic-concurrency parent commit
+        :type parent_commit: Optional[str], optional
+        :return: Public commit metadata for the created commit
+        :rtype: CommitInfo
+        """
+
+        self._ensure_repo()
+        self._recover_transactions()
+
+        repo_config = self._repo_config()
+        normalized_path = _normalize_repo_path(path_in_repo)
+        return self.create_commit(
+            operations=[CommitOperationDelete(path_in_repo=normalized_path, is_folder=False)],
+            revision=revision or str(repo_config["default_branch"]),
+            commit_message=commit_message or "Delete %s with hubvault" % normalized_path,
+            commit_description=commit_description,
+            parent_commit=parent_commit,
+        )
+
+    def delete_folder(
+        self,
+        path_in_repo: str,
+        revision: Optional[str] = None,
+        commit_message: Optional[str] = None,
+        commit_description: Optional[str] = None,
+        parent_commit: Optional[str] = None,
+    ) -> CommitInfo:
+        """
+        Delete a folder subtree through the public commit API.
+
+        :param path_in_repo: Repo-relative folder path
+        :type path_in_repo: str
+        :param revision: Target branch name, defaults to the default branch
+        :type revision: Optional[str], optional
+        :param commit_message: Optional commit summary
+        :type commit_message: Optional[str], optional
+        :param commit_description: Optional commit description/body
+        :type commit_description: Optional[str], optional
+        :param parent_commit: Optional optimistic-concurrency parent commit
+        :type parent_commit: Optional[str], optional
+        :return: Public commit metadata for the created commit
+        :rtype: CommitInfo
+        """
+
+        self._ensure_repo()
+        self._recover_transactions()
+
+        repo_config = self._repo_config()
+        normalized_path = _normalize_repo_path(path_in_repo)
+        return self.create_commit(
+            operations=[CommitOperationDelete(path_in_repo=normalized_path, is_folder=True)],
+            revision=revision or str(repo_config["default_branch"]),
+            commit_message=commit_message or "Delete folder %s with hubvault" % normalized_path,
+            commit_description=commit_description,
+            parent_commit=parent_commit,
+        )
 
     def reset_ref(self, ref_name: str, to_revision: str) -> CommitInfo:
         """
@@ -1343,6 +2232,34 @@ class _RepositoryBackend(object):
                         warnings.append("stale file view: %s" % view_meta_path.name)
             except Exception as err:  # pragma: no cover - defensive path
                 warnings.append("failed to inspect file view %s: %s" % (view_meta_path.name, err))
+
+        for view_meta_path in sorted((self._repo_path / "cache" / "views" / "snapshots").glob("*.json")):
+            try:
+                view_meta = _read_json(view_meta_path)
+                target_root = self._repo_path / str(view_meta["target_path"])
+                for file_info in view_meta.get("files", []):
+                    target_path = target_root / str(file_info["path"])
+                    if not target_path.exists():
+                        warnings.append("stale snapshot view: %s" % view_meta_path.name)
+                        break
+                    data_sha256 = _sha256_hex(target_path.read_bytes())
+                    if data_sha256 != str(file_info["sha256"]):
+                        warnings.append("stale snapshot view: %s" % view_meta_path.name)
+                        break
+            except Exception as err:  # pragma: no cover - defensive path
+                warnings.append("failed to inspect snapshot view %s: %s" % (view_meta_path.name, err))
+
+        txn_root = self._repo_path / "txn"
+        if txn_root.exists():
+            for txn_entry in sorted(txn_root.iterdir()):
+                if not txn_entry.is_dir():
+                    warnings.append("unexpected txn entry: %s" % txn_entry.name)
+
+        lock_root = self._repo_path / "locks"
+        if lock_root.exists():
+            for lock_entry in sorted(lock_root.iterdir()):
+                if lock_entry.is_dir():
+                    warnings.append("active lock directory: %s" % lock_entry.name)
 
         return VerifyReport(
             ok=not errors,
@@ -1606,6 +2523,24 @@ class _RepositoryBackend(object):
 
         return self._repo_path / "logs" / "refs" / "heads" / (name + ".log")
 
+    def _tag_reflog_path(self, name: str) -> Path:
+        """
+        Build the reflog path for a tag name.
+
+        :param name: Normalized tag name
+        :type name: str
+        :return: Absolute tag reflog path
+        :rtype: pathlib.Path
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend._tag_reflog_path("v1").name
+            'v1.log'
+        """
+
+        return self._repo_path / "logs" / "refs" / "tags" / (name + ".log")
+
     def _write_ref(self, name: str, commit_id: Optional[str]) -> None:
         """
         Persist a branch ref value.
@@ -1626,6 +2561,52 @@ class _RepositoryBackend(object):
         path = self._ref_path(name)
         content = "" if commit_id is None else commit_id + "\n"
         _write_text_atomic(path, content)
+
+    def _write_tag_ref(self, name: str, commit_id: str) -> None:
+        """
+        Persist a tag ref value.
+
+        :param name: Normalized tag name
+        :type name: str
+        :param commit_id: Target commit object ID
+        :type commit_id: str
+        :return: ``None``.
+        :rtype: None
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._write_tag_ref("v1", "sha256:" + "a" * 64)  # doctest: +SKIP
+        """
+
+        path = self._tag_ref_path(name)
+        _write_text_atomic(path, commit_id + "\n")
+
+    def _delete_ref_file(self, path: Path, stop_root: Path) -> None:
+        """
+        Delete a ref file and prune empty parent directories.
+
+        :param path: Ref file path to remove
+        :type path: pathlib.Path
+        :param stop_root: Ref root that must not be removed
+        :type stop_root: pathlib.Path
+        :return: ``None``.
+        :rtype: None
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._delete_ref_file(Path("/tmp/demo-repo/refs/heads/dev"), Path("/tmp/demo-repo/refs/heads"))  # doctest: +SKIP
+        """
+
+        path.unlink()
+        parent = path.parent
+        while parent != stop_root and parent.exists():
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
 
     def _read_ref(self, name: str) -> Optional[str]:
         """
@@ -2080,6 +3061,48 @@ class _RepositoryBackend(object):
         """
 
         return self._repo_url() + "#commit=" + commit_id
+
+    def _blob_url(self, revision: str, path_in_repo: str) -> str:
+        """
+        Build a local blob-style URL string for upload results.
+
+        :param revision: Branch or tag name used for the public URL
+        :type revision: str
+        :param path_in_repo: Repo-relative file path
+        :type path_in_repo: str
+        :return: Blob-style URL string
+        :rtype: str
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend._blob_url("main", "demo.txt").endswith("#blob=main:demo.txt")
+            True
+        """
+
+        return self._repo_url() + "#blob=" + revision + ":" + path_in_repo
+
+    def _tree_url(self, revision: str, path_in_repo: str) -> str:
+        """
+        Build a local tree-style URL string for upload results.
+
+        :param revision: Branch or tag name used for the public URL
+        :type revision: str
+        :param path_in_repo: Repo-relative directory path, or ``""`` for the
+            repository root
+        :type path_in_repo: str
+        :return: Tree-style URL string
+        :rtype: str
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend._tree_url("main", "nested").endswith("#tree=main:nested")
+            True
+        """
+
+        suffix = path_in_repo or ""
+        return self._repo_url() + "#tree=" + revision + ":" + suffix
 
     def _repo_file_info(self, path: str, file_object_id: str) -> RepoFile:
         """
@@ -2589,6 +3612,52 @@ class _RepositoryBackend(object):
             formatted_message=formatted_message,
         )
 
+    def _resolve_reflog_query(self, ref_name: str) -> Tuple[Path, str]:
+        """
+        Resolve a public reflog query to a concrete reflog path.
+
+        :param ref_name: Full ref name or an unambiguous short ref name
+        :type ref_name: str
+        :return: Reflog path and normalized full ref name
+        :rtype: Tuple[pathlib.Path, str]
+        :raises ConflictError: Raised when a short name matches both a branch
+            and a tag.
+        :raises RevisionNotFoundError: Raised when the requested ref is absent.
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._resolve_reflog_query("refs/heads/main")  # doctest: +SKIP
+        """
+
+        if ref_name.startswith("refs/heads/"):
+            name = _validate_ref_name(ref_name[len("refs/heads/"):])
+            path = self._reflog_path(name)
+            if not path.exists() and not self._ref_path(name).exists():
+                raise RevisionNotFoundError("reflog not found: %s" % ref_name)
+            return path, "refs/heads/" + name
+
+        if ref_name.startswith("refs/tags/"):
+            name = _validate_ref_name(ref_name[len("refs/tags/"):])
+            path = self._tag_reflog_path(name)
+            if not path.exists() and not self._tag_ref_path(name).exists():
+                raise RevisionNotFoundError("reflog not found: %s" % ref_name)
+            return path, "refs/tags/" + name
+
+        short_name = _validate_ref_name(ref_name)
+        branch_path = self._reflog_path(short_name)
+        tag_path = self._tag_reflog_path(short_name)
+        branch_visible = branch_path.exists() or self._ref_path(short_name).exists()
+        tag_visible = tag_path.exists() or self._tag_ref_path(short_name).exists()
+
+        if branch_visible and tag_visible:
+            raise ConflictError("ambiguous ref name: %s" % short_name)
+        if branch_visible:
+            return branch_path, "refs/heads/" + short_name
+        if tag_visible:
+            return tag_path, "refs/tags/" + short_name
+        raise RevisionNotFoundError("reflog not found: %s" % short_name)
+
     @staticmethod
     def _split_commit_message(message: str) -> Tuple[str, str]:
         """
@@ -2841,11 +3910,12 @@ class _RepositoryBackend(object):
         old_head: Optional[str],
         new_head: Optional[str],
         message: str,
+        ref_kind: str = "branch",
     ) -> None:
         """
-        Append a reflog record for a branch update.
+        Append a reflog record for a branch or tag update.
 
-        :param revision: Branch name
+        :param revision: Branch or tag name
         :type revision: str
         :param old_head: Previous head commit
         :type old_head: Optional[str]
@@ -2853,6 +3923,8 @@ class _RepositoryBackend(object):
         :type new_head: Optional[str]
         :param message: Short reflog message
         :type message: str
+        :param ref_kind: Ref collection kind, either ``"branch"`` or ``"tag"``
+        :type ref_kind: str, optional
         :return: ``None``.
         :rtype: None
 
@@ -2862,11 +3934,19 @@ class _RepositoryBackend(object):
             >>> backend._append_reflog("main", None, "sha256:" + "a" * 64, "seed")  # doctest: +SKIP
         """
 
-        path = self._reflog_path(revision)
+        if ref_kind == "branch":
+            path = self._reflog_path(revision)
+            full_ref_name = "refs/heads/" + revision
+        elif ref_kind == "tag":
+            path = self._tag_reflog_path(revision)
+            full_ref_name = "refs/tags/" + revision
+        else:
+            raise ValueError("ref_kind must be 'branch' or 'tag'")
+
         path.parent.mkdir(parents=True, exist_ok=True)
         record = {
             "timestamp": _utc_now(),
-            "ref_name": "refs/heads/" + revision,
+            "ref_name": full_ref_name,
             "old_head": old_head,
             "new_head": new_head,
             "message": message,
@@ -2912,6 +3992,60 @@ class _RepositoryBackend(object):
                 "created_at": _utc_now(),
             },
         )
+
+    def _validate_detached_target_root(self, target_root: Path) -> None:
+        """
+        Validate that a detached export root does not overlap repository truth.
+
+        :param target_root: User-supplied detached export directory
+        :type target_root: pathlib.Path
+        :return: ``None``.
+        :rtype: None
+        :raises UnsupportedPathError: Raised when the export directory points
+            inside the repository root.
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend._validate_detached_target_root(Path("/tmp/export"))
+        """
+
+        resolved_root = Path(os.path.realpath(str(target_root)))
+        resolved_repo = Path(os.path.realpath(str(self._repo_path)))
+        if _is_relative_to(resolved_root, resolved_repo):
+            raise UnsupportedPathError("local_dir must be outside the repository root")
+
+    def _remove_detached_path(self, target_path: Path, root_path: Path) -> None:
+        """
+        Remove a detached snapshot or file-view path and prune empty parents.
+
+        :param target_path: Detached file or directory path to remove
+        :type target_path: pathlib.Path
+        :param root_path: Root directory that must be preserved
+        :type root_path: pathlib.Path
+        :return: ``None``.
+        :rtype: None
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._remove_detached_path(Path("/tmp/demo/file.txt"), Path("/tmp/demo"))  # doctest: +SKIP
+        """
+
+        if target_path.is_symlink() or target_path.is_file():
+            target_path.unlink()
+        elif target_path.is_dir():
+            shutil.rmtree(str(target_path))
+        elif target_path.exists():
+            target_path.unlink()
+
+        parent = target_path.parent
+        while parent != root_path and parent.exists():
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
 
     def _ensure_detached_view(self, target_path: Path, data: bytes, file_payload: Dict[str, object]) -> None:
         """

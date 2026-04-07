@@ -20,10 +20,10 @@
 - 已落地的 Phase 0-1 MVP 公开仓库 API：`hubvault.api`、`hubvault.errors`、`hubvault.models`、`hubvault.operations`、`hubvault.repo`
 - 已落地的本地仓库目录布局、whole-file blob 提交/读取、`hf_hub_download()` 路径保真与只读/可重建视图语义
 - 已落地的 public-only 单元测试，按 `hubvault/` 模块树拆分到对应的 `test/**/test_<module>.py` 文件，并覆盖新仓库 API 的核心行为与回归要求
+- 已落地的 Phase 2 refs / reflog / 便捷 upload-delete / `snapshot_download()` 能力，以及对应的 `test/test_phase2.py` 全周期集成回归
 
 尚未落地的核心能力包括：
 
-- branch/tag 生命周期管理、`snapshot_download()`、历史查询等 Phase 2 可用性增强
 - chunk/pack/index 大文件引擎
 - full verify、gc、compact、merge 等长期维护能力
 
@@ -49,7 +49,7 @@
 - `03-transaction-consistency.md`
   锁协议、事务状态机、崩溃恢复和一致性红线。
 - `04-api-compat.md`
-  公开 Python API、数据模型、错误模型和与 `huggingface_hub` 的兼容边界。
+  公开 Python API、数据模型、错误模型和与 `huggingface_hub` 的兼容边界，包含 Phase 2 refs / snapshot / upload-delete 对齐结论。
 - `05-gc-roadmap.md`
   verify / GC / compact 路线图、保留策略和回收阶段拆分。
 - `06-phase-execution.md`
@@ -64,6 +64,7 @@
 - 仓库根目录自包含全部持久化状态，关闭仓库后可以直接 `mv`、打包、解压并继续使用
 - 只实现 whole-file blob 存储，不在 MVP 阶段引入 chunk pack
 - 先打通 `create_repo -> create_commit -> list -> read -> reset -> quick_verify`
+- 在 Phase 2 补齐 `list_repo_refs -> create/delete branch/tag -> upload/delete helpers -> snapshot_download -> list_repo_reflog`
 - `hf_hub_download()` 与 `snapshot_download()` 返回的文件路径必须保留 repo 内相对路径后缀
 - 文件元数据要同时维护 HF 兼容的 `oid` / `blob_id` 与 `sha256`，其中公开 `sha256` 使用和 HF 一样的裸 64 位 hex
 - 所有单元测试走公开 API 或公开 CLI，不依赖 private / protected 实现细节，也不把规划文档本身当成单测对象

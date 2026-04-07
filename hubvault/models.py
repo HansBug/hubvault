@@ -10,6 +10,9 @@ The module contains:
 * :class:`RepoInfo` - Basic information about a local repository
 * :class:`CommitInfo` - HF-style commit creation result metadata
 * :class:`GitCommitInfo` - HF-style commit listing metadata
+* :class:`GitRefInfo` - HF-style git reference metadata
+* :class:`GitRefs` - HF-style git reference collection
+* :class:`ReflogEntry` - Local reflog entry metadata
 * :class:`LastCommitInfo` - Last-commit metadata compatible with HF path listings
 * :class:`BlobSecurityInfo` - Security metadata compatible with HF path listings
 * :class:`RepoFile` - HF-style file metadata entry
@@ -87,7 +90,7 @@ class CommitInfo(str):
     :vartype pr_revision: Optional[str]
     :ivar pr_num: Pull-request number placeholder. Always ``None`` for the
         local repository flow.
-    :vartype pr_num: Optional[int]
+    :vartype pr_num: Optional[str]
 
     Example::
 
@@ -108,7 +111,7 @@ class CommitInfo(str):
     pr_url: Optional[str] = None
     repo_url: str = field(init=False)
     pr_revision: Optional[str] = field(init=False)
-    pr_num: Optional[int] = field(init=False)
+    pr_num: Optional[str] = field(init=False)
     _url: Optional[str] = field(repr=False, default=None)
 
     def __new__(cls, *args, commit_url: str, _url: Optional[str] = None, **kwargs):
@@ -189,6 +192,100 @@ class GitCommitInfo:
     message: str
     formatted_title: Optional[str]
     formatted_message: Optional[str]
+
+
+@dataclass(frozen=True)
+class GitRefInfo:
+    """
+    Describe a git reference in HF-style form.
+
+    This model follows the public role of
+    ``huggingface_hub.hf_api.GitRefInfo``. The local repository allows an
+    empty branch ref before the first commit, so ``target_commit`` may be
+    ``None`` for that local-only case.
+
+    :param name: Short branch or tag name
+    :type name: str
+    :param ref: Full ref name such as ``refs/heads/main``
+    :type ref: str
+    :param target_commit: Target commit ID, or ``None`` for an empty local ref
+    :type target_commit: Optional[str]
+
+    Example::
+
+        >>> info = GitRefInfo("main", "refs/heads/main", None)
+        >>> info.ref
+        'refs/heads/main'
+    """
+
+    name: str
+    ref: str
+    target_commit: Optional[str]
+
+
+@dataclass(frozen=True)
+class GitRefs:
+    """
+    Describe the visible git references for a repository.
+
+    This model follows the public role of ``huggingface_hub.hf_api.GitRefs``.
+    The local repository does not support convert refs or pull requests, but
+    keeps the same top-level structure for compatibility.
+
+    :param branches: Visible branch references
+    :type branches: List[GitRefInfo]
+    :param converts: Convert refs. Always empty for the local repository.
+    :type converts: List[GitRefInfo]
+    :param tags: Visible tag references
+    :type tags: List[GitRefInfo]
+    :param pull_requests: Pull-request refs when explicitly requested. The
+        local repository returns ``[]`` if requested and ``None`` otherwise.
+    :type pull_requests: Optional[List[GitRefInfo]]
+
+    Example::
+
+        >>> refs = GitRefs(branches=[], converts=[], tags=[], pull_requests=None)
+        >>> refs.tags
+        []
+    """
+
+    branches: List[GitRefInfo]
+    converts: List[GitRefInfo]
+    tags: List[GitRefInfo]
+    pull_requests: Optional[List[GitRefInfo]] = None
+
+
+@dataclass(frozen=True)
+class ReflogEntry:
+    """
+    Describe a single reflog record for a branch or tag.
+
+    :param timestamp: UTC time recorded for the reflog entry
+    :type timestamp: datetime.datetime
+    :param ref_name: Full ref name such as ``refs/heads/main``
+    :type ref_name: str
+    :param old_head: Previous target commit, if any
+    :type old_head: Optional[str]
+    :param new_head: New target commit, if any
+    :type new_head: Optional[str]
+    :param message: Short reflog message
+    :type message: str
+    :param checksum: Integrity checksum for the reflog record
+    :type checksum: str
+
+    Example::
+
+        >>> entry = ReflogEntry(datetime(2024, 1, 1), "refs/heads/main", None, "sha256:c1", "seed", "sha256:x")
+        >>> entry.message
+        'seed'
+    """
+
+    timestamp: datetime
+    ref_name: str
+    old_head: Optional[str]
+    new_head: Optional[str]
+    message: str
+    checksum: str
 
 
 @dataclass(frozen=True)
@@ -344,6 +441,7 @@ class RepoFolder:
         """
 
         return self.last_commit
+
 
 @dataclass(frozen=True)
 class BlobLfsInfo:

@@ -313,6 +313,10 @@ class TestRepoSemantics:
                 commit_message="blocked",
             )
 
+        report = api.quick_verify()
+        assert any("unexpected txn entry: note.txt" in warning for warning in report.warnings)
+        assert any("active lock directory: write.lock" in warning for warning in report.warnings)
+
     def test_repo_detects_ref_and_config_corruption(self, tmp_path):
         api, repo_dir = _single_file_repo(tmp_path, repo_name="corrupt-refs")
 
@@ -518,3 +522,87 @@ class TestRepoSemantics:
 
         with pytest.raises(RevisionNotFoundError):
             api.reset_ref("main", to_revision="missing")
+
+    def test_snapshot_views_are_rebuilt_and_reported_as_stale_when_modified(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        api.upload_file(path_or_fileobj=b"payload-v1", path_in_repo="bundle/file.bin")
+
+        snapshot_dir = Path(api.snapshot_download())
+        snapshot_file = snapshot_dir / "bundle" / "file.bin"
+        assert snapshot_file.read_bytes() == b"payload-v1"
+
+        snapshot_file.write_bytes(b"tampered")
+        report = api.quick_verify()
+        assert report.ok is True
+        assert any("stale snapshot view" in warning for warning in report.warnings)
+
+        rebuilt_snapshot_dir = Path(api.snapshot_download())
+        rebuilt_snapshot_file = rebuilt_snapshot_dir / "bundle" / "file.bin"
+        assert rebuilt_snapshot_dir == snapshot_dir
+        assert rebuilt_snapshot_file.read_bytes() == b"payload-v1"
+
+        rebuilt_snapshot_file.unlink()
+        missing_report = api.quick_verify()
+        assert any("stale snapshot view" in warning for warning in missing_report.warnings)
+
+    def test_upload_folder_delete_patterns_and_deleted_ref_reflogs_work_via_public_api(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        api.upload_file(path_or_fileobj=b"root", path_in_repo="root.txt")
+
+        initial_source = tmp_path / "source-v1"
+        initial_source.mkdir()
+        (initial_source / "keep.txt").write_text("keep-v1\n", encoding="utf-8")
+        (initial_source / "drop.txt").write_text("drop-v1\n", encoding="utf-8")
+        api.upload_folder(folder_path=initial_source, path_in_repo="bundle")
+
+        updated_source = tmp_path / "source-v2"
+        updated_source.mkdir()
+        (updated_source / "keep.txt").write_text("keep-v2\n", encoding="utf-8")
+        (updated_source / "new.txt").write_text("new-v2\n", encoding="utf-8")
+        (updated_source / ".git").mkdir()
+        (updated_source / ".git" / "ignored.txt").write_text("ignored\n", encoding="utf-8")
+
+        api.upload_folder(
+            folder_path=updated_source,
+            path_in_repo="bundle",
+            delete_patterns="*.txt",
+        )
+
+        assert api.list_repo_files() == [
+            "bundle/keep.txt",
+            "bundle/new.txt",
+            "root.txt",
+        ]
+        assert api.read_bytes("bundle/keep.txt") == b"keep-v2\n"
+        assert api.read_bytes("bundle/new.txt") == b"new-v2\n"
+
+        current_head = api.repo_info().head
+        api.create_branch(branch="dev", revision=current_head)
+        api.create_tag(tag="release", revision=current_head)
+        api.delete_branch(branch="dev")
+        api.delete_tag(tag="release")
+
+        branch_reflog = api.list_repo_reflog("refs/heads/dev")
+        tag_reflog = api.list_repo_reflog("refs/tags/release")
+
+        assert [item.message for item in branch_reflog] == ["delete branch", "create branch"]
+        assert branch_reflog[0].new_head is None
+        assert branch_reflog[1].new_head == current_head
+        assert [item.message for item in tag_reflog] == ["delete tag", "create tag"]
+        assert tag_reflog[0].new_head is None
+        assert api.list_repo_reflog("release")[0].ref_name == "refs/tags/release"
+
+        with pytest.raises(UnsupportedPathError):
+            api.hf_hub_download("root.txt", local_dir=tmp_path / "repo" / "unsafe")
+
+        snapshot_dir = tmp_path / "managed-snapshot"
+        first_snapshot = Path(api.snapshot_download(local_dir=snapshot_dir))
+        assert (first_snapshot / "bundle" / "new.txt").read_bytes() == b"new-v2\n"
+
+        api.delete_folder("bundle")
+        rebuilt_snapshot = Path(api.snapshot_download(local_dir=snapshot_dir))
+        assert rebuilt_snapshot == first_snapshot
+        assert not (rebuilt_snapshot / "bundle" / "new.txt").exists()
+        assert not (rebuilt_snapshot / "bundle").exists()

@@ -8,7 +8,10 @@ from hubvault.models import (
     BlobSecurityInfo,
     CommitInfo,
     GitCommitInfo,
+    GitRefInfo,
+    GitRefs,
     LastCommitInfo,
+    ReflogEntry,
     RepoFile,
     RepoFolder,
     RepoInfo,
@@ -74,18 +77,44 @@ class TestModels:
             formatted_title="<p>seed</p>",
             formatted_message="<p>body</p>",
         )
+        git_ref = GitRefInfo(
+            name="main",
+            ref="refs/heads/main",
+            target_commit=None,
+        )
+        git_refs = GitRefs(
+            branches=[git_ref],
+            converts=[],
+            tags=[],
+            pull_requests=[],
+        )
+        reflog_entry = ReflogEntry(
+            timestamp=datetime(2024, 1, 2, tzinfo=timezone.utc),
+            ref_name="refs/heads/main",
+            old_head=None,
+            new_head="sha256:c1",
+            message="seed",
+            checksum="sha256:deadbeef",
+        )
         report = VerifyReport(ok=True)
 
         assert commit.oid == "sha256:c1"
         assert commit.commit_message == "hello"
         assert commit.commit_description == "world"
         assert commit.repo_url == "file:///tmp/repo"
+        assert commit.pr_num is None
         assert str(commit) == commit.commit_url
         assert git_commit.authors == ["tester"]
+        assert git_ref.target_commit is None
+        assert git_refs.branches[0].ref == "refs/heads/main"
+        assert git_refs.pull_requests == []
+        assert reflog_entry.message == "seed"
+        assert reflog_entry.ref_name == "refs/heads/main"
         assert lfs.pointer_size == 128
         assert repo_file.rfilename == "model.bin"
         assert repo_file.lastCommit == last_commit
         assert repo_folder.tree_id == "tree"
+        assert repo_folder.lastCommit == last_commit
         assert report.checked_refs == []
         assert report.warnings == []
         assert report.errors == []

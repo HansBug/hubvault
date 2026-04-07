@@ -51,11 +51,11 @@ hubvault/
 - `errors.py`
   公开异常模型，避免调用方依赖内部实现细节。
 - `models.py`
-  公开 `RepoInfo`、`CommitInfo`、`GitCommitInfo`、`RepoFile`、`RepoFolder`、`BlobLfsInfo`、`VerifyReport`。
+  公开 `RepoInfo`、`CommitInfo`、`GitCommitInfo`、`GitRefInfo`、`GitRefs`、`ReflogEntry`、`RepoFile`、`RepoFolder`、`BlobLfsInfo`、`VerifyReport`。
 - `operations.py`
   公开 `CommitOperationAdd/Delete/Copy`。
 - `repo.py`
-  当前 MVP 的嵌入式本地仓库后端，负责磁盘格式、事务、对象读写、下载视图、HF 风格路径查询和快速校验。
+  当前 MVP + Phase 2 的嵌入式本地仓库后端，负责磁盘格式、事务、对象读写、branch/tag 生命周期、reflog、下载/快照视图、HF 风格路径查询和快速校验。
 
 ### 2.2 后续推荐拆分结构
 
@@ -127,9 +127,10 @@ hubvault/
 - 打开或初始化仓库
 - 执行 commit / reset / branch / tag
 - 维护 ref 与 reflog
-- 构造 `RepoInfo`、`CommitInfo`、`GitCommitInfo`、`RepoFile`、`RepoFolder`
+- 构造 `RepoInfo`、`CommitInfo`、`GitCommitInfo`、`GitRefInfo`、`GitRefs`、`ReflogEntry`、`RepoFile`、`RepoFolder`
 - 确保持久化记录只写逻辑路径、对象 ID 与相对布局，不写宿主绝对路径
 - 为下载类 API 生成保留 repo 相对路径后缀的可读文件路径
+- 为 `snapshot_download()` 维护目录级用户视图与最小元数据
 - 维护公开文件 `oid` / `sha256` 与内部对象引用之间的映射
 - 在用户视图被删除、替换或污染时，能够从仓库真相重建该视图
 
@@ -190,7 +191,7 @@ hubvault/
 - `File` 只支持 `storage_kind="blob"`
 - 不实现 pack 和索引段
 - `quick_verify()` 只校验 refs、对象和 blob 引用闭包
-- `snapshot_download()` 先构建只读缓存目录，不处理 chunk 级共享
+- `snapshot_download()` 已在 Phase 2 先构建 detached 快照缓存目录，不处理 chunk 级共享
 - `upload_large_folder()` 在 Phase 3 前可退化为多次 whole-file 提交
 - 所有缓存、事务和诊断状态都放在 repo root 下，保证仓库整体搬迁后仍然自洽
 - 默认下载路径可以使用 symlink、reflink/COW clone 或实体文件，但不能使用会形成可写别名的 hardlink；用户拿到的最终路径必须保留 repo 相对路径后缀

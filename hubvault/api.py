@@ -26,7 +26,16 @@ from os import PathLike
 from pathlib import Path
 from typing import BinaryIO, List, Optional, Sequence, Union
 
-from .models import CommitInfo, GitCommitInfo, RepoFile, RepoFolder, RepoInfo, VerifyReport
+from .models import (
+    CommitInfo,
+    GitCommitInfo,
+    GitRefs,
+    ReflogEntry,
+    RepoFile,
+    RepoFolder,
+    RepoInfo,
+    VerifyReport,
+)
 from .repo import _RepositoryBackend
 
 
@@ -325,6 +334,196 @@ class HubVaultApi:
             formatted=formatted,
         )
 
+    def list_repo_refs(self, *, include_pull_requests: bool = False) -> GitRefs:
+        """
+        List visible branch and tag refs in HF-style form.
+
+        :param include_pull_requests: Whether pull-request refs should be
+            included. The local repository returns ``[]`` when requested and
+            ``None`` otherwise.
+        :type include_pull_requests: bool, optional
+        :return: Visible repository refs
+        :rtype: GitRefs
+        :raises hubvault.errors.RepositoryNotFoundError: Raised when the repository
+            root does not contain a valid ``hubvault`` repository.
+
+        Example::
+
+            >>> api = HubVaultApi("/tmp/demo-repo")
+            >>> _ = api.create_repo(exist_ok=True)
+            >>> api.list_repo_refs().branches[0].name
+            'main'
+        """
+
+        return self._backend.list_repo_refs(include_pull_requests=include_pull_requests)
+
+    def create_branch(
+        self,
+        *,
+        branch: str,
+        revision: Optional[str] = None,
+        exist_ok: bool = False,
+    ) -> None:
+        """
+        Create a branch from an existing revision.
+
+        :param branch: Branch name to create
+        :type branch: str
+        :param revision: Starting revision, defaults to the API default revision
+        :type revision: Optional[str]
+        :param exist_ok: Whether an existing branch may be reused
+        :type exist_ok: bool, optional
+        :return: ``None``.
+        :rtype: None
+        :raises hubvault.errors.ConflictError: Raised when the branch already
+            exists and ``exist_ok`` is ``False``.
+        :raises hubvault.errors.RevisionNotFoundError: Raised when the selected
+            revision cannot be resolved.
+        :raises hubvault.errors.UnsupportedPathError: Raised when ``branch`` is
+            invalid.
+
+        Example::
+
+            >>> api = HubVaultApi("/tmp/demo-repo")
+            >>> _ = api.create_repo(exist_ok=True)
+            >>> api.create_branch(branch="dev")
+        """
+
+        self._backend.create_branch(
+            branch=branch,
+            revision=revision or self._default_revision,
+            exist_ok=exist_ok,
+        )
+
+    def delete_branch(self, *, branch: str) -> None:
+        """
+        Delete a branch from the repository.
+
+        :param branch: Branch name to delete
+        :type branch: str
+        :return: ``None``.
+        :rtype: None
+        :raises hubvault.errors.ConflictError: Raised when attempting to delete
+            the default branch.
+        :raises hubvault.errors.RevisionNotFoundError: Raised when the branch
+            does not exist.
+
+        Example::
+
+            >>> api = HubVaultApi("/tmp/demo-repo")
+            >>> _ = api.create_repo(exist_ok=True)
+            >>> api.create_branch(branch="dev")
+            >>> api.delete_branch(branch="dev")
+        """
+
+        self._backend.delete_branch(branch=branch)
+
+    def create_tag(
+        self,
+        *,
+        tag: str,
+        tag_message: Optional[str] = None,
+        revision: Optional[str] = None,
+        exist_ok: bool = False,
+    ) -> None:
+        """
+        Create a lightweight tag from an existing revision.
+
+        :param tag: Tag name to create
+        :type tag: str
+        :param tag_message: Optional tag message recorded in the reflog
+        :type tag_message: Optional[str]
+        :param revision: Starting revision, defaults to the API default revision
+        :type revision: Optional[str]
+        :param exist_ok: Whether an existing tag may be reused
+        :type exist_ok: bool, optional
+        :return: ``None``.
+        :rtype: None
+        :raises hubvault.errors.ConflictError: Raised when the tag already
+            exists and ``exist_ok`` is ``False``.
+        :raises hubvault.errors.RevisionNotFoundError: Raised when the selected
+            revision cannot be resolved to a commit.
+
+        Example::
+
+            >>> api = HubVaultApi("/tmp/demo-repo")
+            >>> _ = api.create_repo(exist_ok=True)
+            >>> _ = api.create_commit(
+            ...     operations=[CommitOperationAdd("demo.txt", b"hello")],
+            ...     commit_message="seed",
+            ... )
+            >>> api.create_tag(tag="v1")
+        """
+
+        self._backend.create_tag(
+            tag=tag,
+            tag_message=tag_message,
+            revision=revision or self._default_revision,
+            exist_ok=exist_ok,
+        )
+
+    def delete_tag(self, *, tag: str) -> None:
+        """
+        Delete a tag from the repository.
+
+        :param tag: Tag name to delete
+        :type tag: str
+        :return: ``None``.
+        :rtype: None
+        :raises hubvault.errors.RevisionNotFoundError: Raised when the tag does
+            not exist.
+
+        Example::
+
+            >>> api = HubVaultApi("/tmp/demo-repo")
+            >>> _ = api.create_repo(exist_ok=True)
+            >>> _ = api.create_commit(
+            ...     operations=[CommitOperationAdd("demo.txt", b"hello")],
+            ...     commit_message="seed",
+            ... )
+            >>> api.create_tag(tag="v1")
+            >>> api.delete_tag(tag="v1")
+        """
+
+        self._backend.delete_tag(tag=tag)
+
+    def list_repo_reflog(
+        self,
+        ref_name: str,
+        *,
+        limit: Optional[int] = None,
+    ) -> Sequence[ReflogEntry]:
+        """
+        List reflog entries for a branch or tag.
+
+        This is a local repository extension intended for audit and recovery
+        workflows.
+
+        :param ref_name: Full ref name or an unambiguous short ref name
+        :type ref_name: str
+        :param limit: Optional maximum number of newest entries to return
+        :type limit: Optional[int]
+        :return: Reflog entries ordered from newest to oldest
+        :rtype: Sequence[ReflogEntry]
+        :raises hubvault.errors.ConflictError: Raised when a short ref name is
+            ambiguous across branches and tags.
+        :raises hubvault.errors.RevisionNotFoundError: Raised when the ref or
+            reflog does not exist.
+
+        Example::
+
+            >>> api = HubVaultApi("/tmp/demo-repo")
+            >>> _ = api.create_repo(exist_ok=True)
+            >>> _ = api.create_commit(
+            ...     operations=[CommitOperationAdd("demo.txt", b"hello")],
+            ...     commit_message="seed",
+            ... )
+            >>> api.list_repo_reflog("main")[0].ref_name
+            'refs/heads/main'
+        """
+
+        return self._backend.list_repo_reflog(ref_name=ref_name, limit=limit)
+
     def open_file(self, path_in_repo: str, *, revision: Optional[str] = None) -> BinaryIO:
         """
         Open a file as a read-only binary stream.
@@ -428,6 +627,218 @@ class HubVaultApi:
             filename=filename,
             revision=revision or self._default_revision,
             local_dir=local_dir_str,
+        )
+
+    def snapshot_download(
+        self,
+        *,
+        revision: Optional[str] = None,
+        local_dir: Optional[Union[str, PathLike]] = None,
+        allow_patterns: Optional[Union[Sequence[str], str]] = None,
+        ignore_patterns: Optional[Union[Sequence[str], str]] = None,
+    ) -> str:
+        """
+        Materialize a detached snapshot directory for a revision.
+
+        :param revision: Revision to resolve, defaults to the API default revision
+        :type revision: Optional[str]
+        :param local_dir: Optional external export directory
+        :type local_dir: Optional[Union[str, os.PathLike[str]]]
+        :param allow_patterns: Optional allowlist for repo-relative paths
+        :type allow_patterns: Optional[Union[Sequence[str], str]]
+        :param ignore_patterns: Optional denylist for repo-relative paths
+        :type ignore_patterns: Optional[Union[Sequence[str], str]]
+        :return: Filesystem path to the detached snapshot directory
+        :rtype: str
+        :raises hubvault.errors.RevisionNotFoundError: Raised when the revision
+            cannot be resolved.
+        :raises hubvault.errors.UnsupportedPathError: Raised when ``local_dir``
+            points into the repository root.
+
+        Example::
+
+            >>> api = HubVaultApi("/tmp/demo-repo")
+            >>> _ = api.create_repo(exist_ok=True)
+            >>> api.snapshot_download().endswith("cache/snapshots/" + api.snapshot_download().split("cache/snapshots/")[-1])
+            True
+        """
+
+        local_dir_str = None if local_dir is None else str(local_dir)
+        return self._backend.snapshot_download(
+            revision=revision or self._default_revision,
+            local_dir=local_dir_str,
+            allow_patterns=allow_patterns,
+            ignore_patterns=ignore_patterns,
+        )
+
+    def upload_file(
+        self,
+        *,
+        path_or_fileobj: Union[str, PathLike, bytes, BinaryIO],
+        path_in_repo: str,
+        revision: Optional[str] = None,
+        commit_message: Optional[str] = None,
+        commit_description: Optional[str] = None,
+        parent_commit: Optional[str] = None,
+    ) -> CommitInfo:
+        """
+        Upload a single file through the public commit API.
+
+        :param path_or_fileobj: File content source
+        :type path_or_fileobj: Union[str, os.PathLike[str], bytes, BinaryIO]
+        :param path_in_repo: Target repo-relative path
+        :type path_in_repo: str
+        :param revision: Target branch name, defaults to the API default revision
+        :type revision: Optional[str]
+        :param commit_message: Optional commit summary
+        :type commit_message: Optional[str]
+        :param commit_description: Optional commit description/body
+        :type commit_description: Optional[str]
+        :param parent_commit: Optional optimistic-concurrency parent commit
+        :type parent_commit: Optional[str]
+        :return: Commit metadata for the created commit
+        :rtype: CommitInfo
+
+        Example::
+
+            >>> api = HubVaultApi("/tmp/demo-repo")
+            >>> _ = api.create_repo(exist_ok=True)
+            >>> api.upload_file(path_or_fileobj=b"hello", path_in_repo="demo.txt").commit_message
+            'Upload demo.txt with hubvault'
+        """
+
+        return self._backend.upload_file(
+            path_or_fileobj=path_or_fileobj,
+            path_in_repo=path_in_repo,
+            revision=revision or self._default_revision,
+            commit_message=commit_message,
+            commit_description=commit_description,
+            parent_commit=parent_commit,
+        )
+
+    def upload_folder(
+        self,
+        *,
+        folder_path: Union[str, PathLike],
+        path_in_repo: Optional[str] = None,
+        commit_message: Optional[str] = None,
+        commit_description: Optional[str] = None,
+        revision: Optional[str] = None,
+        parent_commit: Optional[str] = None,
+        allow_patterns: Optional[Union[Sequence[str], str]] = None,
+        ignore_patterns: Optional[Union[Sequence[str], str]] = None,
+        delete_patterns: Optional[Union[Sequence[str], str]] = None,
+    ) -> CommitInfo:
+        """
+        Upload a local folder while preserving its relative layout.
+
+        :param folder_path: Local folder to upload
+        :type folder_path: Union[str, os.PathLike[str]]
+        :param path_in_repo: Optional target directory in the repo
+        :type path_in_repo: Optional[str]
+        :param commit_message: Optional commit summary
+        :type commit_message: Optional[str]
+        :param commit_description: Optional commit description/body
+        :type commit_description: Optional[str]
+        :param revision: Target branch name, defaults to the API default revision
+        :type revision: Optional[str]
+        :param parent_commit: Optional optimistic-concurrency parent commit
+        :type parent_commit: Optional[str]
+        :param allow_patterns: Optional allowlist for local relative paths
+        :type allow_patterns: Optional[Union[Sequence[str], str]]
+        :param ignore_patterns: Optional denylist for local relative paths
+        :type ignore_patterns: Optional[Union[Sequence[str], str]]
+        :param delete_patterns: Optional denylist applied to already uploaded
+            repo files beneath ``path_in_repo``
+        :type delete_patterns: Optional[Union[Sequence[str], str]]
+        :return: Commit metadata for the created commit
+        :rtype: CommitInfo
+
+        Example::
+
+            >>> api = HubVaultApi("/tmp/demo-repo")
+            >>> _ = api.create_repo(exist_ok=True)
+            >>> # See :meth:`hubvault.repo._RepositoryBackend.upload_folder` for a full filesystem example.
+        """
+
+        return self._backend.upload_folder(
+            folder_path=str(folder_path),
+            path_in_repo=path_in_repo,
+            commit_message=commit_message,
+            commit_description=commit_description,
+            revision=revision or self._default_revision,
+            parent_commit=parent_commit,
+            allow_patterns=allow_patterns,
+            ignore_patterns=ignore_patterns,
+            delete_patterns=delete_patterns,
+        )
+
+    def delete_file(
+        self,
+        path_in_repo: str,
+        *,
+        revision: Optional[str] = None,
+        commit_message: Optional[str] = None,
+        commit_description: Optional[str] = None,
+        parent_commit: Optional[str] = None,
+    ) -> CommitInfo:
+        """
+        Delete a single file through the public commit API.
+
+        :param path_in_repo: Repo-relative file path
+        :type path_in_repo: str
+        :param revision: Target branch name, defaults to the API default revision
+        :type revision: Optional[str]
+        :param commit_message: Optional commit summary
+        :type commit_message: Optional[str]
+        :param commit_description: Optional commit description/body
+        :type commit_description: Optional[str]
+        :param parent_commit: Optional optimistic-concurrency parent commit
+        :type parent_commit: Optional[str]
+        :return: Commit metadata for the created commit
+        :rtype: CommitInfo
+        """
+
+        return self._backend.delete_file(
+            path_in_repo=path_in_repo,
+            revision=revision or self._default_revision,
+            commit_message=commit_message,
+            commit_description=commit_description,
+            parent_commit=parent_commit,
+        )
+
+    def delete_folder(
+        self,
+        path_in_repo: str,
+        *,
+        revision: Optional[str] = None,
+        commit_message: Optional[str] = None,
+        commit_description: Optional[str] = None,
+        parent_commit: Optional[str] = None,
+    ) -> CommitInfo:
+        """
+        Delete a folder subtree through the public commit API.
+
+        :param path_in_repo: Repo-relative folder path
+        :type path_in_repo: str
+        :param revision: Target branch name, defaults to the API default revision
+        :type revision: Optional[str]
+        :param commit_message: Optional commit summary
+        :type commit_message: Optional[str]
+        :param commit_description: Optional commit description/body
+        :type commit_description: Optional[str]
+        :param parent_commit: Optional optimistic-concurrency parent commit
+        :type parent_commit: Optional[str]
+        :return: Commit metadata for the created commit
+        :rtype: CommitInfo
+        """
+
+        return self._backend.delete_folder(
+            path_in_repo=path_in_repo,
+            revision=revision or self._default_revision,
+            commit_message=commit_message,
+            commit_description=commit_description,
+            parent_commit=parent_commit,
         )
 
     def reset_ref(self, ref_name: str, *, to_revision: str) -> CommitInfo:
