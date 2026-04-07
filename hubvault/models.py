@@ -95,14 +95,16 @@ class PathInfo:
     :param blob_id: Public blob identifier. For the MVP whole-file mode this is
         the same value as :attr:`oid`
     :type blob_id: Optional[str]
-    :param sha256: SHA-256 digest of the logical file content
+    :param sha256: Raw hexadecimal SHA-256 digest of the logical file content,
+        matching the public ``huggingface_hub`` ``lfs.sha256`` style without an
+        algorithm prefix
     :type sha256: Optional[str]
     :param etag: Public ETag value for download-facing APIs
     :type etag: Optional[str]
 
     Example::
 
-        >>> info = PathInfo("demo.txt", "file", 4, "oid", "blob", "sha256:abc", "etag")
+        >>> info = PathInfo("demo.txt", "file", 4, "oid", "blob", "abc", "etag")
         >>> info.path
         'demo.txt'
     """
@@ -123,14 +125,16 @@ class BlobLfsInfo:
 
     :param size: Logical file size in bytes
     :type size: int
-    :param sha256: SHA-256 digest of the file content
+    :param sha256: Raw hexadecimal SHA-256 digest of the file content, matching
+        the public ``huggingface_hub`` ``lfs.sha256`` style without an
+        algorithm prefix
     :type sha256: str
     :param pointer_size: Size of the canonical pointer content
     :type pointer_size: int
 
     Example::
 
-        >>> info = BlobLfsInfo(1024, "sha256:abc", 128)
+        >>> info = BlobLfsInfo(1024, "abc", 128)
         >>> info.pointer_size
         128
     """

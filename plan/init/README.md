@@ -65,7 +65,7 @@
 - 只实现 whole-file blob 存储，不在 MVP 阶段引入 chunk pack
 - 先打通 `create_repo -> create_commit -> list -> read -> reset -> quick_verify`
 - `hf_hub_download()` 与 `snapshot_download()` 返回的文件路径必须保留 repo 内相对路径后缀
-- 文件元数据要同时维护 HF 兼容的 `oid` / `blob_id` 与 `sha256`
+- 文件元数据要同时维护 HF 兼容的 `oid` / `blob_id` 与 `sha256`，其中公开 `sha256` 使用和 HF 一样的裸 64 位 hex
 - 所有单元测试走公开 API 或公开 CLI，不依赖 private / protected 实现细节，也不把规划文档本身当成单测对象
 
 更重的能力放到后续 phase：

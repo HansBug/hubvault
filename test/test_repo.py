@@ -322,6 +322,16 @@ class TestRepoSemantics:
         assert any(item.startswith("refs/heads/main:") for item in report.errors)
 
     def test_repo_detects_verify_corruption_cases(self, tmp_path):
+        api, repo_dir = _single_file_repo(tmp_path, repo_name="legacy-prefixed-public-sha", payload=b"payload")
+        file_object_path = _only_path(repo_dir / "objects" / "files" / "sha256", "*.json")
+        file_payload = _read_json(file_object_path)
+        raw_sha256 = file_payload["payload"]["sha256"]
+        file_payload["payload"]["sha256"] = "sha256:" + raw_sha256
+        _write_json(file_object_path, file_payload)
+        assert api.get_paths_info(["file.bin"])[0].sha256 == raw_sha256
+        assert api.read_bytes("file.bin") == b"payload"
+        assert api.quick_verify().ok is True
+
         api, repo_dir = _single_file_repo(tmp_path, repo_name="missing-blob-data", payload=b"payload")
         blob_data_path = _only_path(repo_dir / "objects" / "blobs" / "sha256", "*.data")
         blob_data_path.unlink()

@@ -33,10 +33,10 @@ class TestModels:
             size=3,
             oid="oid",
             blob_id="blob",
-            sha256="sha256:abc",
+            sha256="abc",
             etag="etag",
         )
-        lfs = BlobLfsInfo(size=1024, sha256="sha256:def", pointer_size=128)
+        lfs = BlobLfsInfo(size=1024, sha256="def", pointer_size=128)
         report = VerifyReport(ok=True)
 
         assert commit.parents == ["sha256:p1"]
@@ -45,4 +45,3 @@ class TestModels:
         assert report.checked_refs == []
         assert report.warnings == []
         assert report.errors == []
-

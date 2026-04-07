@@ -281,6 +281,13 @@ class HubVaultApi:
 - 不支持通过返回的句柄执行写入、截断或回写
 - 如果调用方需要修改内容，应先读出数据或导出到外部路径，再通过 `create_commit()` 等 API 提交新版本
 
+公开文件哈希字段语义也需要明确：
+
+- `blob_id` / `oid` 使用 HF 风格的 git OID 裸 hex
+- `sha256` 使用与 HF `BlobLfsInfo.sha256` 一致的裸 64 位 hex
+- 公开 `sha256` 不带 `sha256:` 算法前缀
+- `sha256:<hex>` 只用于仓库内部对象 ID、payload 校验和等内部完整性字段
+
 ## 7. 关键参数语义
 
 建议保留以下关键参数：
@@ -303,7 +310,7 @@ class HubVaultApi:
 - `parent_commit` 与 `expected_head` 用于乐观并发控制
 - `allow_patterns` / `ignore_patterns` / `delete_patterns` 优先服务 `upload_folder()` 与 `snapshot_download()`
 - `oid` 指对外文件 OID，推荐与 HF `RepoFile.blob_id` 对齐
-- `sha256` 指真实文件内容的 SHA-256
+- `sha256` 指真实文件内容的 SHA-256，格式与 HF `BlobLfsInfo.sha256` 一样使用裸 hex
 - 对 LFS 兼容文件，`etag` 推荐等于 `sha256`；对普通文件，`etag` 推荐等于 `oid`
 - 对下载出的文件路径进行本地改写，不构成对 repo 的有效修改
 
@@ -362,7 +369,7 @@ assert report.ok
 - `hf_hub_download()` 返回的是缓存文件或目标导出文件
 - 不保留像 `repo_id` 这类仅为兼容外观而存在、但不会影响本地仓库行为的空参数
 - 仓库的全部正确性信息都保存在 repo root 内；导出文件、外部下载目标和调用时传入的源路径都不是仓库真相
-- `path` / `blob_id` / `sha256` / `lfs.pointer_size` 等文件公开字段应尽量与 Hugging Face `RepoFile` 语义对齐
+- `path` / `blob_id` / `sha256` / `lfs.pointer_size` 等文件公开字段应尽量与 Hugging Face `RepoFile` 语义对齐，其中 `sha256` 使用裸 hex，不带算法前缀
 - 真正有效的 repo 变更只能通过 commit 风格 API 显式提交，不能通过修改下载结果或快照目录隐式生效
 
 ## 10. 错误模型

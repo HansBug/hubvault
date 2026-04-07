@@ -40,7 +40,7 @@
 * [x] 明确 `HubVaultApi`、`CommitOperation*`、`RepoInfo`、`CommitInfo`、`PathInfo`、`VerifyReport` 的公开字段。
 * [x] 固化 `AGENTS.md` 中的测试制度、公开表面约束和回归要求。
 * [x] 冻结“repo root 自包含且可整体搬迁/归档恢复”的格式红线，禁止把真相写到仓库外部。
-* [x] 冻结 HF 兼容文件元数据语义，明确公开 `oid` / `blob_id` / `sha256` 与内部对象 ID 的区别。
+* [x] 冻结 HF 兼容文件元数据语义，明确公开 `oid` / `blob_id` / `sha256` 与内部对象 ID 的区别，并规定公开 `sha256` 使用裸 hex。
 * [x] 审查现有单元测试策略，确保测试对象只覆盖 `hubvault/` 公开源码行为，不把文档本身作为单测对象。
 * [x] 冻结“读取视图只读且可重建、真正修改只能走 commit API”的数据安全语义。
 
@@ -91,7 +91,7 @@
 * [x] 可以将分支回退到历史 commit。
 * [x] `quick_verify()` 能在正常仓库上返回成功报告。
 * [x] 仓库关闭后整体移动路径，再次打开仍能读取、回滚和校验。
-* [x] 公开文件信息中可以拿到 HF 兼容 `oid` / `sha256`。
+* [x] 公开文件信息中可以拿到 HF 兼容 `oid` / `sha256`，其中 `sha256` 为裸 64 位 hex。
 * [x] `hf_hub_download()` 返回路径以 repo 原始相对路径结尾。
 * [x] 用户删除或改写下载结果后，不会影响正式对象，再次读取时可以重建视图。
 * [x] `make unittest` 通过。

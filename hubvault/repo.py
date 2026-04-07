@@ -133,6 +133,62 @@ def _sha256_hex(data: bytes) -> str:
     return sha256(data).hexdigest()
 
 
+def _public_sha256_hex(value: str) -> str:
+    """
+    Normalize a public-facing SHA-256 value to raw hexadecimal form.
+
+    Public API fields should match :mod:`huggingface_hub` semantics, where
+    ``sha256`` values are exposed as bare hexadecimal digests without an
+    algorithm prefix. The helper also accepts legacy ``sha256:<hex>`` values so
+    existing repositories remain readable after the alignment change.
+
+    :param value: Public or legacy SHA-256 string
+    :type value: str
+    :return: Raw hexadecimal digest without the ``sha256:`` prefix
+    :rtype: str
+
+    Example::
+
+        >>> _public_sha256_hex("sha256:abc123")
+        'abc123'
+        >>> _public_sha256_hex("abc123")
+        'abc123'
+    """
+
+    text = str(value)
+    if text.startswith(OBJECT_HASH + ":"):
+        _, digest = _split_object_id(text)
+        return digest
+    return text
+
+
+def _integrity_sha256(value: str) -> str:
+    """
+    Normalize a SHA-256 value to the internal integrity-check form.
+
+    Repository object payloads and checksums continue to use the explicit
+    ``sha256:<hex>`` format internally, even though public API fields expose raw
+    hexadecimal digests.
+
+    :param value: Public or internal SHA-256 string
+    :type value: str
+    :return: Internal integrity string with ``sha256:`` prefix
+    :rtype: str
+
+    Example::
+
+        >>> _integrity_sha256("abc123")
+        'sha256:abc123'
+        >>> _integrity_sha256("sha256:abc123")
+        'sha256:abc123'
+    """
+
+    text = str(value)
+    if text.startswith(OBJECT_HASH + ":"):
+        return text
+    return OBJECT_HASH + ":" + text
+
+
 def _git_blob_oid(data: bytes) -> str:
     """
     Compute a Git-compatible blob object ID for file content bytes.
@@ -1103,7 +1159,7 @@ class _RepositoryBackend(object):
                 "view_key": view_key,
                 "revision": resolved_revision,
                 "path_in_repo": normalized_path,
-                "sha256": file_payload["sha256"],
+                "sha256": _public_sha256_hex(str(file_payload["sha256"])),
                 "oid": file_payload["oid"],
                 "target_path": str(target_path.relative_to(self._repo_path)),
                 "created_at": _utc_now(),
@@ -1221,8 +1277,8 @@ class _RepositoryBackend(object):
                 view_meta = _read_json(view_meta_path)
                 target_path = self._repo_path / str(view_meta["target_path"])
                 if target_path.exists():
-                    data_sha256 = OBJECT_HASH + ":" + _sha256_hex(target_path.read_bytes())
-                    if data_sha256 != view_meta["sha256"]:
+                    data_sha256 = _sha256_hex(target_path.read_bytes())
+                    if data_sha256 != _public_sha256_hex(str(view_meta["sha256"])):
                         warnings.append("stale file view: %s" % view_meta_path.name)
             except Exception as err:  # pragma: no cover - defensive path
                 warnings.append("failed to inspect file view %s: %s" % (view_meta_path.name, err))
@@ -1956,7 +2012,7 @@ class _RepositoryBackend(object):
             size=int(payload["logical_size"]),
             oid=str(payload["oid"]),
             blob_id=str(payload["oid"]),
-            sha256=str(payload["sha256"]),
+            sha256=_public_sha256_hex(str(payload["sha256"])),
             etag=str(payload["etag"]),
         )
 
@@ -1984,7 +2040,8 @@ class _RepositoryBackend(object):
 
         normalized_path = _normalize_repo_path(operation.path_in_repo)
         data = operation.data
-        file_sha256 = OBJECT_HASH + ":" + _sha256_hex(data)
+        file_sha256_hex = _sha256_hex(data)
+        file_sha256 = OBJECT_HASH + ":" + file_sha256_hex
         oid = _git_blob_oid(data)
         blob_payload = {
             "format_version": FORMAT_VERSION,
@@ -1999,7 +2056,7 @@ class _RepositoryBackend(object):
             "format_version": FORMAT_VERSION,
             "storage_kind": "blob",
             "logical_size": len(data),
-            "sha256": file_sha256,
+            "sha256": file_sha256_hex,
             "oid": oid,
             "etag": oid,
             "content_type_hint": operation.content_type,
@@ -2361,7 +2418,7 @@ class _RepositoryBackend(object):
                 raise IntegrityError("blob data missing")
             data = data_path.read_bytes()
             data_sha256 = OBJECT_HASH + ":" + _sha256_hex(data)
-            if data_sha256 != payload["sha256"]:
+            if data_sha256 != _integrity_sha256(str(payload["sha256"])):
                 raise IntegrityError("file sha256 mismatch")
             if data_sha256 != blob_payload["payload_sha256"]:
                 raise IntegrityError("blob payload sha256 mismatch")
@@ -2548,10 +2605,10 @@ class _RepositoryBackend(object):
         Example::
 
             >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
-            >>> backend._materialize_content_pool({"sha256": "sha256:" + "a" * 64, "oid": "b" * 40, "logical_size": 4}, b"demo")  # doctest: +SKIP
+            >>> backend._materialize_content_pool({"sha256": "a" * 64, "oid": "b" * 40, "logical_size": 4}, b"demo")  # doctest: +SKIP
         """
 
-        content_key = str(file_payload["sha256"]).split(":", 1)[1]
+        content_key = _public_sha256_hex(str(file_payload["sha256"]))
         pool_path = self._repo_path / "cache" / "materialized" / OBJECT_HASH / content_key[:2] / (content_key[2:] + ".data")
         meta_path = self._repo_path / "cache" / "materialized" / "meta" / (content_key + ".json")
         if not pool_path.exists():
@@ -2565,7 +2622,7 @@ class _RepositoryBackend(object):
             {
                 "content_key": content_key,
                 "oid": file_payload["oid"],
-                "sha256": file_payload["sha256"],
+                "sha256": content_key,
                 "size": file_payload["logical_size"],
                 "created_at": _utc_now(),
             },
@@ -2587,10 +2644,10 @@ class _RepositoryBackend(object):
         Example::
 
             >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
-            >>> backend._ensure_detached_view(Path("/tmp/demo-repo/cache/files/demo.txt"), b"demo", {"sha256": "sha256:" + "a" * 64})  # doctest: +SKIP
+            >>> backend._ensure_detached_view(Path("/tmp/demo-repo/cache/files/demo.txt"), b"demo", {"sha256": "a" * 64})  # doctest: +SKIP
         """
 
-        expected_sha256 = str(file_payload["sha256"])
+        expected_sha256 = _public_sha256_hex(str(file_payload["sha256"]))
         target_path.parent.mkdir(parents=True, exist_ok=True)
         if target_path.exists():
             if target_path.is_symlink():
@@ -2598,7 +2655,7 @@ class _RepositoryBackend(object):
             elif target_path.is_dir():
                 shutil.rmtree(str(target_path))
             elif target_path.is_file():
-                current_sha256 = OBJECT_HASH + ":" + _sha256_hex(target_path.read_bytes())
+                current_sha256 = _sha256_hex(target_path.read_bytes())
                 if current_sha256 == expected_sha256:
                     return
                 target_path.unlink()

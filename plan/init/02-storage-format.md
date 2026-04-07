@@ -447,6 +447,7 @@ Tree 记录目录项列表，每个目录项包含：
 - Phase 3 之后才允许 `storage_kind="chunked"`
 - `content_object_id` 是内部内容对象引用，不是对外兼容层里的 `blob_id`
 - `oid` / `etag` / `sha256` 是面向公开文件元数据的稳定字段
+- 其中公开 `sha256` 的格式需要与 HF `BlobLfsInfo.sha256` 保持一致，使用裸 64 位 hex
 
 ### 4.4 Blob 对象
 
@@ -469,7 +470,8 @@ MVP 新增 `Blob` 概念，表示一个 whole-file 内容对象：
 
 - 内部对象 ID：`objects/*` 下对象的仓库内部标识
 - 公开文件 `oid`：对外暴露的 HF 兼容文件 OID
-- 公开文件 `sha256`：文件逻辑内容的 SHA-256
+- 公开文件 `sha256`：文件逻辑内容的 SHA-256，格式为裸 64 位 hex
+- 内部 `logical_hash` / `payload_sha256` / object ID：继续使用 `sha256:<hex>` 显式算法前缀
 
 对齐规则建议如下：
 

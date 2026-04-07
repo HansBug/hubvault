@@ -23,7 +23,7 @@ def _git_blob_oid(data):
 
 
 def _sha256_value(data):
-    return "sha256:" + sha256(data).hexdigest()
+    return sha256(data).hexdigest()
 
 
 @pytest.mark.unittest
