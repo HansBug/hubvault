@@ -753,7 +753,7 @@ class _RepositoryBackend(object):
             ...     _ = backend.create_repo()
             ...     commit = backend.create_commit(
             ...         revision="main",
-            ...         operations=[CommitOperationAdd.from_bytes("demo.txt", b"hello")],
+            ...         operations=[CommitOperationAdd("demo.txt", b"hello")],
             ...         commit_message="seed",
             ...     )
             ...     commit.revision
@@ -778,6 +778,7 @@ class _RepositoryBackend(object):
 
             snapshot = self._snapshot_for_commit(current_head)
             staged_snapshot = dict(snapshot)
+            source_snapshots = {None: dict(snapshot)}
 
             for operation in operations:
                 if isinstance(operation, CommitOperationAdd):
@@ -785,9 +786,18 @@ class _RepositoryBackend(object):
                     _, file_object_id, _ = self._stage_add_operation(txdir, operation)
                     staged_snapshot[normalized_path] = file_object_id
                 elif isinstance(operation, CommitOperationDelete):
-                    self._apply_delete(staged_snapshot, operation.path_in_repo)
+                    self._apply_delete(staged_snapshot, operation.path_in_repo, operation.is_folder)
                 elif isinstance(operation, CommitOperationCopy):
-                    self._apply_copy(staged_snapshot, operation.src_path_in_repo, operation.path_in_repo)
+                    source_snapshot = source_snapshots.get(operation.src_revision)
+                    if source_snapshot is None:
+                        source_snapshot = self._snapshot_for_revision(operation.src_revision)
+                        source_snapshots[operation.src_revision] = dict(source_snapshot)
+                    self._apply_copy(
+                        staged_snapshot,
+                        source_snapshot,
+                        operation.src_path_in_repo,
+                        operation.path_in_repo,
+                    )
                 else:
                     raise ConflictError("unsupported commit operation")
 
@@ -857,7 +867,7 @@ class _RepositoryBackend(object):
             ...     _ = backend.create_repo()
             ...     _ = backend.create_commit(
             ...         revision="main",
-            ...         operations=[CommitOperationAdd.from_bytes("nested/demo.txt", b"hello")],
+            ...         operations=[CommitOperationAdd("nested/demo.txt", b"hello")],
             ...         commit_message="seed",
             ...     )
             ...     backend.get_paths_info(["nested", "nested/demo.txt"])[0].path_type
@@ -919,7 +929,7 @@ class _RepositoryBackend(object):
             ...     _ = backend.create_repo()
             ...     _ = backend.create_commit(
             ...         revision="main",
-            ...         operations=[CommitOperationAdd.from_bytes("nested/demo.txt", b"hello")],
+            ...         operations=[CommitOperationAdd("nested/demo.txt", b"hello")],
             ...         commit_message="seed",
             ...     )
             ...     [item.path for item in backend.list_repo_tree("nested")]
@@ -988,7 +998,7 @@ class _RepositoryBackend(object):
             ...     _ = backend.create_repo()
             ...     _ = backend.create_commit(
             ...         revision="main",
-            ...         operations=[CommitOperationAdd.from_bytes("demo.txt", b"hello")],
+            ...         operations=[CommitOperationAdd("demo.txt", b"hello")],
             ...         commit_message="seed",
             ...     )
             ...     backend.list_repo_files()
@@ -1025,7 +1035,7 @@ class _RepositoryBackend(object):
             ...     _ = backend.create_repo()
             ...     _ = backend.create_commit(
             ...         revision="main",
-            ...         operations=[CommitOperationAdd.from_bytes("demo.txt", b"hello")],
+            ...         operations=[CommitOperationAdd("demo.txt", b"hello")],
             ...         commit_message="seed",
             ...     )
             ...     with backend.open_file("demo.txt") as fileobj:
@@ -1064,7 +1074,7 @@ class _RepositoryBackend(object):
             ...     _ = backend.create_repo()
             ...     _ = backend.create_commit(
             ...         revision="main",
-            ...         operations=[CommitOperationAdd.from_bytes("demo.txt", b"hello")],
+            ...         operations=[CommitOperationAdd("demo.txt", b"hello")],
             ...         commit_message="seed",
             ...     )
             ...     backend.read_bytes("demo.txt")
@@ -1122,7 +1132,7 @@ class _RepositoryBackend(object):
             ...     _ = backend.create_repo()
             ...     _ = backend.create_commit(
             ...         revision="main",
-            ...         operations=[CommitOperationAdd.from_bytes("nested/demo.txt", b"hello")],
+            ...         operations=[CommitOperationAdd("nested/demo.txt", b"hello")],
             ...         commit_message="seed",
             ...     )
             ...     path = backend.hf_hub_download("nested/demo.txt")
@@ -1195,7 +1205,7 @@ class _RepositoryBackend(object):
             ...     _ = backend.create_repo()
             ...     commit = backend.create_commit(
             ...         revision="main",
-            ...         operations=[CommitOperationAdd.from_bytes("demo.txt", b"hello")],
+            ...         operations=[CommitOperationAdd("demo.txt", b"hello")],
             ...         commit_message="seed",
             ...     )
             ...     backend.reset_ref("main", commit.commit_id).commit_id == commit.commit_id
@@ -2034,12 +2044,14 @@ class _RepositoryBackend(object):
         Example::
 
             >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
-            >>> operation = CommitOperationAdd.from_bytes("demo.txt", b"hello")
+            >>> operation = CommitOperationAdd("demo.txt", b"hello")
             >>> backend._stage_add_operation(Path("/tmp/demo-repo/txn/demo"), operation)  # doctest: +SKIP
         """
 
         normalized_path = _normalize_repo_path(operation.path_in_repo)
-        data = operation.data
+        del normalized_path
+        with operation.as_file() as fileobj:
+            data = fileobj.read()
         file_sha256_hex = _sha256_hex(data)
         file_sha256 = OBJECT_HASH + ":" + file_sha256_hex
         oid = _git_blob_oid(data)
@@ -2059,14 +2071,14 @@ class _RepositoryBackend(object):
             "sha256": file_sha256_hex,
             "oid": oid,
             "etag": oid,
-            "content_type_hint": operation.content_type,
+            "content_type_hint": None,
             "content_object_id": blob_object_id,
             "chunks": [],
         }
         file_object_id = self._stage_json_object(txdir, "files", file_payload)
         return blob_object_id, file_object_id, file_payload
 
-    def _apply_delete(self, snapshot: Dict[str, str], path_in_repo: str) -> None:
+    def _apply_delete(self, snapshot: Dict[str, str], path_in_repo: str, is_folder: bool) -> None:
         """
         Apply a delete operation to a staged snapshot.
 
@@ -2074,6 +2086,8 @@ class _RepositoryBackend(object):
         :type snapshot: Dict[str, str]
         :param path_in_repo: Repo-relative file or directory path
         :type path_in_repo: str
+        :param is_folder: Whether the delete targets a directory subtree
+        :type is_folder: bool
         :return: ``None``.
         :rtype: None
         :raises PathNotFoundError: Raised when the target path is absent.
@@ -2082,30 +2096,44 @@ class _RepositoryBackend(object):
 
             >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
             >>> snapshot = {"demo.txt": "sha256:" + "a" * 64}
-            >>> backend._apply_delete(snapshot, "demo.txt")
+            >>> backend._apply_delete(snapshot, "demo.txt", False)
             >>> snapshot
             {}
         """
 
+        if is_folder and path_in_repo.endswith("/"):
+            path_in_repo = path_in_repo[:-1]
         normalized_path = _normalize_repo_path(path_in_repo)
-        removed = False
-        if normalized_path in snapshot:
+        if is_folder:
+            removed = False
+            prefix = normalized_path + "/"
+            for path in list(snapshot):
+                if path.startswith(prefix):
+                    del snapshot[path]
+                    removed = True
+            if not removed:
+                raise PathNotFoundError("path not found: %s" % normalized_path)
+            return
+
+        try:
             del snapshot[normalized_path]
-            removed = True
-        prefix = normalized_path + "/"
-        for path in list(snapshot):
-            if path.startswith(prefix):
-                del snapshot[path]
-                removed = True
-        if not removed:
+        except KeyError:
             raise PathNotFoundError("path not found: %s" % normalized_path)
 
-    def _apply_copy(self, snapshot: Dict[str, str], src_path_in_repo: str, dst_path_in_repo: str) -> None:
+    def _apply_copy(
+        self,
+        snapshot: Dict[str, str],
+        source_snapshot: Dict[str, str],
+        src_path_in_repo: str,
+        dst_path_in_repo: str,
+    ) -> None:
         """
         Apply a copy operation to a staged snapshot.
 
         :param snapshot: Mutable snapshot map
         :type snapshot: Dict[str, str]
+        :param source_snapshot: Source snapshot used for the copy lookup
+        :type source_snapshot: Dict[str, str]
         :param src_path_in_repo: Source file or directory path
         :type src_path_in_repo: str
         :param dst_path_in_repo: Destination file or directory path
@@ -2118,7 +2146,7 @@ class _RepositoryBackend(object):
 
             >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
             >>> snapshot = {"demo.txt": "sha256:" + "a" * 64}
-            >>> backend._apply_copy(snapshot, "demo.txt", "copy.txt")
+            >>> backend._apply_copy(snapshot, snapshot, "demo.txt", "copy.txt")
             >>> sorted(snapshot)
             ['copy.txt', 'demo.txt']
         """
@@ -2126,12 +2154,12 @@ class _RepositoryBackend(object):
         src_path = _normalize_repo_path(src_path_in_repo)
         dst_path = _normalize_repo_path(dst_path_in_repo)
 
-        if src_path in snapshot:
-            snapshot[dst_path] = snapshot[src_path]
+        if src_path in source_snapshot:
+            snapshot[dst_path] = source_snapshot[src_path]
             return
 
         prefix = src_path + "/"
-        matches = [(path, object_id) for path, object_id in snapshot.items() if path.startswith(prefix)]
+        matches = [(path, object_id) for path, object_id in source_snapshot.items() if path.startswith(prefix)]
         if not matches:
             raise PathNotFoundError("path not found: %s" % src_path)
         for path, object_id in matches:

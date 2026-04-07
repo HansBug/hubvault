@@ -52,9 +52,9 @@ class TestApi:
         commit = api.create_commit(
             revision="release/v1",
             operations=[
-                CommitOperationAdd.from_bytes("models/core/model.safetensors", model_bytes),
-                CommitOperationAdd.from_file("artifacts/weights.bin", str(source_file)),
-                CommitOperationAdd.from_fileobj("configs/model.json", stream),
+                CommitOperationAdd("models/core/model.safetensors", model_bytes),
+                CommitOperationAdd("artifacts/weights.bin", str(source_file)),
+                CommitOperationAdd("configs/model.json", stream),
             ],
             commit_message="add api assets",
         )
@@ -109,7 +109,7 @@ class TestApi:
         api = HubVaultApi(repo_dir)
         api.create_repo()
         first_commit = api.create_commit(
-            operations=[CommitOperationAdd.from_bytes("data/file.txt", b"v1")],
+            operations=[CommitOperationAdd("data/file.txt", b"v1")],
             commit_message="seed",
         )
 
@@ -118,14 +118,14 @@ class TestApi:
 
         with pytest.raises(ConflictError):
             api.create_commit(
-                operations=[CommitOperationAdd.from_bytes("data/file.txt", b"v2")],
+                operations=[CommitOperationAdd("data/file.txt", b"v2")],
                 parent_commit="sha256:not-the-head",
                 commit_message="stale parent",
             )
 
         with pytest.raises(ConflictError):
             api.create_commit(
-                operations=[CommitOperationAdd.from_bytes("data/file.txt", b"v2")],
+                operations=[CommitOperationAdd("data/file.txt", b"v2")],
                 parent_commit=first_commit.commit_id,
                 expected_head="sha256:another",
                 commit_message="mismatch",
@@ -148,7 +148,7 @@ class TestApi:
 
         with pytest.raises(UnsupportedPathError):
             api.create_commit(
-                operations=[CommitOperationAdd.from_bytes("../bad.txt", b"x")],
+                operations=[CommitOperationAdd("../bad.txt", b"x")],
                 parent_commit=first_commit.commit_id,
                 commit_message="bad path",
             )
@@ -166,7 +166,7 @@ class TestApi:
         with pytest.raises(RevisionNotFoundError):
             api.create_commit(
                 revision="feature/missing",
-                operations=[CommitOperationAdd.from_bytes("new.txt", b"x")],
+                operations=[CommitOperationAdd("new.txt", b"x")],
                 commit_message="missing branch",
             )
 

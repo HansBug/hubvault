@@ -117,31 +117,42 @@ class VerifyReport:
 
 ### 4.1 `CommitOperationAdd` 设计
 
-建议支持三种公开构造方式：
+默认应直接对齐 HF 的公开入口：
 
-- `from_bytes(path_in_repo, data)`
-- `from_file(path_in_repo, path)`
-- `from_fileobj(path_in_repo, fileobj)`
+- `CommitOperationAdd(path_in_repo, path_or_fileobj)`
+
+其中 `path_or_fileobj` 支持：
+
+- 本地文件路径
+- `bytes`
+- 二进制 file object
 
 约束：
 
-- `from_file()` 只把外部文件当作导入源，不把其宿主路径写入仓库
-- `from_fileobj()` 只消费字节流，不把 file object 的来源路径作为持久化元数据
-- 这三种入口最终都必须产出一致的公开 `oid` / `sha256`
+- 本地文件路径只把外部文件当作导入源，不把其宿主路径写入仓库元数据
+- file object 只消费字节内容，不把来源路径作为持久化元数据
+- 这三种输入最终都必须产出一致的公开 `oid` / `sha256`
+- 辅助方法仅保留真实有用的本地行为，因此不会为了外观兼容额外挂一个无效果的 `with_tqdm` 参数
 
 代表性草图：
 
 ```python
-@dataclass(frozen=True)
+@dataclass
 class CommitOperationAdd:
     path_in_repo: str
-    data: bytes
-    content_type: Optional[str] = None
-
-    @classmethod
-    def from_bytes(cls, path_in_repo: str, data: bytes) -> "CommitOperationAdd":
-        return cls(path_in_repo=path_in_repo, data=data)
+    path_or_fileobj: Union[str, Path, bytes, BinaryIO]
 ```
+
+### 4.2 `CommitOperationDelete` / `CommitOperationCopy`
+
+默认也应尽量贴近 HF：
+
+- `CommitOperationDelete(path_in_repo, is_folder="auto")`
+- `CommitOperationCopy(src_path_in_repo, path_in_repo, src_revision=None)`
+
+当前本地实现刻意不暴露 HF 内部优化字段，例如 `CommitOperationCopy` 上的 `_src_oid` / `_dest_oid`，因为它们在本地仓库中不承载任何真实公开语义，只会变成空兼容参数。
+
+如果本地实现需要在行为上扩展，例如支持 subtree copy，也应保留 HF 风格签名，并把扩展点文档化，而不是重新发明另一套公开形态。
 
 ## 5. `HubVaultApi` 方法分层
 
@@ -303,6 +314,8 @@ class HubVaultApi:
 
 - `repo_id`
 - `expand`
+- `with_tqdm`
+- 其他不会改变本地仓库行为的 transport / progress / UI 占位参数
 
 语义约束：
 
@@ -326,9 +339,9 @@ api.create_repo()
 commit = api.create_commit(
     revision="main",
     operations=[
-        CommitOperationAdd.from_bytes(
+        CommitOperationAdd(
             path_in_repo="weights/config.json",
-            data=b'{"dtype":"float16","hidden_size":4096}',
+            path_or_fileobj=b'{"dtype":"float16","hidden_size":4096}',
         ),
     ],
     commit_message="add config",
@@ -368,6 +381,7 @@ assert report.ok
 - `snapshot_download()` 返回的是本地只读快照缓存，不是工作区
 - `hf_hub_download()` 返回的是缓存文件或目标导出文件
 - 不保留像 `repo_id` 这类仅为兼容外观而存在、但不会影响本地仓库行为的空参数
+- 不保留像 `with_tqdm` 这类仅改变兼容外观、但不会触发本地真实进度/UI 行为的空 flags
 - 仓库的全部正确性信息都保存在 repo root 内；导出文件、外部下载目标和调用时传入的源路径都不是仓库真相
 - `path` / `blob_id` / `sha256` / `lfs.pointer_size` 等文件公开字段应尽量与 Hugging Face `RepoFile` 语义对齐，其中 `sha256` 使用裸 hex，不带算法前缀
 - 真正有效的 repo 变更只能通过 commit 风格 API 显式提交，不能通过修改下载结果或快照目录隐式生效

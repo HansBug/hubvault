@@ -22,7 +22,7 @@ Example::
     >>> api = HubVaultApi("/tmp/demo-repo")
     >>> _ = api.create_repo(exist_ok=True)
     >>> _ = api.create_commit(
-    ...     operations=[CommitOperationAdd.from_bytes("demo.txt", b"hello")],
+    ...     operations=[CommitOperationAdd("demo.txt", b"hello")],
     ...     commit_message="seed",
     ... )
 """

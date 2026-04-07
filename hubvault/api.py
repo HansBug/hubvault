@@ -15,7 +15,7 @@ Example::
     >>> api = HubVaultApi("/tmp/demo-repo")
     >>> _ = api.create_repo(exist_ok=True)
     >>> commit = api.create_commit(
-    ...     operations=[CommitOperationAdd.from_bytes("demo.txt", b"hello")],
+    ...     operations=[CommitOperationAdd("demo.txt", b"hello")],
     ...     commit_message="seed",
     ... )
     >>> commit.revision
@@ -47,7 +47,7 @@ class HubVaultApi:
         >>> commit = api.create_commit(
         ...     revision="main",
         ...     operations=[
-        ...         CommitOperationAdd.from_bytes("example.txt", b"hello"),
+        ...         CommitOperationAdd("example.txt", b"hello"),
         ...     ],
         ...     commit_message="add example",
         ... )
@@ -172,7 +172,7 @@ class HubVaultApi:
             >>> api = HubVaultApi("/tmp/demo-repo")
             >>> _ = api.create_repo(exist_ok=True)
             >>> commit = api.create_commit(
-            ...     operations=[CommitOperationAdd.from_bytes("demo.txt", b"hello")],
+            ...     operations=[CommitOperationAdd("demo.txt", b"hello")],
             ...     commit_message="seed",
             ... )
             >>> commit.revision
@@ -214,7 +214,7 @@ class HubVaultApi:
             >>> api = HubVaultApi("/tmp/demo-repo")
             >>> _ = api.create_repo(exist_ok=True)
             >>> _ = api.create_commit(
-            ...     operations=[CommitOperationAdd.from_bytes("demo.txt", b"hello")],
+            ...     operations=[CommitOperationAdd("demo.txt", b"hello")],
             ...     commit_message="seed",
             ... )
             >>> api.get_paths_info(["demo.txt"])[0].path
@@ -291,7 +291,7 @@ class HubVaultApi:
             >>> api = HubVaultApi("/tmp/demo-repo")
             >>> _ = api.create_repo(exist_ok=True)
             >>> _ = api.create_commit(
-            ...     operations=[CommitOperationAdd.from_bytes("demo.txt", b"hello")],
+            ...     operations=[CommitOperationAdd("demo.txt", b"hello")],
             ...     commit_message="seed",
             ... )
             >>> with api.open_file("demo.txt") as fileobj:
@@ -323,7 +323,7 @@ class HubVaultApi:
             >>> api = HubVaultApi("/tmp/demo-repo")
             >>> _ = api.create_repo(exist_ok=True)
             >>> _ = api.create_commit(
-            ...     operations=[CommitOperationAdd.from_bytes("demo.txt", b"hello")],
+            ...     operations=[CommitOperationAdd("demo.txt", b"hello")],
             ...     commit_message="seed",
             ... )
             >>> api.read_bytes("demo.txt")
@@ -361,7 +361,7 @@ class HubVaultApi:
             >>> api = HubVaultApi("/tmp/demo-repo")
             >>> _ = api.create_repo(exist_ok=True)
             >>> _ = api.create_commit(
-            ...     operations=[CommitOperationAdd.from_bytes("demo.txt", b"hello")],
+            ...     operations=[CommitOperationAdd("demo.txt", b"hello")],
             ...     commit_message="seed",
             ... )
             >>> api.hf_hub_download("demo.txt").endswith("demo.txt")
@@ -397,7 +397,7 @@ class HubVaultApi:
             >>> api = HubVaultApi("/tmp/demo-repo")
             >>> _ = api.create_repo(exist_ok=True)
             >>> commit = api.create_commit(
-            ...     operations=[CommitOperationAdd.from_bytes("demo.txt", b"hello")],
+            ...     operations=[CommitOperationAdd("demo.txt", b"hello")],
             ...     commit_message="seed",
             ... )
             >>> api.reset_ref("main", commit.commit_id).commit_id == commit.commit_id

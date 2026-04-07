@@ -65,6 +65,12 @@ Read/download APIs must never expose a writable alias of repository truth. Any p
 
 Public APIs must not keep compatibility-only placeholder parameters that have no real behavior in this repository. If an argument such as `repo_id`, `expand`, or a similar field does not affect the local-path design, validation, storage, or results, remove it instead of carrying dead signature surface.
 
+For Hugging Face compatibility work, treat the `huggingface_hub` public API and data model as the default target. Unless a concrete local-repository requirement makes a difference necessary, public names, signatures, parameter semantics, return-field formats, and user-facing behavior should match HF as closely as possible. Any intentional deviation should be minimized and documented explicitly in code-facing docs and planning notes.
+
+At the same time, do not keep parameters or flags that exist only for superficial compatibility and have no real behavior in this repository. If a Hugging Face API detail such as a progress/UI flag, transport-only option, or similar placeholder would be a no-op in `hubvault`, drop it instead of preserving dead signature surface.
+
+This applies equally to small helper method flags and compatibility sugar. For example, do not add or keep a `with_tqdm`-style option on a local file helper if the repository does not actually provide distinct progress behavior for it.
+
 ## Planning Document Rules
 
 Execution-oriented documents under `plan/` must reflect the current repository state, not an imagined future implementation state.

@@ -10,20 +10,20 @@ CommitOperationAdd
 -----------------------------------------------------
 
 .. autoclass:: CommitOperationAdd
-    :members: from_bytes,from_file,from_fileobj,path_in_repo,data,content_type
+    :members: __post_init__,as_file,path_in_repo,path_or_fileobj
 
 
 CommitOperationDelete
 -----------------------------------------------------
 
 .. autoclass:: CommitOperationDelete
-    :members: path_in_repo
+    :members: __post_init__,path_in_repo,is_folder
 
 
 CommitOperationCopy
 -----------------------------------------------------
 
 .. autoclass:: CommitOperationCopy
-    :members: src_path_in_repo,path_in_repo
+    :members: src_path_in_repo,path_in_repo,src_revision
 
 

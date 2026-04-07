@@ -86,9 +86,9 @@ api.create_repo()
 api.create_commit(
     revision="main",
     operations=[
-        CommitOperationAdd.from_bytes(
+        CommitOperationAdd(
             path_in_repo="weights/config.json",
-            data=b'{"dtype":"float16"}',
+            path_or_fileobj=b'{"dtype":"float16"}',
         ),
     ],
     commit_message="add config",

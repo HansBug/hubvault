@@ -554,7 +554,7 @@ def canonical_lfs_pointer(file_sha256, size):
 - 小文件和普通文件统一走 whole-file blob
 - `Blob` 的 payload 存于 `objects/blobs/`
 - `File` 对象引用 `content_object_id`
-- `CommitOperationAdd.from_file()` 的源文件绝对路径只用于读取输入字节，绝不写入仓库持久化元数据
+- `CommitOperationAdd(path_in_repo, path_or_fileobj=<local path>)` 的源文件绝对路径只用于读取输入字节，绝不写入仓库持久化元数据
 - 提交时同步计算文件 `sha256` 与 git blob 语义 `oid`
 
 ### 5.2 Phase 3

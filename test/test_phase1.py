@@ -66,10 +66,10 @@ class TestPhase1IntegratedLifecycle:
 
         first_commit = api.create_commit(
             operations=[
-                CommitOperationAdd.from_file("configs/model.json", str(config_source)),
-                CommitOperationAdd.from_fileobj("tokenizer/tokenizer.json", tokenizer_stream),
-                CommitOperationAdd.from_bytes("runs/run-0001/notes.txt", training_note),
-                CommitOperationAdd.from_bytes("checkpoints/epoch-0001/model.safetensors", weights_v1),
+                CommitOperationAdd("configs/model.json", str(config_source)),
+                CommitOperationAdd("tokenizer/tokenizer.json", tokenizer_stream),
+                CommitOperationAdd("runs/run-0001/notes.txt", training_note),
+                CommitOperationAdd("checkpoints/epoch-0001/model.safetensors", weights_v1),
             ],
             commit_message="seed phase1 assets",
             metadata={"stage": "bootstrap"},
@@ -143,13 +143,14 @@ class TestPhase1IntegratedLifecycle:
 
         second_commit = api.create_commit(
             operations=[
-                CommitOperationCopy("configs", "releases/v1/configs"),
+                CommitOperationCopy("configs", "releases/v1/configs", src_revision=first_commit.commit_id),
                 CommitOperationCopy(
                     "checkpoints/epoch-0001/model.safetensors",
                     "releases/v1/model.safetensors",
+                    src_revision=first_commit.commit_id,
                 ),
-                CommitOperationDelete("runs/run-0001"),
-                CommitOperationAdd.from_bytes("checkpoints/epoch-0002/model.safetensors", weights_v2),
+                CommitOperationDelete("runs/run-0001/"),
+                CommitOperationAdd("checkpoints/epoch-0002/model.safetensors", weights_v2),
             ],
             parent_commit=first_commit.commit_id,
             commit_message="publish v1 and advance checkpoint",
@@ -158,7 +159,7 @@ class TestPhase1IntegratedLifecycle:
         assert second_commit.parents == [first_commit.commit_id]
 
         third_commit = api.create_commit(
-            operations=[CommitOperationAdd.from_bytes("manifests/latest.json", manifest_v2)],
+            operations=[CommitOperationAdd("manifests/latest.json", manifest_v2)],
             expected_head=second_commit.commit_id,
             commit_message="record latest manifest",
             metadata={"stage": "manifest"},

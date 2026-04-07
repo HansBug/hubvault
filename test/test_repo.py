@@ -24,7 +24,7 @@ def _single_file_repo(tmp_path, repo_name="repo", path_in_repo="file.bin", paylo
     api = HubVaultApi(repo_dir)
     api.create_repo()
     api.create_commit(
-        operations=[CommitOperationAdd.from_bytes(path_in_repo, payload)],
+        operations=[CommitOperationAdd(path_in_repo, payload)],
         commit_message="seed",
     )
     return api, repo_dir
@@ -74,7 +74,7 @@ class TestRepoSemantics:
         for invalid_path in invalid_paths:
             with pytest.raises(UnsupportedPathError):
                 api.create_commit(
-                    operations=[CommitOperationAdd.from_bytes(invalid_path, b"x")],
+                    operations=[CommitOperationAdd(invalid_path, b"x")],
                     commit_message="invalid path",
                 )
 
@@ -82,7 +82,7 @@ class TestRepoSemantics:
         api = HubVaultApi(tmp_path / "repo")
         api.create_repo()
         api.create_commit(
-            operations=[CommitOperationAdd.from_bytes("models/core/model.safetensors", b"payload-v1")],
+            operations=[CommitOperationAdd("models/core/model.safetensors", b"payload-v1")],
             commit_message="seed",
         )
 
@@ -161,15 +161,15 @@ class TestRepoSemantics:
 
         first_commit = api.create_commit(
             operations=[
-                CommitOperationAdd.from_bytes("src/a.txt", b"A"),
-                CommitOperationAdd.from_bytes("src/sub/b.txt", b"B"),
+                CommitOperationAdd("src/a.txt", b"A"),
+                CommitOperationAdd("src/sub/b.txt", b"B"),
             ],
             commit_message="seed repo",
         )
         second_commit = api.create_commit(
             operations=[
-                CommitOperationCopy("src", "mirror"),
-                CommitOperationDelete("src/sub"),
+                CommitOperationCopy("src", "mirror", src_revision="main"),
+                CommitOperationDelete("src/sub/"),
             ],
             parent_commit=first_commit.commit_id,
             commit_message="copy and prune",
@@ -211,7 +211,7 @@ class TestRepoSemantics:
             api.list_repo_files(revision="refs/heads/main")
 
         commit = api.create_commit(
-            operations=[CommitOperationAdd.from_bytes("file.bin", b"payload")],
+            operations=[CommitOperationAdd("file.bin", b"payload")],
             commit_message="seed",
         )
 
@@ -261,7 +261,7 @@ class TestRepoSemantics:
 
         with pytest.raises(LockTimeoutError):
             api.create_commit(
-                operations=[CommitOperationAdd.from_bytes("blocked.bin", b"x")],
+                operations=[CommitOperationAdd("blocked.bin", b"x")],
                 commit_message="blocked",
             )
 
@@ -373,7 +373,7 @@ class TestRepoSemantics:
         api, repo_dir = _single_file_repo(tmp_path, repo_name="duplicate-parent", payload=b"payload")
         first_head = (repo_dir / "refs" / "heads" / "main").read_text(encoding="utf-8").strip()
         api.create_commit(
-            operations=[CommitOperationAdd.from_bytes("file.bin", b"payload-v2")],
+            operations=[CommitOperationAdd("file.bin", b"payload-v2")],
             parent_commit=first_head,
             commit_message="second",
         )
@@ -408,8 +408,8 @@ class TestRepoSemantics:
         with pytest.raises(ConflictError):
             api.create_commit(
                 operations=[
-                    CommitOperationAdd.from_bytes("dup.txt", b"a"),
-                    CommitOperationAdd.from_bytes("dup.txt/child.txt", b"b"),
+                    CommitOperationAdd("dup.txt", b"a"),
+                    CommitOperationAdd("dup.txt/child.txt", b"b"),
                 ],
                 commit_message="invalid hierarchy",
             )
@@ -417,19 +417,19 @@ class TestRepoSemantics:
         with pytest.raises(ConflictError):
             api.create_commit(
                 operations=[
-                    CommitOperationAdd.from_bytes("Case.txt", b"a"),
-                    CommitOperationAdd.from_bytes("case.txt", b"b"),
+                    CommitOperationAdd("Case.txt", b"a"),
+                    CommitOperationAdd("case.txt", b"b"),
                 ],
                 commit_message="case clash",
             )
 
         baseline = api.create_commit(
-            operations=[CommitOperationAdd.from_bytes("data/file.txt", b"v1")],
+            operations=[CommitOperationAdd("data/file.txt", b"v1")],
             commit_message="seed",
         )
 
         copied = api.create_commit(
-            operations=[CommitOperationCopy("data/file.txt", "data/copied.txt")],
+            operations=[CommitOperationCopy("data/file.txt", "data/copied.txt", src_revision=baseline.commit_id)],
             parent_commit=baseline.commit_id,
             commit_message="copy single file",
         )
@@ -437,7 +437,7 @@ class TestRepoSemantics:
         assert api.read_bytes("data/copied.txt") == b"v1"
 
         deleted = api.create_commit(
-            operations=[CommitOperationDelete("data/copied.txt")],
+            operations=[CommitOperationDelete("data/copied.txt", is_folder=False)],
             parent_commit=copied.commit_id,
             commit_message="delete single file",
         )
@@ -447,7 +447,7 @@ class TestRepoSemantics:
 
         with pytest.raises(PathNotFoundError):
             api.create_commit(
-                operations=[CommitOperationDelete("missing.txt")],
+                operations=[CommitOperationDelete("missing.txt", is_folder=False)],
                 parent_commit=deleted.commit_id,
                 commit_message="missing delete",
             )
