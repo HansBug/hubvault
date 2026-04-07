@@ -135,7 +135,7 @@ def print_exception(err: BaseException, print_func: Optional[Callable[..., None]
 
         >>> try:
         ...     1 / 0
-        ... except Exception as exc:
+        ... except ZeroDivisionError as exc:
         ...     print_exception(exc)
         Traceback (most recent call last):
         ...
@@ -274,7 +274,9 @@ def command_wrap() -> Callable[[Callable[P, R]], Callable[P, R]]:
                 raise
             except KeyboardInterrupt:
                 raise KeyboardInterrupted
-            except BaseException as err:
+            # CLI dispatch is the outermost process boundary. Convert unexpected
+            # runtime failures into a visible error instead of leaking a raw traceback.
+            except Exception as err:
                 click.secho('Unexpected error found when running hubvault!', fg='red', file=sys.stderr)
                 print_exception(err, partial(click.secho, fg='red', file=sys.stderr))
                 click.get_current_context().exit(1)

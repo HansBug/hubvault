@@ -129,6 +129,11 @@ Public APIs must not keep compatibility-only placeholder parameters that have no
 argument such as `repo_id`, `expand`, or a similar field does not affect the local-path design, validation, storage, or
 results, remove it instead of carrying dead signature surface.
 
+Do not introduce `except Exception` or bare `except` in repository code. Catch the narrowest real exception types
+instead. A broad catch is only acceptable at an explicit process boundary or a best-effort diagnostic/cleanup boundary,
+and even there it must document the reason inline and either emit a visible warning or convert the failure into a
+domain-specific error instead of silently swallowing it.
+
 For Hugging Face compatibility work, treat the `huggingface_hub` public API and data model as the default target. Unless
 a concrete local-repository requirement makes a difference necessary, public names, signatures, parameter semantics,
 return-field formats, and user-facing behavior should match HF as closely as possible. Any intentional deviation should

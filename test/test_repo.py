@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 import time
+import warnings
 from pathlib import Path
 from textwrap import dedent
 
@@ -740,6 +741,41 @@ class TestRepoSemantics:
         rebuilt_snapshot_file.unlink()
         missing_report = api.quick_verify()
         assert any("stale snapshot view" in warning for warning in missing_report.warnings)
+
+    def test_snapshot_download_warns_when_detached_snapshot_metadata_is_malformed(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        api.upload_file(path_or_fileobj=b"payload-v1", path_in_repo="bundle/file.bin")
+
+        snapshot_dir = tmp_path / "external-snapshot"
+        metadata_path = snapshot_dir / ".cache" / "hubvault" / "snapshot.json"
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        metadata_path.write_text("{bad json", encoding="utf-8")
+
+        with warnings.catch_warnings(record=True) as records:
+            warnings.simplefilter("always")
+            exported = Path(api.snapshot_download(local_dir=snapshot_dir))
+
+        assert exported == snapshot_dir
+        assert (exported / "bundle" / "file.bin").read_bytes() == b"payload-v1"
+        assert any("Ignoring malformed detached snapshot metadata" in str(item.message) for item in records)
+
+    def test_repo_rejects_malformed_ref_update_journal_during_recovery(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        api.upload_file(path_or_fileobj=b"payload-v1", path_in_repo="bundle/file.bin")
+
+        txdir = tmp_path / "repo" / "txn" / "broken"
+        txdir.mkdir(parents=True)
+        (txdir / "REF_UPDATE.json").write_text("{bad json", encoding="utf-8")
+
+        with pytest.raises(IntegrityError):
+            api.read_bytes("bundle/file.bin")
+
+        report = api.quick_verify()
+        assert report.ok is False
+        assert any(item.startswith("transaction recovery: invalid ref update journal broken:") for item in report.errors)
+        assert txdir.exists()
 
     def test_upload_folder_delete_patterns_and_deleted_ref_reflogs_work_via_public_api(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")

@@ -17,6 +17,7 @@ import re
 import secrets
 import shutil
 import stat
+import warnings
 from contextlib import contextmanager
 from fnmatch import fnmatch
 from datetime import datetime, timezone
@@ -1932,8 +1933,17 @@ class _RepositoryBackend(object):
             if meta_path.exists():
                 try:
                     previous_meta = _read_json(meta_path)
-                    previous_paths = [str(item["path"]) for item in previous_meta.get("files", [])]
-                except Exception:
+                    if not isinstance(previous_meta, dict):
+                        raise TypeError("snapshot metadata must be a JSON object")
+                    raw_files = previous_meta.get("files", [])
+                    if not isinstance(raw_files, list):
+                        raise TypeError("snapshot metadata files must be a list")
+                    previous_paths = [str(item["path"]) for item in raw_files]
+                except (AttributeError, KeyError, OSError, TypeError, ValueError) as err:
+                    warnings.warn(
+                        "Ignoring malformed detached snapshot metadata at %s: %s" % (meta_path, err),
+                        RuntimeWarning,
+                    )
                     previous_paths = []
 
             target_root.mkdir(parents=True, exist_ok=True)
@@ -2320,7 +2330,11 @@ class _RepositoryBackend(object):
         """
 
         self._ensure_repo()
-        self._rollback_interrupted_ref_updates_if_needed()
+        recovery_error = None
+        try:
+            self._rollback_interrupted_ref_updates_if_needed()
+        except IntegrityError as err:
+            recovery_error = err
         with self._read_locked():
             warnings = []
             errors = []
@@ -2329,6 +2343,8 @@ class _RepositoryBackend(object):
 
             if config.get("format_version") != FORMAT_VERSION:
                 errors.append("unsupported format version")
+            if recovery_error is not None:
+                errors.append("transaction recovery: %s" % recovery_error)
 
             for ref_name in self._list_branch_names():
                 checked_refs.append("refs/heads/" + ref_name)
@@ -2358,7 +2374,8 @@ class _RepositoryBackend(object):
                         data_sha256 = _sha256_hex(target_path.read_bytes())
                         if data_sha256 != _public_sha256_hex(str(view_meta["sha256"])):
                             warnings.append("stale file view: %s" % view_meta_path.name)
-                except Exception as err:  # pragma: no cover - defensive path
+                # Detached file views are cache artifacts, not repository truth.
+                except (AttributeError, KeyError, OSError, TypeError, ValueError) as err:  # pragma: no cover
                     warnings.append("failed to inspect file view %s: %s" % (view_meta_path.name, err))
 
             for view_meta_path in sorted((self._repo_path / "cache" / "views" / "snapshots").glob("*.json")):
@@ -2374,7 +2391,8 @@ class _RepositoryBackend(object):
                         if data_sha256 != str(file_info["sha256"]):
                             warnings.append("stale snapshot view: %s" % view_meta_path.name)
                             break
-                except Exception as err:  # pragma: no cover - defensive path
+                # Detached snapshot views are cache artifacts, not repository truth.
+                except (AttributeError, KeyError, OSError, TypeError, ValueError) as err:  # pragma: no cover
                     warnings.append("failed to inspect snapshot view %s: %s" % (view_meta_path.name, err))
 
             txn_root = self._repo_path / "txn"
@@ -4031,9 +4049,13 @@ class _RepositoryBackend(object):
         if not state_path.exists():
             return None
         try:
-            return str(_read_json(state_path).get("state", ""))
-        except Exception:
+            payload = _read_json(state_path)
+        except (OSError, TypeError, ValueError):
+            # Treat unreadable state as not committed so recovery chooses rollback.
             return None
+        if not isinstance(payload, dict):
+            return None
+        return str(payload.get("state", ""))
 
     def _restore_ref_value(
         self,
@@ -4096,22 +4118,33 @@ class _RepositoryBackend(object):
             return
 
         try:
-            payload = dict(_read_json(ref_update_path))
+            payload = _read_json(ref_update_path)
+        except (OSError, TypeError, ValueError) as err:
+            raise IntegrityError("invalid ref update journal %s: %s" % (txdir.name, err))
+        if not isinstance(payload, dict):
+            raise IntegrityError("invalid ref update journal %s: expected JSON object" % txdir.name)
+        try:
             ref_kind = str(payload["ref_kind"])
             ref_name = str(payload["ref_name"])
-            old_head = payload.get("old_head")
-            ref_existed_before = bool(payload.get("ref_existed_before", True))
-        except Exception:
-            self._cleanup_txdir(txdir)
-            return
+        except KeyError as err:
+            raise IntegrityError("invalid ref update journal %s: missing %s" % (txdir.name, err.args[0]))
+        old_head = payload.get("old_head")
+        ref_existed_before = payload.get("ref_existed_before", True)
+        if old_head is not None and not isinstance(old_head, str):
+            raise IntegrityError("invalid ref update journal %s: old_head must be a string or null" % txdir.name)
+        if not isinstance(ref_existed_before, bool):
+            raise IntegrityError("invalid ref update journal %s: ref_existed_before must be a boolean" % txdir.name)
 
         if self._read_tx_state(txdir) != "COMMITTED":
-            self._restore_ref_value(
-                ref_kind=ref_kind,
-                ref_name=ref_name,
-                old_head=old_head,
-                ref_existed_before=ref_existed_before,
-            )
+            try:
+                self._restore_ref_value(
+                    ref_kind=ref_kind,
+                    ref_name=ref_name,
+                    old_head=old_head,
+                    ref_existed_before=ref_existed_before,
+                )
+            except ValueError as err:
+                raise IntegrityError("invalid ref update journal %s: %s" % (txdir.name, err))
         self._cleanup_txdir(txdir)
 
     def _cleanup_txdir(self, txdir: Path) -> None:
@@ -4266,7 +4299,7 @@ class _RepositoryBackend(object):
                 continue
             try:
                 payload = json.loads(line)
-            except Exception:
+            except ValueError:
                 return None
             if isinstance(payload, dict):
                 return dict(payload)
