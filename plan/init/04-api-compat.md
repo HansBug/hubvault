@@ -142,6 +142,12 @@ class CommitOperationAdd:
 - `reset_ref()`
 - `quick_verify()`
 
+MVP 的修改语义必须保持明确：
+
+- 读取类 API：`open_file()`、`read_bytes()`、`hf_hub_download()`
+- 写入类 API：`create_commit()` 以及后续的 `upload_*()` / `delete_*()`
+- 不提供“改了下载路径上的文件就自动写回 repo”的工作区语义
+
 ### 5.2 紧随 MVP 的方法
 
 - `create_branch()`
@@ -245,6 +251,14 @@ class HubVaultApi:
 - 默认仓库内缓存布局与 `snapshot_download()` 都要保留 repo 相对路径层级
 - 即使底层实际指向内容寻址 blob，最终返回给用户的路径也必须以 `filename` 结尾
 - `local_dir` 模式下同样要在目标目录内复制 repo 相对路径结构
+- 返回路径必须是“只读或可重建视图”，而不是正式对象文件本身
+- 用户手动删除或改写返回路径后，后续下载应重建视图，而不是影响 repo 真相
+
+`open_file()` / `read_bytes()` 语义也需要明确：
+
+- `open_file()` 只返回只读二进制流
+- 不支持通过返回的句柄执行写入、截断或回写
+- 如果调用方需要修改内容，应先读出数据或导出到外部路径，再通过 `create_commit()` 等 API 提交新版本
 
 ## 7. 关键参数语义
 
@@ -265,6 +279,7 @@ class HubVaultApi:
 - `oid` 指对外文件 OID，推荐与 HF `RepoFile.blob_id` 对齐
 - `sha256` 指真实文件内容的 SHA-256
 - 对 LFS 兼容文件，`etag` 推荐等于 `sha256`；对普通文件，`etag` 推荐等于 `oid`
+- 对下载出的文件路径进行本地改写，不构成对 repo 的有效修改
 
 ## 8. 典型公开使用示例
 
@@ -300,8 +315,9 @@ download_path = api.hf_hub_download(
 
 期望语义：
 
-- `download_path` 可以是缓存中的符号链接、硬链接或普通文件
+- `download_path` 可以是缓存中的符号链接、reflink/COW clone 或普通文件
 - 但它必须以 `weights/config.json` 结尾，而不是 `.../blobs/<opaque-id>`
+- 如果 `download_path` 被用户删除或编辑，重新调用 `hf_hub_download()` 后应由 repo 服务重建它
 
 ### 8.3 回滚与校验
 
@@ -322,6 +338,7 @@ assert report.ok
 - `repo_id` 在本项目中只是逻辑名称；真正的存储根仍是本地路径
 - 仓库的全部正确性信息都保存在 repo root 内；导出文件、外部下载目标和调用时传入的源路径都不是仓库真相
 - `path` / `blob_id` / `sha256` / `lfs.pointer_size` 等文件公开字段应尽量与 Hugging Face `RepoFile` 语义对齐
+- 真正有效的 repo 变更只能通过 commit 风格 API 显式提交，不能通过修改下载结果或快照目录隐式生效
 
 ## 10. 错误模型
 

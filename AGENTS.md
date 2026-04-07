@@ -59,6 +59,8 @@ For the local-path repository design itself, treat the repository root as a self
 
 When designing or implementing file-download APIs and file metadata, preserve Hugging Face style public semantics where the project explicitly claims compatibility. In particular, returned downloadable file paths should preserve the repo-relative suffix, and public file metadata should distinguish internal storage object identifiers from Hugging Face compatible file `oid` / `blob_id` and `sha256` values.
 
+Read/download APIs must never expose a writable alias of repository truth. Any path returned by `hf_hub_download`, `snapshot_download`, or similar read-facing APIs must be a detached or read-only user view whose deletion or modification cannot corrupt committed repo data. Effective repository mutations must go through explicit public write APIs such as commit/upload/delete flows.
+
 ## Planning Document Rules
 
 Execution-oriented documents under `plan/` must reflect the current repository state, not an imagined future implementation state.

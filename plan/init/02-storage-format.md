@@ -64,6 +64,7 @@ repo root 必须是完整仓库的唯一持久化边界。
 - 关闭仓库后，直接 `mv repo_root new_path/` 不影响可读性和正确性
 - 将 repo root 打包再解压到其他位置后，仓库仍可直接打开
 - 运行时可导出到仓库外的临时文件不属于仓库真相，删除后不能影响仓库恢复
+- repo 内部用户可见下载视图也不属于仓库真相；即使被删除或替换，也只应触发视图重建而不是对象损坏
 
 ### 1.3 Phase 3 扩展布局
 
@@ -232,6 +233,7 @@ locks/
 
 - 保持 repo 相对路径保真
 - 允许内部共享底层内容对象
+- 将正式不可变内容与用户可见读取视图彻底分离
 
 推荐布局：
 
@@ -241,6 +243,13 @@ cache/
     sha256/
       ab/
         cdef...7890.data
+    meta/
+      <content_key>.json
+  views/
+    files/
+      <file_view_key>.json
+    snapshots/
+      <snapshot_key>.json
   snapshots/
     <snapshot_key>/
       xxx/
@@ -255,11 +264,28 @@ cache/
 
 规则：
 
-- `materialized/` 是按内容去重后的共享实体文件池
+- `materialized/` 是按内容去重后的共享实体文件池，文件权限应默认为只读
+- `materialized/meta/<content_key>.json` 记录内容池文件与对象 ID、`oid`、`sha256`、大小的对应关系
+- `views/files/<file_view_key>.json` 与 `views/snapshots/<snapshot_key>.json` 记录视图元数据、来源 revision、repo 相对路径与重建信息
 - `snapshots/<snapshot_key>/<repo_relative_path>` 提供完整只读目录树
-- `files/<snapshot_key>/<repo_relative_path>` 可作为 `hf_hub_download()` 的单文件返回路径根
-- `snapshots/` 与 `files/` 下的实际文件可以是 symlink、hardlink 或实体复制
+- `files/<file_view_key>/<repo_relative_path>` 可作为 `hf_hub_download()` 的单文件返回路径根
+- `snapshots/` 与 `files/` 下的实际文件可以是 symlink、reflink/COW clone 或实体复制，但不能使用 hardlink
 - 但用户最终拿到的路径必须总是保留 `repo_relative_path`
+
+### 2.7.1 视图安全约束
+
+用户可见视图必须满足如下约束：
+
+- 视图路径不是 `objects/` 或 `materialized/` 中正式对象文件本身
+- 通过视图路径做删除、覆盖、改名或截断，不得影响正式对象文件
+- 如果视图文件缺失、内容不匹配或被用户替换，下一次读取 API 调用应检测并重建
+- 视图永远不能成为提交入口；提交只能消费外部文件或字节流，再显式创建新 commit
+
+推荐实现：
+
+- 优先使用指向只读 `materialized/` 文件的 symlink
+- 不支持可靠 symlink 时，回退到 reflink/COW clone 或普通复制
+- 避免 hardlink，因为 hardlink 会与源 inode 共享可写内容
 
 ### 2.8 `quarantine/` 组织
 
@@ -306,11 +332,13 @@ chunks/
 - 当前视图与历史对象分离
 - 正式对象与事务中间态分离
 - 用户可见路径与内部对象名分离
+- 用户可见路径与正式不可变内容文件分离
 - 所有查找都可由 repo root 内固定规则推导
 - 单个目录中的文件数量可通过前缀分片或时间分桶控制
+
 ## 3. 对象 ID 与哈希策略
 
-### 2.1 MVP 选择
+### 3.1 MVP 选择
 
 为了减少外部依赖并兼容 Python 3.7-3.14，格式 v1 的默认对象 ID 建议采用：
 
@@ -323,7 +351,7 @@ chunks/
 - 对象 ID 仍然是算法标记形式，后续可以平滑扩展
 - 不会因早期引入 `blake3` 依赖而拖慢 MVP 交付
 
-### 2.2 后续扩展
+### 3.2 后续扩展
 
 后续可以增加：
 
@@ -335,7 +363,7 @@ chunks/
 
 ## 4. 核心对象定义
 
-### 3.1 Commit 对象
+### 4.1 Commit 对象
 
 推荐字段：
 
@@ -348,7 +376,7 @@ chunks/
 - `message`
 - `metadata`
 
-### 3.2 Tree 对象
+### 4.2 Tree 对象
 
 Tree 记录目录项列表，每个目录项包含：
 
@@ -360,7 +388,7 @@ Tree 记录目录项列表，每个目录项包含：
 
 目录项按规范化名称排序，保证序列化可重现。
 
-### 3.3 File 对象
+### 4.3 File 对象
 
 `File` 是“逻辑文件元信息对象”，负责连接目录树和底层内容：
 
@@ -381,7 +409,7 @@ Tree 记录目录项列表，每个目录项包含：
 - `content_object_id` 是内部内容对象引用，不是对外兼容层里的 `blob_id`
 - `oid` / `etag` / `sha256` 是面向公开文件元数据的稳定字段
 
-### 3.4 Blob 对象
+### 4.4 Blob 对象
 
 MVP 新增 `Blob` 概念，表示一个 whole-file 内容对象：
 
@@ -396,7 +424,7 @@ MVP 新增 `Blob` 概念，表示一个 whole-file 内容对象：
 
 这里的 sidecar 仅指 repo root 内、与对象同属仓库布局的一部分，不是 repo 外的外置数据目录。
 
-### 3.5 内部对象 ID 与公开文件身份分离
+### 4.5 内部对象 ID 与公开文件身份分离
 
 为了避免与 Hugging Face 兼容层的 `blob_id` 语义冲突，必须明确区分：
 
@@ -410,7 +438,7 @@ MVP 新增 `Blob` 概念，表示一个 whole-file 内容对象：
 - 大文件 / LFS 兼容模式：`oid` 使用 canonical LFS pointer 的 git blob OID，`sha256` 为真实文件内容 SHA-256
 - `etag` 采用 HF 风格：普通文件用 `oid`，LFS 兼容模式用 `sha256`
 
-### 3.6 Chunk 记录
+### 4.6 Chunk 记录
 
 Phase 3 之后，chunk 元信息通过索引维护：
 
@@ -511,6 +539,8 @@ MVP 不做 chunk 索引；blob 查找只依赖对象 ID 到对象文件路径的
 
 下载路径与缓存布局也必须由 repo 相对路径推导，不能退化成仅暴露内部 blob 名的用户路径。
 
+同时，下载路径对应的视图对象必须可以丢弃和重建，不能成为 repo 真相的一部分。
+
 ### 6.2 Phase 3 设计
 
 chunk 索引采用文件版 LSM：
@@ -537,6 +567,7 @@ chunk 索引采用文件版 LSM：
 - 同一目录下如果两个逻辑名称在 `casefold()` 后相同，则拒绝提交
 - 所有持久化路径字段都必须是相对 repo root 的逻辑路径，不能是宿主绝对路径
 - 所有导出/下载路径都必须能从 repo 相对路径稳定映射出来
+- 任何用户可见读取路径都不能与正式对象文件形成可写别名
 
 ### 7.1 代表性规范化片段
 
@@ -569,9 +600,11 @@ def normalize_repo_path(path_in_repo):
 - quick verify 可忽略缓存
 - GC 只把活跃快照缓存作为额外 root，而不是把缓存内容当正式对象
 - 缓存必须位于 repo root 内部，确保仓库整体搬迁或归档恢复后不需要重建外部路径约定
+- 缓存中的用户视图被删除或修改后，只允许影响该视图自身，不允许影响正式对象与 refs
 
 针对下载路径的额外约束：
 
 - repo 内部快照缓存应优先使用 `<snapshot_root>/<repo_relative_path>` 的布局
-- `hf_hub_download()` 返回的文件路径可以是 symlink、hardlink 或实体文件
+- `hf_hub_download()` 返回的文件路径可以是 symlink、reflink/COW clone 或实体文件，但不能是 hardlink
 - 无论实现细节如何，返回路径都必须以原始 repo 相对路径结尾，例如 `xxx/yyy/zzz.safetensors`
+- 如果返回路径被用户删除、替换或改写，再次下载时应重新校验并重建，不影响 commit/tree/file/blob 真相

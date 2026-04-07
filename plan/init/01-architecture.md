@@ -77,6 +77,7 @@ hubvault/
 - 向下调用 repo/service 层
 - 返回公开 dataclass，而不是泄露内部实现对象
 - 对外暴露 HF 兼容的文件路径与文件身份元数据，而不是内部 blob 命名
+- 保证所有读取接口都只返回只读句柄或与 repo 真相解耦的用户视图
 
 ### 3.2 仓库服务层
 
@@ -91,6 +92,7 @@ hubvault/
 - 确保持久化记录只写逻辑路径、对象 ID 与相对布局，不写宿主绝对路径
 - 为下载类 API 生成保留 repo 相对路径后缀的可读文件路径
 - 维护公开文件 `oid` / `sha256` 与内部对象引用之间的映射
+- 在用户视图被删除、替换或污染时，能够从仓库真相重建该视图
 
 ### 3.3 存储层
 
@@ -102,6 +104,7 @@ hubvault/
 - commit/tree/file/blob 对象编码与存储
 - whole-file blob 读写
 - Phase 3 之后的 chunk / pack / index 能力
+- 区分正式不可变内容池与用户可见视图目录，避免可写别名
 
 ### 3.4 事务层
 
@@ -151,8 +154,9 @@ hubvault/
 - `snapshot_download()` 先构建只读缓存目录，不处理 chunk 级共享
 - `upload_large_folder()` 在 Phase 3 前可退化为多次 whole-file 提交
 - 所有缓存、事务和诊断状态都放在 repo root 下，保证仓库整体搬迁后仍然自洽
-- 默认下载路径可以使用 symlink、hardlink 或实体文件，但用户拿到的最终路径必须保留 repo 相对路径后缀
+- 默认下载路径可以使用 symlink、reflink/COW clone 或实体文件，但不能使用会形成可写别名的 hardlink；用户拿到的最终路径必须保留 repo 相对路径后缀
 - 先把 refs / objects / txn / cache 的内部组织结构冻结到文件级命名规则，再开始实现读写逻辑
+- 真正的修改入口只保留 `create_commit()` 等显式写 API，不提供基于视图路径的隐式回写
 
 这样可以先把一致性、对象关系、公开 API 和公开测试体系做稳。
 
@@ -236,6 +240,13 @@ class HubVaultApi:
 4. 读取 blob 或未来的 chunk range
 
 读路径只读取“已发布对象”，永远不读事务暂存目录。
+
+补充语义：
+
+- `open_file()` 返回的句柄必须以只读模式打开
+- `read_bytes()` / `read_range()` 直接返回内存数据，不暴露可写别名
+- `hf_hub_download()` / `snapshot_download()` 返回的是“用户读取视图”，不是仓库真相路径
+- 用户删除或改写这些视图后，repo 服务应能根据正式对象与视图元数据重新生成它们
 
 ## 9. 仓库内部组织职责分工
 
