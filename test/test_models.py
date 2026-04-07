@@ -1,8 +1,9 @@
+from datetime import datetime, timezone
 from dataclasses import FrozenInstanceError
 
 import pytest
 
-from hubvault.models import BlobLfsInfo, CommitInfo, PathInfo, RepoInfo, VerifyReport
+from hubvault.models import BlobLfsInfo, CommitInfo, GitCommitInfo, PathInfo, RepoInfo, VerifyReport
 
 
 @pytest.mark.unittest
@@ -37,9 +38,19 @@ class TestModels:
             etag="etag",
         )
         lfs = BlobLfsInfo(size=1024, sha256="def", pointer_size=128)
+        git_commit = GitCommitInfo(
+            commit_id="sha256:c2",
+            authors=["tester"],
+            created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            title="seed",
+            message="body",
+            formatted_title="<p>seed</p>",
+            formatted_message="<p>body</p>",
+        )
         report = VerifyReport(ok=True)
 
         assert commit.parents == ["sha256:p1"]
+        assert git_commit.authors == ["tester"]
         assert path.path_type == "file"
         assert lfs.pointer_size == 128
         assert report.checked_refs == []

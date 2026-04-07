@@ -17,7 +17,8 @@ import re
 import secrets
 import shutil
 import stat
-from datetime import datetime
+from datetime import datetime, timezone
+from html import escape as html_escape
 from hashlib import sha1, sha256
 from pathlib import Path, PurePosixPath
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -32,7 +33,7 @@ from .errors import (
     RevisionNotFoundError,
     UnsupportedPathError,
 )
-from .models import CommitInfo, PathInfo, RepoInfo, VerifyReport
+from .models import CommitInfo, GitCommitInfo, PathInfo, RepoInfo, VerifyReport
 from .operations import CommitOperationAdd, CommitOperationCopy, CommitOperationDelete
 
 FORMAT_MARKER = "hubvault-repo/v1"
@@ -1007,6 +1008,72 @@ class _RepositoryBackend(object):
 
         snapshot = self._snapshot_for_revision(revision)
         return sorted(snapshot)
+
+    def list_repo_commits(
+        self,
+        revision: str = DEFAULT_BRANCH,
+        formatted: bool = False,
+    ) -> List[GitCommitInfo]:
+        """
+        List commit entries reachable from a revision head.
+
+        The public method name and the meaningful parameters intentionally match
+        :meth:`huggingface_hub.HfApi.list_repo_commits` as closely as the local
+        repository design allows. The local API omits remote-only parameters
+        such as ``repo_id``, ``repo_type``, and ``token`` because they have no
+        real behavior for an embedded on-disk repository.
+
+        The MVP currently produces linear history only, so the returned list is
+        ordered from the selected head commit back through its first-parent
+        chain until the root commit.
+
+        :param revision: Revision or commit ID to inspect, defaults to
+            :data:`DEFAULT_BRANCH`
+        :type revision: str, optional
+        :param formatted: Whether HTML-formatted title/message fields should be
+            populated
+        :type formatted: bool, optional
+        :return: Commit entries ordered from newest to oldest
+        :rtype: List[GitCommitInfo]
+        :raises RepoNotFoundError: Raised when the configured root is not a
+            valid repository.
+        :raises RevisionNotFoundError: Raised when ``revision`` cannot be
+            resolved.
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     _ = backend.create_repo()
+            ...     commit = backend.create_commit(
+            ...         revision="main",
+            ...         operations=[CommitOperationAdd("demo.txt", b"hello")],
+            ...         commit_message="seed",
+            ...     )
+            ...     history = backend.list_repo_commits()
+            ...     history[0].title
+            'seed'
+        """
+
+        self._ensure_repo()
+        self._recover_transactions()
+
+        head_commit_id = self._resolve_revision(revision, allow_empty_ref=True)
+        if head_commit_id is None:
+            return []
+
+        commits = []
+        seen = set()
+        current_commit_id = head_commit_id
+        while current_commit_id is not None and current_commit_id not in seen:
+            seen.add(current_commit_id)
+            info = self._git_commit_info(current_commit_id, formatted=formatted)
+            commits.append(info)
+            commit_payload = self._read_object_payload("commits", current_commit_id)
+            parents = list(commit_payload.get("parents", []))
+            current_commit_id = str(parents[0]) if parents else None
+        return commits
 
     def open_file(self, path_in_repo: str, revision: str = DEFAULT_BRANCH) -> io.BufferedReader:
         """
@@ -2355,6 +2422,70 @@ class _RepositoryBackend(object):
             parents=list(commit_payload.get("parents", [])),
             message=str(commit_payload.get("message", "")),
         )
+
+    def _git_commit_info(self, commit_id: str, formatted: bool = False) -> GitCommitInfo:
+        """
+        Build HF-style commit listing metadata for an existing commit.
+
+        :param commit_id: Commit object identifier
+        :type commit_id: str
+        :param formatted: Whether HTML-formatted title/message fields should be
+            populated
+        :type formatted: bool, optional
+        :return: HF-style commit metadata
+        :rtype: GitCommitInfo
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._git_commit_info("sha256:" + "a" * 64)  # doctest: +SKIP
+        """
+
+        commit_payload = self._read_object_payload("commits", commit_id)
+        raw_message = str(commit_payload.get("message", ""))
+        title, message = self._split_commit_message(raw_message)
+        created_at = datetime.strptime(str(commit_payload["created_at"]), "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+
+        formatted_title = None
+        formatted_message = None
+        if formatted:
+            formatted_title = html_escape(title).replace("\n", "<br />\n")
+            formatted_message = html_escape(message).replace("\n", "<br />\n")
+
+        return GitCommitInfo(
+            commit_id=commit_id,
+            authors=[],
+            created_at=created_at,
+            title=title,
+            message=message,
+            formatted_title=formatted_title,
+            formatted_message=formatted_message,
+        )
+
+    @staticmethod
+    def _split_commit_message(message: str) -> Tuple[str, str]:
+        """
+        Split a stored commit message into title and body segments.
+
+        :param message: Raw stored commit message
+        :type message: str
+        :return: Two-tuple of title and body message
+        :rtype: Tuple[str, str]
+
+        Example::
+
+            >>> _RepositoryBackend._split_commit_message("title\\n\\nbody")
+            ('title', 'body')
+        """
+
+        lines = str(message).splitlines()
+        if not lines:
+            return "", ""
+        title = lines[0]
+        body = "\n".join(lines[1:]).lstrip("\n")
+        return title, body
 
     def _verify_commit_closure(self, commit_id: str) -> None:
         """

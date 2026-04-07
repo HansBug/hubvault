@@ -12,6 +12,7 @@ class TestPackageInit:
             "CommitOperationCopy",
             "CommitOperationDelete",
             "ConflictError",
+            "GitCommitInfo",
             "HubVaultApi",
             "HubVaultError",
             "IntegrityError",
@@ -35,4 +36,3 @@ class TestPackageInit:
         api = hubvault.HubVaultApi(tmp_path / "repo")
 
         assert isinstance(api, hubvault.HubVaultApi)
-

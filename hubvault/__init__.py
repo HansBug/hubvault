@@ -13,6 +13,7 @@ The package contains:
 * :class:`CommitOperationCopy` - Copy-path commit operation
 * :class:`RepoInfo` - Repository metadata model
 * :class:`CommitInfo` - Commit metadata model
+* :class:`GitCommitInfo` - HF-style commit listing model
 * :class:`PathInfo` - Public path metadata model
 * :class:`VerifyReport` - Verification result model
 
@@ -40,7 +41,7 @@ from .errors import (
     UnsupportedPathError,
     VerificationError,
 )
-from .models import BlobLfsInfo, CommitInfo, PathInfo, RepoInfo, VerifyReport
+from .models import BlobLfsInfo, CommitInfo, GitCommitInfo, PathInfo, RepoInfo, VerifyReport
 from .operations import CommitOperationAdd, CommitOperationCopy, CommitOperationDelete
 
 __all__ = [
@@ -50,6 +51,7 @@ __all__ = [
     "CommitOperationCopy",
     "CommitOperationDelete",
     "ConflictError",
+    "GitCommitInfo",
     "HubVaultApi",
     "HubVaultError",
     "IntegrityError",

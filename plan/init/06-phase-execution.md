@@ -10,7 +10,7 @@
 
 - Phase 0 的协议冻结、测试制度、repo 自包含/可搬迁约束、HF 风格路径与文件元数据语义已经落入 `plan/init/`、`AGENTS.md` 与公开源码接口。
 - Phase 1 的 MVP 公开模块 `hubvault.api`、`hubvault.errors`、`hubvault.models`、`hubvault.operations`、`hubvault.repo` 已经落地。
-- 当前 MVP 已支持 `create_repo -> create_commit -> list -> read -> hf_hub_download -> reset_ref -> quick_verify` 的闭环。
+- 当前 MVP 已支持 `create_repo -> create_commit -> list -> list_repo_commits -> read -> hf_hub_download -> reset_ref -> quick_verify` 的闭环。
 - 当前单元测试已经按 `hubvault/` 模块树拆分为对应的 `test/**/test_<module>.py` 文件，不再依赖单一 MVP 汇总测试文件。
 - 当前回归基线应至少包括 `make unittest` 与 `make rst_auto`。
 
@@ -37,7 +37,7 @@
 
 * [x] 冻结 `plan/init` 中的对象模型、目录布局、事务状态机和 API 命名。
 * [x] 冻结 repo root 下 `refs/`、`logs/refs/`、`objects/`、`txn/`、`locks/`、`cache/`、`quarantine/`、`chunks/` 的组织结构与命名规则。
-* [x] 明确 `HubVaultApi`、`CommitOperation*`、`RepoInfo`、`CommitInfo`、`PathInfo`、`VerifyReport` 的公开字段。
+* [x] 明确 `HubVaultApi`、`CommitOperation*`、`RepoInfo`、`CommitInfo`、`GitCommitInfo`、`PathInfo`、`VerifyReport` 的公开字段。
 * [x] 固化 `AGENTS.md` 中的测试制度、公开表面约束和回归要求。
 * [x] 冻结“repo root 自包含且可整体搬迁/归档恢复”的格式红线，禁止把真相写到仓库外部。
 * [x] 冻结 HF 兼容文件元数据语义，明确公开 `oid` / `blob_id` / `sha256` 与内部对象 ID 的区别，并规定公开 `sha256` 使用裸 hex。
@@ -74,7 +74,7 @@
 * [x] 实现 repo 初始化、打开、`repo_info()` 与默认分支解析。
 * [x] 按固定组织结构创建 `FORMAT`、`repo.json`、`refs/`、`logs/refs/`、`objects/`、`txn/`、`locks/`、`cache/`、`quarantine/`。
 * [x] 实现 whole-file blob 存储、commit/tree/file/blob 对象写入和读取。
-* [x] 实现 `create_commit()`、`get_paths_info()`、`list_repo_tree()`、`list_repo_files()`、`open_file()`、`read_bytes()`、`hf_hub_download()`。
+* [x] 实现 `create_commit()`、`get_paths_info()`、`list_repo_tree()`、`list_repo_files()`、`list_repo_commits()`、`open_file()`、`read_bytes()`、`hf_hub_download()`。
 * [x] 实现 `reset_ref()` 与最小 `quick_verify()`。
 * [x] 保证所有持久化元数据不包含宿主绝对路径，且仓库移动后可以直接重新打开。
 * [x] 为每个文件计算并持久化公开 `oid` / `sha256` / `etag`。
@@ -88,6 +88,7 @@
 * [x] `refs/`、`logs/refs/`、`objects/`、`txn/`、`cache/` 的内部组织符合已冻结命名规则。
 * [x] 可以提交新增文件并通过公开 API 读回内容。
 * [x] 可以列出目录树和文件清单。
+* [x] 可以通过公开 API 列出当前 revision 的 commit 历史。
 * [x] 可以将分支回退到历史 commit。
 * [x] `quick_verify()` 能在正常仓库上返回成功报告。
 * [x] 仓库关闭后整体移动路径，再次打开仍能读取、回滚和校验。
@@ -105,7 +106,7 @@
 ### Todo
 
 * [ ] 实现 `create_branch()`、`delete_branch()`、`create_tag()`、`delete_tag()`、`list_repo_refs()`。
-* [ ] 实现 `list_repo_commits()` 与公开 reflog 查询模型。
+* [ ] 实现公开 reflog 查询模型。
 * [ ] 实现 `upload_file()`、`upload_folder()`、`delete_file()`、`delete_folder()`。
 * [ ] 实现 `snapshot_download()`，返回只读快照缓存目录。
 * [ ] 增强 `quick_verify()` 输出，增加 refs、对象和事务残留诊断。

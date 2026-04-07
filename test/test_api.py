@@ -61,6 +61,13 @@ class TestApi:
 
         info = api.repo_info()
         assert info.head == commit.commit_id
+        commit_history = api.list_repo_commits()
+        assert len(commit_history) == 1
+        assert commit_history[0].commit_id == commit.commit_id
+        assert commit_history[0].title == "add api assets"
+        assert commit_history[0].message == ""
+        assert commit_history[0].formatted_title is None
+        assert commit_history[0].formatted_message is None
         assert api.list_repo_files() == [
             "artifacts/weights.bin",
             "configs/model.json",
@@ -108,10 +115,17 @@ class TestApi:
         repo_dir = tmp_path / "repo"
         api = HubVaultApi(repo_dir)
         api.create_repo()
+        assert api.list_repo_commits() == []
         first_commit = api.create_commit(
             operations=[CommitOperationAdd("data/file.txt", b"v1")],
             commit_message="seed",
         )
+
+        formatted_history = api.list_repo_commits(formatted=True)
+        assert len(formatted_history) == 1
+        assert formatted_history[0].title == "seed"
+        assert formatted_history[0].formatted_title == "seed"
+        assert formatted_history[0].formatted_message == ""
 
         with pytest.raises(ConflictError):
             api.create_commit(operations=[], commit_message="noop")
@@ -172,3 +186,29 @@ class TestApi:
 
         with pytest.raises(RevisionNotFoundError):
             api.list_repo_files(revision="missing")
+
+        with pytest.raises(RevisionNotFoundError):
+            api.list_repo_commits(revision="missing")
+
+    def test_list_repo_commits_supports_hf_style_formatted_fields(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        commit = api.create_commit(
+            operations=[CommitOperationAdd("notes.txt", b"v1")],
+            commit_message="document <api>\n\nbody & tail",
+        )
+
+        plain_history = api.list_repo_commits()
+        assert len(plain_history) == 1
+        assert plain_history[0].commit_id == commit.commit_id
+        assert plain_history[0].title == "document <api>"
+        assert plain_history[0].message == "body & tail"
+        assert plain_history[0].formatted_title is None
+        assert plain_history[0].formatted_message is None
+
+        formatted_history = api.list_repo_commits(formatted=True)
+        assert len(formatted_history) == 1
+        assert formatted_history[0].title == "document <api>"
+        assert formatted_history[0].message == "body & tail"
+        assert formatted_history[0].formatted_title == "document &lt;api&gt;"
+        assert formatted_history[0].formatted_message == "body &amp; tail"

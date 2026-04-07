@@ -26,7 +26,7 @@ from os import PathLike
 from pathlib import Path
 from typing import BinaryIO, Dict, Optional, Sequence, Union
 
-from .models import CommitInfo, PathInfo, RepoInfo, VerifyReport
+from .models import CommitInfo, GitCommitInfo, PathInfo, RepoInfo, VerifyReport
 from .repo import _RepositoryBackend
 
 
@@ -270,6 +270,48 @@ class HubVaultApi:
         """
 
         return self._backend.list_repo_files(revision=revision or self._default_revision)
+
+    def list_repo_commits(
+        self,
+        revision: Optional[str] = None,
+        formatted: bool = False,
+    ) -> Sequence[GitCommitInfo]:
+        """
+        List commits reachable from a revision in HF-style order.
+
+        The local repository keeps the public method name and the meaningful
+        parameters from ``huggingface_hub.HfApi.list_repo_commits`` while
+        intentionally dropping remote-only parameters such as ``repo_id``,
+        ``repo_type``, and ``token``.
+
+        :param revision: Revision to resolve, defaults to the API default revision
+        :type revision: Optional[str]
+        :param formatted: Whether HTML-formatted title/message fields should be
+            populated
+        :type formatted: bool, optional
+        :return: Commit entries ordered from newest to oldest
+        :rtype: Sequence[GitCommitInfo]
+        :raises hubvault.errors.RepoNotFoundError: Raised when the repository
+            root does not contain a valid ``hubvault`` repository.
+        :raises hubvault.errors.RevisionNotFoundError: Raised when the revision
+            cannot be resolved.
+
+        Example::
+
+            >>> api = HubVaultApi("/tmp/demo-repo")
+            >>> _ = api.create_repo(exist_ok=True)
+            >>> _ = api.create_commit(
+            ...     operations=[CommitOperationAdd("demo.txt", b"hello")],
+            ...     commit_message="seed",
+            ... )
+            >>> api.list_repo_commits()[0].title
+            'seed'
+        """
+
+        return self._backend.list_repo_commits(
+            revision=revision or self._default_revision,
+            formatted=formatted,
+        )
 
     def open_file(self, path_in_repo: str, revision: Optional[str] = None) -> BinaryIO:
         """

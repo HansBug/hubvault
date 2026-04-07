@@ -20,6 +20,13 @@ CommitInfo
     :members: commit_id,revision,tree_id,parents,message
 
 
+GitCommitInfo
+-----------------------------------------------------
+
+.. autoclass:: GitCommitInfo
+    :members: commit_id,authors,created_at,title,message,formatted_title,formatted_message
+
+
 PathInfo
 -----------------------------------------------------
 

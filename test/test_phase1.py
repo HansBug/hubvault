@@ -4,18 +4,42 @@ Phase 1 end-to-end workflow tests for :mod:`hubvault`.
 This module simulates realistic local ML artifact repository usage through the
 current public API surface. The covered workflow starts from repository
 initialization, publishes multiple commits from different input forms, reads
-historical revisions, exports detached file views, performs copy/delete based
-changes, resets a branch head, and finally reopens the moved repository from a
-new filesystem location.
+historical revisions, validates file metadata and commit history, exports
+detached file views, performs copy/delete based changes, resets a branch head,
+and finally reopens the moved repository from a new filesystem location.
 """
 
 import io
 import shutil
+from hashlib import sha1, sha256
 from pathlib import Path
 
 import pytest
 
 from hubvault import CommitOperationAdd, CommitOperationCopy, CommitOperationDelete, HubVaultApi
+
+
+def _git_blob_oid(data):
+    header = ("blob %d\0" % len(data)).encode("utf-8")
+    return sha1(header + data).hexdigest()
+
+
+def _sha256_value(data):
+    return sha256(data).hexdigest()
+
+
+def _assert_file_metadata(path_infos, expected_payloads):
+    by_path = {item.path: item for item in path_infos}
+
+    assert sorted(by_path) == sorted(expected_payloads)
+    for path, payload in expected_payloads.items():
+        info = by_path[path]
+        assert info.path_type == "file"
+        assert info.size == len(payload)
+        assert info.oid == _git_blob_oid(payload)
+        assert info.blob_id == _git_blob_oid(payload)
+        assert info.sha256 == _sha256_value(payload)
+        assert info.etag == _git_blob_oid(payload)
 
 
 @pytest.mark.unittest
@@ -38,12 +62,14 @@ class TestPhase1IntegratedLifecycle:
         1. Initialize a portable local repository for model assets.
         2. Publish the first artifact set from bytes, a filesystem file, and a
            file-like object.
-        3. Read repository metadata, tree listings, path metadata, binary file
-           streams, and detached download views.
+        3. Read repository metadata, commit history, tree listings, per-file
+           size/hash metadata, binary file streams, and detached download views.
         4. Publish follow-up commits that copy released files, delete obsolete
-           paths, and record a fresh manifest.
-        5. Roll the branch back to a validated commit and reopen the moved repo
-           at a different absolute path to prove portability.
+           paths, and record a fresh manifest while preserving verifiable
+           history.
+        5. Roll the branch back to a validated commit, confirm the visible
+           commit list changes as expected, and reopen the moved repo at a
+           different absolute path to prove portability.
         """
 
         repo_dir = tmp_path / "portable-repo"
@@ -63,6 +89,15 @@ class TestPhase1IntegratedLifecycle:
         weights_v1 = b"weights-v1"
         weights_v2 = b"weights-v2"
         manifest_v2 = b'{"current":"epoch-0002","stable":"v1"}\n'
+        config_bytes = config_source.read_bytes()
+        tokenizer_bytes = b'{"bos_token":"<s>","eos_token":"</s>"}\n'
+
+        first_commit_files = {
+            "checkpoints/epoch-0001/model.safetensors": weights_v1,
+            "configs/model.json": config_bytes,
+            "runs/run-0001/notes.txt": training_note,
+            "tokenizer/tokenizer.json": tokenizer_bytes,
+        }
 
         first_commit = api.create_commit(
             operations=[
@@ -77,12 +112,20 @@ class TestPhase1IntegratedLifecycle:
 
         current_info = api.repo_info()
         assert current_info.head == first_commit.commit_id
-        assert api.list_repo_files() == [
-            "checkpoints/epoch-0001/model.safetensors",
-            "configs/model.json",
-            "runs/run-0001/notes.txt",
-            "tokenizer/tokenizer.json",
-        ]
+        assert first_commit.revision == "main"
+        assert first_commit.parents == []
+        assert first_commit.message == "seed phase1 assets"
+        assert first_commit.commit_id.startswith("sha256:")
+        assert first_commit.tree_id.startswith("sha256:")
+        assert api.list_repo_files() == sorted(first_commit_files)
+        first_history = api.list_repo_commits()
+        assert [item.commit_id for item in first_history] == [first_commit.commit_id]
+        assert first_history[0].authors == []
+        assert first_history[0].title == "seed phase1 assets"
+        assert first_history[0].message == ""
+        assert first_history[0].formatted_title is None
+        assert first_history[0].formatted_message is None
+        assert first_history[0].created_at.tzinfo is not None
 
         root_items = [item.path for item in api.list_repo_tree()]
         assert root_items == ["checkpoints", "configs", "runs", "tokenizer"]
@@ -90,17 +133,23 @@ class TestPhase1IntegratedLifecycle:
         checkpoint_items = [item.path for item in api.list_repo_tree("checkpoints")]
         assert checkpoint_items == ["checkpoints/epoch-0001"]
 
-        path_infos = api.get_paths_info(
+        first_path_infos = api.get_paths_info(api.list_repo_files())
+        _assert_file_metadata(first_path_infos, first_commit_files)
+
+        mixed_path_infos = api.get_paths_info(
             [
                 "checkpoints",
                 "checkpoints/epoch-0001/model.safetensors",
                 "configs/model.json",
             ]
         )
-        assert [item.path_type for item in path_infos] == ["directory", "file", "file"]
-        assert path_infos[1].size == len(weights_v1)
-        assert path_infos[1].oid == path_infos[1].blob_id
-        assert len(path_infos[1].sha256) == 64
+        assert [item.path_type for item in mixed_path_infos] == ["directory", "file", "file"]
+        assert mixed_path_infos[1].size == len(weights_v1)
+        assert mixed_path_infos[1].oid == _git_blob_oid(weights_v1)
+        assert mixed_path_infos[1].blob_id == _git_blob_oid(weights_v1)
+        assert mixed_path_infos[1].sha256 == _sha256_value(weights_v1)
+        assert mixed_path_infos[2].size == len(config_bytes)
+        assert mixed_path_infos[2].sha256 == _sha256_value(config_bytes)
 
         assert api.read_bytes("runs/run-0001/notes.txt", revision=first_commit.commit_id) == training_note
         assert api.read_bytes("checkpoints/epoch-0001/model.safetensors") == weights_v1
@@ -156,7 +205,11 @@ class TestPhase1IntegratedLifecycle:
             commit_message="publish v1 and advance checkpoint",
             metadata={"stage": "publish"},
         )
+        assert second_commit.revision == "main"
         assert second_commit.parents == [first_commit.commit_id]
+        assert second_commit.message == "publish v1 and advance checkpoint"
+        assert second_commit.commit_id.startswith("sha256:")
+        assert second_commit.tree_id.startswith("sha256:")
 
         third_commit = api.create_commit(
             operations=[CommitOperationAdd("manifests/latest.json", manifest_v2)],
@@ -164,15 +217,43 @@ class TestPhase1IntegratedLifecycle:
             commit_message="record latest manifest",
             metadata={"stage": "manifest"},
         )
+        assert third_commit.revision == "main"
+        assert third_commit.parents == [second_commit.commit_id]
+        assert third_commit.message == "record latest manifest"
+        assert third_commit.commit_id.startswith("sha256:")
+        assert third_commit.tree_id.startswith("sha256:")
         assert api.repo_info().head == third_commit.commit_id
 
-        assert api.list_repo_files(revision=first_commit.commit_id) == [
-            "checkpoints/epoch-0001/model.safetensors",
-            "configs/model.json",
-            "runs/run-0001/notes.txt",
-            "tokenizer/tokenizer.json",
+        full_history = api.list_repo_commits()
+        assert [item.commit_id for item in full_history] == [
+            third_commit.commit_id,
+            second_commit.commit_id,
+            first_commit.commit_id,
         ]
-        assert api.list_repo_files() == [
+        assert [item.title for item in full_history] == [
+            "record latest manifest",
+            "publish v1 and advance checkpoint",
+            "seed phase1 assets",
+        ]
+        assert [item.commit_id for item in api.list_repo_commits(revision=second_commit.commit_id)] == [
+            second_commit.commit_id,
+            first_commit.commit_id,
+        ]
+        assert [item.commit_id for item in api.list_repo_commits(revision=first_commit.commit_id)] == [
+            first_commit.commit_id,
+        ]
+        formatted_history = api.list_repo_commits(formatted=True)
+        assert [item.commit_id for item in formatted_history] == [
+            third_commit.commit_id,
+            second_commit.commit_id,
+            first_commit.commit_id,
+        ]
+        assert formatted_history[0].formatted_title == "record latest manifest"
+        assert formatted_history[0].formatted_message == ""
+
+        assert api.list_repo_files(revision=first_commit.commit_id) == sorted(first_commit_files)
+
+        latest_files = {
             "checkpoints/epoch-0001/model.safetensors",
             "checkpoints/epoch-0002/model.safetensors",
             "configs/model.json",
@@ -180,26 +261,55 @@ class TestPhase1IntegratedLifecycle:
             "releases/v1/configs/model.json",
             "releases/v1/model.safetensors",
             "tokenizer/tokenizer.json",
-        ]
+        }
+        assert api.list_repo_files() == sorted(latest_files)
+
+        latest_file_payloads = {
+            "checkpoints/epoch-0001/model.safetensors": weights_v1,
+            "checkpoints/epoch-0002/model.safetensors": weights_v2,
+            "configs/model.json": config_bytes,
+            "manifests/latest.json": manifest_v2,
+            "releases/v1/configs/model.json": config_bytes,
+            "releases/v1/model.safetensors": weights_v1,
+            "tokenizer/tokenizer.json": tokenizer_bytes,
+        }
+        latest_path_infos = api.get_paths_info(api.list_repo_files())
+        _assert_file_metadata(latest_path_infos, latest_file_payloads)
 
         release_items = [item.path for item in api.list_repo_tree("releases/v1")]
         assert release_items == ["releases/v1/configs", "releases/v1/model.safetensors"]
         release_infos = api.get_paths_info(["releases/v1", "releases/v1/model.safetensors"])
         assert [item.path_type for item in release_infos] == ["directory", "file"]
+        assert release_infos[1].size == len(weights_v1)
+        assert release_infos[1].oid == _git_blob_oid(weights_v1)
+        assert release_infos[1].sha256 == _sha256_value(weights_v1)
         assert api.read_bytes("releases/v1/model.safetensors", revision=third_commit.commit_id) == weights_v1
         assert api.read_bytes("checkpoints/epoch-0002/model.safetensors") == weights_v2
 
         reset_commit = api.reset_ref("main", second_commit.commit_id)
         assert reset_commit.commit_id == second_commit.commit_id
         assert api.repo_info().head == second_commit.commit_id
-        assert api.list_repo_files() == [
-            "checkpoints/epoch-0001/model.safetensors",
-            "checkpoints/epoch-0002/model.safetensors",
-            "configs/model.json",
-            "releases/v1/configs/model.json",
-            "releases/v1/model.safetensors",
-            "tokenizer/tokenizer.json",
+        reset_history = api.list_repo_commits()
+        assert [item.commit_id for item in reset_history] == [
+            second_commit.commit_id,
+            first_commit.commit_id,
         ]
+        assert [item.title for item in reset_history] == [
+            "publish v1 and advance checkpoint",
+            "seed phase1 assets",
+        ]
+
+        reset_file_payloads = {
+            "checkpoints/epoch-0001/model.safetensors": weights_v1,
+            "checkpoints/epoch-0002/model.safetensors": weights_v2,
+            "configs/model.json": config_bytes,
+            "releases/v1/configs/model.json": config_bytes,
+            "releases/v1/model.safetensors": weights_v1,
+            "tokenizer/tokenizer.json": tokenizer_bytes,
+        }
+        assert api.list_repo_files() == sorted(reset_file_payloads)
+        reset_path_infos = api.get_paths_info(api.list_repo_files())
+        _assert_file_metadata(reset_path_infos, reset_file_payloads)
 
         final_report = api.quick_verify()
         assert final_report.ok is True
@@ -212,8 +322,15 @@ class TestPhase1IntegratedLifecycle:
 
         reopened_info = reopened_api.repo_info()
         assert reopened_info.head == second_commit.commit_id
+        reopened_history = reopened_api.list_repo_commits()
+        assert [item.commit_id for item in reopened_history] == [
+            second_commit.commit_id,
+            first_commit.commit_id,
+        ]
         assert reopened_api.read_bytes("releases/v1/model.safetensors") == weights_v1
         assert reopened_api.read_bytes("checkpoints/epoch-0002/model.safetensors") == weights_v2
+        reopened_path_infos = reopened_api.get_paths_info(reopened_api.list_repo_files())
+        _assert_file_metadata(reopened_path_infos, reset_file_payloads)
 
         reopened_download = Path(
             reopened_api.hf_hub_download(

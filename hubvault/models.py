@@ -9,12 +9,14 @@ The module contains:
 
 * :class:`RepoInfo` - Basic information about a local repository
 * :class:`CommitInfo` - Metadata for an immutable commit snapshot
+* :class:`GitCommitInfo` - HF-style commit listing metadata
 * :class:`PathInfo` - Public file or directory metadata within a revision
 * :class:`BlobLfsInfo` - Future-facing large-file metadata container
 * :class:`VerifyReport` - Result of repository verification
 """
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import List, Optional
 
 
@@ -77,6 +79,56 @@ class CommitInfo:
     tree_id: str
     parents: List[str] = field(default_factory=list)
     message: str = ""
+
+
+@dataclass(frozen=True)
+class GitCommitInfo:
+    """
+    Describe a commit entry returned by :meth:`hubvault.api.HubVaultApi.list_repo_commits`.
+
+    This model follows the main public shape of
+    ``huggingface_hub.hf_api.GitCommitInfo`` while staying grounded in the
+    local repository semantics of :mod:`hubvault`.
+
+    :param commit_id: Commit object ID
+    :type commit_id: str
+    :param authors: Authors associated with the commit
+    :type authors: List[str]
+    :param created_at: Commit creation time in UTC
+    :type created_at: datetime.datetime
+    :param title: Commit title
+    :type title: str
+    :param message: Commit body message
+    :type message: str
+    :param formatted_title: HTML-formatted commit title, or ``None`` when not
+        requested
+    :type formatted_title: Optional[str]
+    :param formatted_message: HTML-formatted commit message, or ``None`` when
+        not requested
+    :type formatted_message: Optional[str]
+
+    Example::
+
+        >>> info = GitCommitInfo(
+        ...     commit_id="sha256:c1",
+        ...     authors=[],
+        ...     created_at=datetime(2024, 1, 1, 0, 0, 0),
+        ...     title="seed",
+        ...     message="",
+        ...     formatted_title=None,
+        ...     formatted_message=None,
+        ... )
+        >>> info.title
+        'seed'
+    """
+
+    commit_id: str
+    authors: List[str]
+    created_at: datetime
+    title: str
+    message: str
+    formatted_title: Optional[str]
+    formatted_message: Optional[str]
 
 
 @dataclass(frozen=True)

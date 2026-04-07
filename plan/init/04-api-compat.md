@@ -23,6 +23,7 @@ from hubvault import (
     CommitOperationCopy,
     RepoInfo,
     CommitInfo,
+    GitCommitInfo,
     PathInfo,
     VerifyReport,
 )
@@ -40,6 +41,7 @@ from hubvault import (
 - `CommitOperationCopy`
 - `RepoInfo`
 - `CommitInfo`
+- `GitCommitInfo`
 - `PathInfo`
 - `BlobLfsInfo`
 - `VerifyReport`
@@ -54,6 +56,7 @@ from hubvault import (
 - `RepoInfo`
 - `RefInfo`
 - `CommitInfo`
+- `GitCommitInfo`
 - `PathInfo`
 - `BlobLfsInfo`
 - `VerifyReport`
@@ -63,6 +66,7 @@ from hubvault import (
 
 ```python
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Dict, List, Optional
 
 
@@ -84,6 +88,17 @@ class PathInfo:
     blob_id: Optional[str]
     sha256: Optional[str]
     etag: Optional[str]
+
+
+@dataclass(frozen=True)
+class GitCommitInfo:
+    commit_id: str
+    authors: List[str]
+    created_at: datetime
+    title: str
+    message: str
+    formatted_title: Optional[str]
+    formatted_message: Optional[str]
 
 
 @dataclass(frozen=True)
@@ -166,6 +181,7 @@ class CommitOperationAdd:
 - `list_repo_files()`
 - `open_file()`
 - `read_bytes()`
+- `list_repo_commits()`
 - `hf_hub_download()`
 - `reset_ref()`
 - `quick_verify()`
@@ -173,12 +189,14 @@ class CommitOperationAdd:
 当前状态：
 
 - 上述方法都已经在 `HubVaultApi` 中落地并接入本地嵌入式仓库实现
+- `list_repo_commits()` 当前使用 HF 同名方法名，并保留本地真正有语义的主要参数 `revision` 与 `formatted`
 - `hf_hub_download()` 已保证默认返回路径和 `local_dir` 模式都保留 repo 相对路径后缀
 - `open_file()` 返回只读二进制流；下载类接口返回的是与 repo 真相隔离、可重建的用户视图路径
 
 MVP 的修改语义必须保持明确：
 
 - 读取类 API：`open_file()`、`read_bytes()`、`hf_hub_download()`
+- 读取类 API：`open_file()`、`read_bytes()`、`list_repo_commits()`、`hf_hub_download()`
 - 写入类 API：`create_commit()` 以及后续的 `upload_*()` / `delete_*()`
 - 不提供“改了下载路径上的文件就自动写回 repo”的工作区语义
 
@@ -189,7 +207,6 @@ MVP 的修改语义必须保持明确：
 - `create_tag()`
 - `delete_tag()`
 - `list_repo_refs()`
-- `list_repo_commits()`
 - `upload_file()`
 - `upload_folder()`
 - `delete_file()`
@@ -256,6 +273,14 @@ class HubVaultApi:
         ...
 
     def read_bytes(self, path_in_repo: str, *, revision: str = "main") -> bytes:
+        ...
+
+    def list_repo_commits(
+        self,
+        *,
+        revision: Optional[str] = None,
+        formatted: bool = False,
+    ) -> Sequence[GitCommitInfo]:
         ...
 
     def hf_hub_download(
