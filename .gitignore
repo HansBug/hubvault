@@ -239,6 +239,9 @@ _deps
 # Linux trash folder which might appear on any partition or disk
 .Trash-*
 
+# Test artifacts
+junit.xml
+
 # .nfs files are created when an open file is removed but is still being accessed
 .nfs*
 
