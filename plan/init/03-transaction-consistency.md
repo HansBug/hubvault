@@ -4,16 +4,16 @@
 
 系统需要满足以下硬性语义：
 
-- 已提交 commit 永不被原地修改
+- 已提交 commit/tree/file/blob 永不被原地修改
 - ref 更新必须是原子的
 - 任意读请求只能观察到完整版本
 - 崩溃、断电、进程被杀后，仓库仍处于可恢复状态
 - 最多丢失未完成事务，绝不破坏已提交版本
-- GC 不得删除可达对象
+- 后续 GC 不得删除可达对象
 
 ## 2. 锁协议
 
-为保持跨平台与实现简洁，首版建议使用“锁目录”而非平台专属文件锁。
+为保持跨平台与实现简洁，首版建议使用“锁目录”而不是平台专属文件锁。
 
 ### 2.1 写锁
 
@@ -30,12 +30,16 @@ locks/write.lock/
 - `hostname`
 - `started_at`
 - `heartbeat_at`
+- `repo_path`
 
-若锁已存在，则新写事务失败或等待超时。
+如果锁已存在，则：
+
+- 默认立即失败并抛出 `LockTimeoutError`
+- 或按显式超时参数等待
 
 ### 2.2 GC 锁
 
-GC 与 compact 使用独立锁：
+GC 和 compact 使用独立锁：
 
 ```text
 locks/gc.lock/
@@ -45,74 +49,116 @@ GC 启动前必须确认没有活跃写事务。
 
 ### 2.3 锁失效恢复
 
-如果进程崩溃导致锁残留，可通过以下方式处理：
+如果进程崩溃导致锁残留，可按以下顺序处理：
 
-- 检查 `heartbeat_at`
-- 检查 owner 进程是否仍存活
-- 经过超时阈值后允许管理员或恢复流程接管
+1. 读取 `owner.json`
+2. 判断 `heartbeat_at` 是否过期
+3. 如平台支持，再判断进程是否仍存活
+4. 只有满足“锁已超时且持有者不存在或不可达”时，才允许接管
 
-## 3. 提交状态机
+## 3. 事务状态机
 
-建议将事务状态写入 `txn/<txid>/STATE`，状态如下：
+建议将事务状态写入 `txn/<txid>/STATE.json`。
+
+状态集合：
 
 - `PREPARING`
 - `STAGED`
 - `PUBLISHED_OBJECTS`
+- `UPDATED_REF`
 - `COMMITTED`
 - `ABORTED`
 
+状态转移规则：
+
+- `PREPARING -> STAGED`：所有对象都已写入事务目录并刷盘
+- `STAGED -> PUBLISHED_OBJECTS`：对象已发布到正式目录
+- `PUBLISHED_OBJECTS -> UPDATED_REF`：目标 ref 已用 `os.replace()` 更新
+- `UPDATED_REF -> COMMITTED`：reflog 已追加，事务可安全清理
+- 任意未线性化状态都可以转 `ABORTED`
+
 ## 4. 提交流程
 
-单次 `create_commit` 或等价写操作的推荐流程如下：
+单次 `create_commit()` 的推荐流程如下：
 
 1. 获取写锁
-2. 读取目标 ref 当前 head
-3. 校验 `expected_head` 或 `parent_commit`
-4. 创建 `txn/<txid>/`
-5. 将新增对象、pack、索引段写入 `txn/<txid>/`
-6. 对所有新文件执行 `flush` 与必要的 `fsync`
-7. 将事务状态写为 `STAGED`
-8. 原子发布对象与 pack 到正式目录
-9. 写入新 commit 对象
-10. 再次刷盘关键对象
-11. 用 `os.replace()` 原子更新 ref
-12. 追加 ref log
-13. 将事务状态写为 `COMMITTED`
-14. 删除事务目录
-15. 释放写锁
+2. 打开仓库并执行轻量恢复
+3. 读取目标 ref 当前 head
+4. 校验 `expected_head` 或 `parent_commit`
+5. 创建 `txn/<txid>/`
+6. 将新增 blob/tree/file/commit 写入 `txn/<txid>/objects/`
+7. 对所有新文件执行 `flush` 与必要的 `fsync`
+8. 将状态写为 `STAGED`
+9. 原子发布对象到正式目录
+10. 将状态写为 `PUBLISHED_OBJECTS`
+11. 使用 `os.replace()` 原子更新 ref
+12. 将状态写为 `UPDATED_REF`
+13. 追加 reflog
+14. 将状态写为 `COMMITTED`
+15. 删除事务目录
+16. 释放写锁
 
-其中第 11 步是整个提交协议的线性化点。
+线性化点是第 11 步的 `os.replace()`。
 
-## 5. 崩溃恢复语义
+## 5. 代表性提交代码片段
 
-### 5.1 崩溃发生在 ref 更新之前
+```python
+def create_commit(self, revision, operations, parent_commit=None):
+    with self._txn_manager.begin_write() as txn:
+        current_head = self._refs.resolve(revision)
+        self._refs.check_expected_head(
+            revision=revision,
+            current_head=current_head,
+            expected_head=parent_commit,
+        )
+
+        staged = self._commit_service.stage_commit(
+            txn=txn,
+            revision=revision,
+            operations=operations,
+            parent_commit=current_head,
+        )
+        txn.mark_staged()
+        txn.publish_objects(staged.object_paths)
+        txn.update_ref_atomically(revision, staged.commit_id)
+        txn.append_reflog(revision, old_head=current_head, new_head=staged.commit_id)
+        txn.mark_committed()
+        return staged.commit_info
+```
+
+这个骨架在 MVP 阶段已经足够稳定；后续只是在 `stage_commit()` 内把 blob 改成 chunk/pack。
+
+## 6. 崩溃恢复语义
+
+### 6.1 崩溃发生在 ref 更新之前
 
 结果：
 
 - 旧 ref 仍然有效
 - 新对象即使部分已发布，也仍然不可见
-- 后续恢复时可把这些对象视为孤儿对象，等待 GC 处理
+- 恢复时可把它们视为孤儿对象，等待后续 GC
 
-### 5.2 崩溃发生在 ref 更新之后
+### 6.2 崩溃发生在 ref 更新之后
 
 结果：
 
 - 新 commit 已生效
-- 即使 ref log 未完整追加，也不影响仓库主状态
-- 恢复流程应补全日志或标记日志不完整
+- 即使 reflog 尚未完整追加，也不影响主状态
+- 恢复流程应补写日志或记录诊断信息
 
-### 5.3 恢复启动时的动作
+### 6.3 仓库打开时的恢复动作
 
-仓库打开时建议执行轻量恢复检查：
+仓库打开时建议执行轻量恢复：
 
 - 扫描 `txn/` 下未完成事务
-- 读取其 `STATE`
+- 读取其 `STATE.json`
 - 对 `COMMITTED` 但未清理的事务做善后
-- 对未到 `COMMITTED` 的事务执行回收
+- 对 `UPDATED_REF` 的事务补写 reflog
+- 对其余状态的事务执行回收
 
-## 6. ref 日志
+## 7. ref 日志
 
-每次 branch/tag 变更都应记录 append-only ref log。
+每次 branch/tag 变更都应记录 append-only reflog。
 
 建议字段：
 
@@ -125,76 +171,60 @@ GC 启动前必须确认没有活跃写事务。
 - `message`
 - `checksum`
 
-用途：
+reflog 用途：
 
 - 审计
-- rollback
-- 恢复诊断
-- 历史保留窗口管理
+- rollback 诊断
+- 恢复补偿
+- GC 保留窗口
 
-## 7. 校验与体检
+## 8. 校验与体检
 
-### 7.1 quick verify
+### 8.1 quick verify
 
-快速校验重点检查：
+MVP 的 `quick_verify()` 重点检查：
 
 - refs 是否指向存在的 commit
-- commit/tree/file 对象封装和 checksum 是否正常
-- `MANIFEST` 与索引段摘要是否匹配
-- pack 文件头尾摘要是否正常
+- commit/tree/file/blob 对象封装和 checksum 是否正常
+- `File -> Blob` 引用闭包是否完整
+- 残留事务是否可恢复或可安全清理
 
-### 7.2 full verify
+### 8.2 full verify
 
-完全校验需要：
+完整校验在后续阶段增加：
 
 - 遍历所有 GC roots 可达对象
 - 重算 chunk hash
 - 重新组合 file 逻辑 hash
 - 验证 tree 和 commit DAG
-- 输出损坏对象和损坏范围
+- 输出损坏对象与范围
 
-## 8. rollback 语义
+## 9. rollback 与 merge 语义
 
-建议支持两类 rollback：
-
-### 8.1 ref reset
+### 9.1 `reset_ref()`
 
 直接将某个 ref 指回历史 commit。
 
 特点：
 
 - O(1)
-- 不会立刻释放旧数据
-- 适合快速恢复版本
+- 不释放旧数据
+- 是 MVP 内的核心恢复手段
 
-### 8.2 revert commit
+### 9.2 `revert_commit()`
 
-在当前 head 上生成一个“反向提交”。
+在当前 head 上生成一个反向提交，建议放到后续 phase。
 
-特点：
+### 9.3 `merge()`
 
-- 历史线性可追踪
-- 更适合共享分支
-
-## 9. merge 语义
-
-merge 首版建议采用“三方 tree merge + 显式冲突返回”。
-
-规则建议：
-
-- 只有一侧修改：自动通过
-- 两侧都修改但结果对象 ID 一致：自动通过
-- 两侧都修改且对象 ID 不同：冲突
-- 二进制大文件默认不做内容级自动 merge
-
-冲突通过结构化结果返回，不落地工作区。
+首版 merge 建议采用“三方 tree merge + 结构化冲突返回”，但落地时间放到 Phase 4。
 
 ## 10. 一致性红线
 
-以下行为在设计上必须避免：
+以下行为必须避免：
 
 - 原地修改已提交对象
-- 在 ref 指向新 commit 之前暴露半写对象
-- 将缓存文件误认为正式数据
-- 将回滚与物理删除绑在同一步
-- 在未验证对象可达性前直接删除 pack
+- 在 ref 指向新 commit 之前暴露半写状态
+- 把缓存文件误认为正式仓库数据
+- 把回滚和物理删除绑在同一步
+- 在未验证对象可达性前直接删除对象或 pack

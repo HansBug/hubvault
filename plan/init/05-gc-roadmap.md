@@ -1,20 +1,32 @@
-# 05. GC、空间回收、测试与路线图
+# 05. GC、空间回收、校验与测试路线图
 
 ## 1. 为什么 GC 必须单独设计
 
-本项目要求：
+本项目同时要求：
 
 - 随时回滚
 - 必要时释放历史空间
 
 因此必须把“逻辑版本切换”和“物理空间释放”彻底分离：
 
-- rollback 负责变更 ref
-- gc/compact 负责回收不可达对象与 pack 空洞
+- `reset_ref()` / `revert_commit()` 负责修改逻辑版本
+- `gc()` / `compact()` 负责释放不可达对象与 pack 空洞
 
 如果把这两步混在一起，会直接威胁一致性。
 
-## 2. GC Root 定义
+## 2. MVP 与 GC 的关系
+
+为了尽快产出 MVP，GC 不应成为第一阶段的阻塞项。
+
+推荐分三步推进：
+
+- Phase 1：只做“残留事务清理 + quick verify”，不做真正删除
+- Phase 3：实现 blob/object 级 mark-sweep
+- Phase 4：实现 pack compaction 与保留策略
+
+这意味着 MVP 可以先做到“不会破坏数据”，然后再做到“安全回收空间”。
+
+## 3. GC Root 定义
 
 GC 只能从明确的 root 集合出发做可达性分析。
 
@@ -27,32 +39,67 @@ GC 只能从明确的 root 集合出发做可达性分析。
 - 活跃快照缓存引用
 - reflog 保留窗口内涉及的 commit
 
-## 3. GC 流程
+## 4. 回收流程
 
-推荐采用 mark-sweep + pack compaction 的组合：
+推荐采用 `mark -> quarantine -> sweep -> compact` 的组合流程。
+
+### 4.1 mark
 
 1. 获取 GC 锁
 2. 读取全部 roots
-3. 遍历 `commit -> tree -> file -> chunk`
+3. 遍历 `commit -> tree -> file -> blob/chunk`
 4. 计算 live set
-5. 将不可达对象加入 quarantine 列表
-6. 等待 grace period
-7. 重写仍有存活 chunk 的 pack
-8. 发布新的索引和 MANIFEST
-9. 删除旧 pack 与垃圾对象
 
-## 4. 历史保留策略
+### 4.2 quarantine
+
+将不可达对象先移入 `quarantine/` 或登记到隔离清单，而不是立刻删除。
+
+好处：
+
+- 降低误删风险
+- 允许管理员做人工检查
+- 崩溃恢复更简单
+
+### 4.3 sweep
+
+经过 grace period 后，再删除确定不可达的对象。
+
+### 4.4 compact
+
+当引入 pack 后，再重写 live chunk 稀疏分布的 pack，并原子切换索引。
+
+## 5. 代表性 GC 代码片段
+
+```python
+def collect_live_objects(repo):
+    roots = repo.list_gc_roots()
+    pending = list(roots)
+    live = set()
+
+    while pending:
+        object_id = pending.pop()
+        if object_id in live:
+            continue
+        live.add(object_id)
+        pending.extend(repo.iter_object_references(object_id))
+
+    return live
+```
+
+MVP 阶段即使暂时没有真正 `gc()`，也可以先复用这套遍历逻辑来做 `quick_verify()` 的可达性检查。
+
+## 6. 历史保留策略
 
 建议支持多种保留策略组合：
 
 - 保留所有 tag 指向的历史
 - 每个 branch 保留最近 `N` 个 commit
 - 保留最近 `X` 天内被 reflog 引用的 commit
-- 用户可显式 pin 关键版本
+- 用户显式 pin 关键版本
 
 这样可以在“可回滚”和“控制空间”之间取得平衡。
 
-## 5. compact 的必要性
+## 7. compact 的必要性
 
 仅删除不可达对象并不足够，因为 chunk 实际位于 pack 中，旧 pack 往往只部分可回收。
 
@@ -66,39 +113,57 @@ compact 必须遵循与普通提交相同的发布原则：
 
 - 先写新 pack 和新索引
 - 校验完整性
-- 原子切换 manifest
+- 原子切换 `MANIFEST`
 - 最后删除旧 pack
 
-## 6. 测试策略
+## 8. 校验路线图
 
-如果要把一致性和跨平台作为核心卖点，测试不能只做单元测试。
+### 8.1 Phase 1 的 `quick_verify()`
 
-建议测试分层如下：
+只检查最关键闭包：
 
-### 6.1 单元测试
+- refs 是否存在并指向合法 commit
+- commit/tree/file/blob 是否可解码
+- `File -> Blob` 引用是否完整
+- 事务目录是否处于可恢复状态
 
-- 对象编码与解码
+### 8.2 Phase 4 的 `full_verify()`
+
+完整校验再补齐：
+
+- 遍历所有 root 可达对象
+- 重算 chunk/hash
+- 重新组合 logical hash
+- 校验 pack、索引段和 manifest
+
+## 9. 测试路线图
+
+如果要把一致性和跨平台作为核心卖点，测试不能只做 happy-path 单元测试。
+
+### 9.1 单元测试
+
+- 公开 API 的参数行为
 - 路径规范化
-- merge 判定
-- ref 解析
-- 索引查找
+- 对象编码与解码
+- refs 解析
+- verify 报告结构
 
-### 6.2 集成测试
+### 9.2 集成测试
 
-- create/upload/delete/list/download
-- branch/tag/reset/merge
+- `create_repo -> create_commit -> list -> read -> reset`
+- branch/tag/reflog
 - snapshot/cache 行为
-- gc/compact/verify 联动
+- verify / gc / compact 联动
 
-### 6.3 故障注入测试
+### 9.3 故障注入测试
 
-- 写 pack 中途崩溃
+- 写 blob 中途崩溃
 - 写 commit 中途崩溃
 - 更新 ref 前崩溃
-- 更新 ref 后日志未写完崩溃
+- 更新 ref 后 reflog 未写完崩溃
 - 事务目录残留
 
-### 6.4 跨平台测试
+### 9.4 跨平台测试
 
 至少覆盖：
 
@@ -114,62 +179,7 @@ compact 必须遵循与普通提交相同的发布原则：
 - 锁目录恢复
 - 长路径与保留名
 
-## 7. 实施路线图
-
-### Phase 0：规范冻结
-
-目标：
-
-- 冻结对象模型
-- 冻结目录布局
-- 冻结事务协议
-- 冻结错误语义
-
-产出：
-
-- 设计文档
-- 格式版本约定
-
-### Phase 1：纯 Python 最小可用版本
-
-目标：
-
-- 基础 repo 初始化
-- refs/commit/tree/file 存储
-- whole-file 存储
-- `create_commit` / `list` / `download` / `reset`
-- quick verify
-
-### Phase 2：大文件能力
-
-目标：
-
-- chunked file
-- pack 存储
-- 文件版 LSM 索引
-- range read
-- 基础 GC
-
-### Phase 3：工程增强
-
-目标：
-
-- merge
-- full verify
-- compact
-- reflog 与保留策略
-- 更完整的 API 兼容层
-
-### Phase 4：性能与发布
-
-目标：
-
-- 原生加速模块
-- wheel 打包
-- benchmark
-- 文档与示例
-
-## 8. 首版建议取舍
+## 10. 首版建议取舍
 
 为了尽快进入可验证状态，首版建议：
 
@@ -177,4 +187,4 @@ compact 必须遵循与普通提交相同的发布原则：
 - 先不实现文本内容级自动 merge
 - 先用稳定 JSON 对象编码
 - 先以单写者模型保证正确性
-- 先让功能正确，再逐步引入原生加速
+- 先把 blob 存储和 quick verify 做稳，再逐步引入 chunk/pack/GC

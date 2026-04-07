@@ -1,70 +1,116 @@
 # 01. 总体架构
 
-## 1. 总体思路
+## 1. 面向当前仓库的总体思路
 
-系统整体采用如下组合：
+当前仓库只有 CLI 壳层和元信息，因此架构设计必须满足两个条件：
+
+- 能够在最短路径上补出可运行的本地版本仓库 MVP
+- 后续引入 chunk / pack / GC / merge 时，不需要推翻第一版磁盘格式和公开 API
+
+推荐采用如下组合：
 
 - Git 风格的不可变元数据 DAG
-- 面向大文件的内容寻址 chunk 存储
-- append-only pack 文件
-- 基于文件的 LSM 风格索引
-- 基于事务暂存目录的原子提交协议
+- Phase 1 使用 whole-file blob 存储
+- Phase 3 再引入 chunk / pack / range read
+- 基于目录锁与事务暂存目录的原子提交协议
+- API-first 的本地仓库访问层，CLI 仅作薄包装
 
-这意味着系统本质上是一个嵌入式事务化对象仓库，而不是 git 工作区包装器。
+这意味着 `hubvault` 的本质是“嵌入式事务化对象仓库”，不是 git workspace 包装器。
 
-## 2. 分层结构
+## 2. 推荐包结构
 
-建议将实现拆分为五层：
+建议在当前仓库基础上逐步扩展为：
 
-### 2.1 API 层
+```text
+hubvault/
+  __init__.py
+  api.py
+  errors.py
+  models.py
+  operations.py
+  repo.py
+  layout.py
 
-提供给用户的 Python API，整体风格尽量接近 `huggingface_hub.HfApi`。
+  entry/
+    __init__.py
+    base.py
+    cli.py
+    dispatch.py
+
+  services/
+    repository.py
+    commit.py
+    refs.py
+    verify.py
+    gc.py
+
+  storage/
+    object_store.py
+    blob_store.py
+    chunk_store.py
+    pack_store.py
+    index_store.py
+
+  txn/
+    manager.py
+    recovery.py
+```
+
+分阶段实现建议：
+
+- Phase 0-1 先补 `api.py`、`errors.py`、`models.py`、`operations.py`、`repo.py`
+- Phase 1 再补 `services/repository.py`、`services/commit.py`、`storage/object_store.py`、`storage/blob_store.py`
+- Phase 3 之后再引入 `chunk_store.py`、`pack_store.py`、`index_store.py`
+
+## 3. 分层职责
+
+### 3.1 API 层
+
+公开给用户的 Python API，风格尽量接近 `huggingface_hub.HfApi`。
 
 职责：
 
 - 参数校验
 - 路径规范化
-- 事务入口封装
-- 错误类型定义
-- 向后兼容包装
+- revision 解析
+- 向下调用 repo/service 层
+- 返回公开 dataclass，而不是泄露内部实现对象
 
-### 2.2 仓库服务层
+### 3.2 仓库服务层
 
-负责协调写事务、读取对象、解析 refs、执行 merge、rollback、gc。
-
-职责：
-
-- 仓库打开与初始化
-- 读写锁管理
-- branch/tag/commit 逻辑
-- 冲突检测
-- 历史查询
-
-### 2.3 元数据层
-
-负责管理 commit/tree/file/ref 等不可变对象。
+负责协调事务、refs、对象读取和历史查询。
 
 职责：
 
-- 对象序列化与反序列化
-- 对象哈希计算
-- 对象落盘与查找
-- ref log 管理
+- 打开或初始化仓库
+- 执行 commit / reset / branch / tag
+- 维护 ref 与 reflog
+- 构造 `RepoInfo`、`CommitInfo`、`PathInfo`
 
-### 2.4 数据存储层
+### 3.3 存储层
 
-负责大文件切块、pack 写入、pack 查找、内容缓存。
+负责不可变对象和文件内容的落盘、查找与校验。
 
 职责：
 
-- whole-file 与 chunked 两种存储模式
-- chunk dedupe 查找
-- pack 追加写
-- 文件重组与 range read
+- commit/tree/file/blob 对象编码与存储
+- whole-file blob 读写
+- Phase 3 之后的 chunk / pack / index 能力
 
-### 2.5 维护层
+### 3.4 事务层
 
-负责验证、回收与仓库体检。
+负责锁协议、事务状态机、恢复和发布顺序。
+
+职责：
+
+- 获取/释放写锁和 GC 锁
+- 管理 `txn/<txid>/` 生命周期
+- 原子发布对象与更新 ref
+- 恢复未完成事务
+
+### 3.5 维护层
+
+负责仓库体检和空间回收。
 
 职责：
 
@@ -72,69 +118,102 @@
 - full verify
 - mark-sweep GC
 - pack compaction
-- 索引段合并
+- 诊断报告输出
 
-## 3. 对象关系
+## 4. 核心对象关系
 
-对象关系固定如下：
+逻辑关系固定如下：
 
 - `Ref -> Commit`
 - `Commit -> Tree`
 - `Tree -> Tree | File`
-- `File -> Chunk[]`
+- `File -> Blob | Chunk[]`
 
-所有对象都不可变，因此：
+设计含义：
 
-- branch 创建和切换只改 ref
-- rollback 只改 ref 或增加 revert commit
-- merge 的核心工作是构造新的 tree 和 commit
+- branch / tag 只是 ref 名称到 commit 的映射
+- rollback 默认只改 ref，不直接删除物理对象
+- merge 的核心是根据三个 tree 计算一个新 tree，再生成新 commit
 
-## 4. 写路径与读路径分离
+## 5. MVP 简化架构
 
-### 4.1 写路径
+为了让 MVP 更快可交付，Phase 1 采用显式瘦身：
 
-写路径必须严格走事务协议：
+- `File` 只支持 `storage_kind="blob"`
+- 不实现 pack 和索引段
+- `quick_verify()` 只校验 refs、对象和 blob 引用闭包
+- `snapshot_download()` 先构建只读缓存目录，不处理 chunk 级共享
+- `upload_large_folder()` 在 Phase 3 前可退化为多次 whole-file 提交
 
-- 获取写锁
-- 校验 head
-- 写入事务目录
-- 刷盘
-- 发布对象
-- 原子更新 ref
+这样可以先把一致性、对象关系、公开 API 和公开测试体系做稳。
 
-### 4.2 读路径
+## 6. 代表性 API / 模型草图
 
-读路径永远只读取“已发布对象”：
+```python
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Sequence
 
-- 按 ref 找到 commit
-- 递归解析 tree
-- 定位 file 对象
-- 读取 chunk 或缓存文件
 
-这可以保证读者不会看到半写状态。
+@dataclass(frozen=True)
+class RepoInfo:
+    repo_path: str
+    default_branch: str
+    head: Optional[str]
+    format_version: int
 
-## 5. 关键设计决策
 
-### 5.1 无 workspace
+@dataclass(frozen=True)
+class CommitInfo:
+    commit_id: str
+    revision: str
+    tree_id: str
+    parents: List[str]
+    message: str
 
-仓库主路径不是工作区，而是引擎私有存储区。用户不能直接修改仓库内部文件结构，所有操作必须经过 API。
 
-### 5.2 单写者、多读者
+class HubVaultApi:
+    def __init__(self, repo_path: str, revision: str = "main") -> None:
+        ...
 
-首版推荐单 repo 同时只允许一个写事务。读操作不需要全局互斥。
+    def create_repo(self, *, default_branch: str = "main") -> RepoInfo:
+        ...
 
-### 5.3 历史回滚与历史回收分离
+    def create_commit(
+        self,
+        *,
+        revision: str = "main",
+        operations: Sequence["CommitOperation"],
+        parent_commit: Optional[str] = None,
+        commit_message: str = "",
+        metadata: Optional[Dict[str, str]] = None,
+    ) -> CommitInfo:
+        ...
+```
 
-- rollback 负责切换逻辑版本
-- GC 负责释放物理空间
+## 7. 模块依赖约束
 
-这两步绝不能混在同一个动作里。
+- `api.py` 可以依赖 `errors.py`、`models.py`、`operations.py`、`repo.py`
+- `services/` 可以依赖 `storage/` 与 `txn/`
+- `storage/` 不能依赖 `click` 或 CLI 模块
+- `entry/` 只能依赖公开 API，不应直接操作内部存储实现
+- `models.py` 只定义公开 dataclass / enum，不放业务逻辑
 
-### 5.4 原生扩展可选
+## 8. 写路径与读路径
 
-纯 Python 实现必须保证协议正确性；原生扩展只负责性能加速，例如：
+### 8.1 写路径
 
-- BLAKE3
-- Zstd
-- FastCDC
-- 大索引扫描优化
+1. `HubVaultApi.create_commit()` 校验参数并规范化路径
+2. 仓库服务层解析 revision 和 `expected_head`
+3. 事务层获取写锁并创建 `txn/<txid>/`
+4. 存储层生成 blob/tree/commit 对象并先写入事务目录
+5. 事务层发布对象并原子更新 ref
+6. 返回 `CommitInfo`
+
+### 8.2 读路径
+
+1. 解析 revision 到 commit
+2. 递归解析 tree
+3. 定位目标 file/blob
+4. 读取 blob 或未来的 chunk range
+
+读路径只读取“已发布对象”，永远不读事务暂存目录。
