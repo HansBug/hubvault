@@ -63,6 +63,8 @@ When designing or implementing file-download APIs and file metadata, preserve Hu
 
 Read/download APIs must never expose a writable alias of repository truth. Any path returned by `hf_hub_download`, `snapshot_download`, or similar read-facing APIs must be a detached or read-only user view whose deletion or modification cannot corrupt committed repo data. Effective repository mutations must go through explicit public write APIs such as commit/upload/delete flows.
 
+Public APIs must not keep compatibility-only placeholder parameters that have no real behavior in this repository. If an argument such as `repo_id`, `expand`, or a similar field does not affect the local-path design, validation, storage, or results, remove it instead of carrying dead signature surface.
+
 ## Planning Document Rules
 
 Execution-oriented documents under `plan/` must reflect the current repository state, not an imagined future implementation state.

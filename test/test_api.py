@@ -89,7 +89,6 @@ class TestApi:
 
         export_path = Path(
             api.hf_hub_download(
-                "demo",
                 "models/core/model.safetensors",
                 local_dir=tmp_path / "exports",
             )
@@ -142,7 +141,7 @@ class TestApi:
             api.open_file("missing.txt")
 
         with pytest.raises(PathNotFoundError):
-            api.hf_hub_download("demo", "missing.txt")
+            api.hf_hub_download("missing.txt")
 
         with pytest.raises(PathNotFoundError):
             api.list_repo_tree("missing-dir")

@@ -86,7 +86,7 @@ class TestRepoSemantics:
             commit_message="seed",
         )
 
-        view_path = Path(api.hf_hub_download("demo", "models/core/model.safetensors"))
+        view_path = Path(api.hf_hub_download("models/core/model.safetensors"))
         assert view_path.as_posix().endswith("models/core/model.safetensors")
         assert view_path.read_bytes() == b"payload-v1"
 
@@ -96,22 +96,21 @@ class TestRepoSemantics:
         assert any("stale file view" in warning for warning in report.warnings)
         assert api.read_bytes("models/core/model.safetensors") == b"payload-v1"
 
-        rebuilt_path = Path(api.hf_hub_download("demo", "models/core/model.safetensors"))
+        rebuilt_path = Path(api.hf_hub_download("models/core/model.safetensors"))
         assert rebuilt_path == view_path
         assert rebuilt_path.read_bytes() == b"payload-v1"
 
-        same_path = Path(api.hf_hub_download("demo", "models/core/model.safetensors"))
+        same_path = Path(api.hf_hub_download("models/core/model.safetensors"))
         assert same_path == view_path
         assert same_path.read_bytes() == b"payload-v1"
 
         rebuilt_path.unlink()
-        restored_path = Path(api.hf_hub_download("demo", "models/core/model.safetensors"))
+        restored_path = Path(api.hf_hub_download("models/core/model.safetensors"))
         assert restored_path == view_path
         assert restored_path.read_bytes() == b"payload-v1"
 
         external_path = Path(
             api.hf_hub_download(
-                "demo",
                 "models/core/model.safetensors",
                 local_dir=tmp_path / "exports",
             )
@@ -119,7 +118,6 @@ class TestRepoSemantics:
         external_path.write_bytes(b"tampered-external")
         refreshed_external_path = Path(
             api.hf_hub_download(
-                "demo",
                 "models/core/model.safetensors",
                 local_dir=tmp_path / "exports",
             )
@@ -131,7 +129,6 @@ class TestRepoSemantics:
         dir_blocking_path.mkdir(parents=True)
         rebuilt_from_dir = Path(
             api.hf_hub_download(
-                "demo",
                 "models/core/model.safetensors",
                 local_dir=tmp_path / "dir-exports",
             )
@@ -150,7 +147,6 @@ class TestRepoSemantics:
         else:
             rebuilt_from_symlink = Path(
                 api.hf_hub_download(
-                    "demo",
                     "models/core/model.safetensors",
                     local_dir=tmp_path / "link-exports",
                 )

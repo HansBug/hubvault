@@ -192,7 +192,6 @@ class HubVaultApi:
         self,
         paths: Sequence[str],
         revision: Optional[str] = None,
-        expand: bool = False,
     ) -> Sequence[PathInfo]:
         """
         Return public metadata for selected paths.
@@ -201,8 +200,6 @@ class HubVaultApi:
         :type paths: Sequence[str]
         :param revision: Revision to resolve, defaults to the API default revision
         :type revision: Optional[str]
-        :param expand: Reserved compatibility flag for later phases
-        :type expand: bool
         :return: Path metadata in input order
         :rtype: Sequence[PathInfo]
         :raises hubvault.errors.PathNotFoundError: Raised when any requested
@@ -224,7 +221,7 @@ class HubVaultApi:
             'demo.txt'
         """
 
-        return self._backend.get_paths_info(paths=paths, revision=revision or self._default_revision, expand=expand)
+        return self._backend.get_paths_info(paths=paths, revision=revision or self._default_revision)
 
     def list_repo_tree(self, path_in_repo: str = "", revision: Optional[str] = None) -> Sequence[PathInfo]:
         """
@@ -337,7 +334,6 @@ class HubVaultApi:
 
     def hf_hub_download(
         self,
-        repo_id: str,
         filename: str,
         revision: Optional[str] = None,
         local_dir: Optional[Union[str, PathLike]] = None,
@@ -345,8 +341,6 @@ class HubVaultApi:
         """
         Materialize a detached user-view path for a file.
 
-        :param repo_id: Compatibility placeholder for the repo identifier
-        :type repo_id: str
         :param filename: Repo-relative file path
         :type filename: str
         :param revision: Revision to resolve, defaults to the API default revision
@@ -370,13 +364,12 @@ class HubVaultApi:
             ...     operations=[CommitOperationAdd.from_bytes("demo.txt", b"hello")],
             ...     commit_message="seed",
             ... )
-            >>> api.hf_hub_download("demo", "demo.txt").endswith("demo.txt")
+            >>> api.hf_hub_download("demo.txt").endswith("demo.txt")
             True
         """
 
         local_dir_str = None if local_dir is None else str(local_dir)
         return self._backend.hf_hub_download(
-            repo_id=repo_id,
             filename=filename,
             revision=revision or self._default_revision,
             local_dir=local_dir_str,

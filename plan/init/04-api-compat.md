@@ -238,7 +238,6 @@ class HubVaultApi:
         paths: Sequence[str],
         *,
         revision: str = "main",
-        expand: bool = False,
     ) -> Sequence[PathInfo]:
         ...
 
@@ -250,7 +249,6 @@ class HubVaultApi:
 
     def hf_hub_download(
         self,
-        repo_id: str,
         filename: str,
         *,
         revision: Optional[str] = None,
@@ -294,6 +292,11 @@ class HubVaultApi:
 - `ignore_patterns`
 - `delete_patterns`
 
+不要保留以下“兼容外观但当前没有真实语义”的参数：
+
+- `repo_id`
+- `expand`
+
 语义约束：
 
 - `revision` 可以是 branch、tag 或 commit id
@@ -330,7 +333,6 @@ commit = api.create_commit(
 ```python
 payload = api.read_bytes("weights/config.json", revision="main")
 download_path = api.hf_hub_download(
-    repo_id="demo",
     filename="weights/config.json",
     revision=commit.commit_id,
 )
@@ -358,7 +360,7 @@ assert report.ok
 - 不兼容远端平台能力，例如 token、discussion、PR、space
 - `snapshot_download()` 返回的是本地只读快照缓存，不是工作区
 - `hf_hub_download()` 返回的是缓存文件或目标导出文件
-- `repo_id` 在本项目中只是逻辑名称；真正的存储根仍是本地路径
+- 不保留像 `repo_id` 这类仅为兼容外观而存在、但不会影响本地仓库行为的空参数
 - 仓库的全部正确性信息都保存在 repo root 内；导出文件、外部下载目标和调用时传入的源路径都不是仓库真相
 - `path` / `blob_id` / `sha256` / `lfs.pointer_size` 等文件公开字段应尽量与 Hugging Face `RepoFile` 语义对齐
 - 真正有效的 repo 变更只能通过 commit 风格 API 显式提交，不能通过修改下载结果或快照目录隐式生效

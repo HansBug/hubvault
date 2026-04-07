@@ -772,7 +772,6 @@ class _RepositoryBackend(object):
         self,
         paths: Sequence[str],
         revision: str = DEFAULT_BRANCH,
-        expand: bool = False,
     ) -> List[PathInfo]:
         """
         Return public metadata for the requested paths.
@@ -787,8 +786,6 @@ class _RepositoryBackend(object):
         :param revision: Revision to resolve, defaults to
             :data:`DEFAULT_BRANCH`
         :type revision: str, optional
-        :param expand: Reserved compatibility flag for later phases
-        :type expand: bool, optional
         :return: Path metadata in the same order as ``paths``
         :rtype: List[PathInfo]
         :raises PathNotFoundError: Raised when any requested path is absent.
@@ -811,7 +808,6 @@ class _RepositoryBackend(object):
             'directory'
         """
 
-        del expand  # Reserved for a later phase.
         snapshot = self._snapshot_for_revision(revision)
         infos = []
         for raw_path in paths:
@@ -1037,7 +1033,6 @@ class _RepositoryBackend(object):
 
     def hf_hub_download(
         self,
-        repo_id: str,
         filename: str,
         revision: Optional[str] = None,
         local_dir: Optional[str] = None,
@@ -1050,9 +1045,6 @@ class _RepositoryBackend(object):
         path while repository truth remains immutable until explicit commit APIs
         are used.
 
-        :param repo_id: Compatibility placeholder for Hugging Face style call
-            signatures
-        :type repo_id: str
         :param filename: Repo-relative file path to materialize
         :type filename: str
         :param revision: Revision to inspect, defaults to the default branch
@@ -1077,12 +1069,11 @@ class _RepositoryBackend(object):
             ...         operations=[CommitOperationAdd.from_bytes("nested/demo.txt", b"hello")],
             ...         commit_message="seed",
             ...     )
-            ...     path = backend.hf_hub_download("demo", "nested/demo.txt")
+            ...     path = backend.hf_hub_download("nested/demo.txt")
             ...     path.endswith("nested/demo.txt")
             True
         """
 
-        del repo_id
         resolved_revision = revision or DEFAULT_BRANCH
         normalized_path = _normalize_repo_path(filename)
         snapshot = self._snapshot_for_revision(resolved_revision)
