@@ -57,7 +57,7 @@ repo_root/
 - `logs/refs/`：append-only reflog
 - `objects/`：不可变 commit/tree/file/blob 对象
 - `txn/`：写事务暂存目录
-- `locks/`：写锁与 GC 锁目录
+- `locks/`：基于成熟第三方文件锁的 repo 级读写锁目录
 - `cache/materialized/`：按内容去重的内部只读内容池
 - `cache/views/`：单文件/快照用户视图的元数据
 - `cache/files/`、`cache/snapshots/`：保留 repo 相对路径后缀的用户读取视图
@@ -75,7 +75,7 @@ repo_root/
   logs/refs/{heads,tags}/...
   objects/{commits,trees,files,blobs}/sha256/<prefix>/<digest>...
   txn/<txid>/
-  locks/write.lock/
+  locks/repo.lock
   cache/materialized/sha256/<prefix>/<digest>.data
   cache/materialized/meta/<content_key>.json
   cache/views/files/<view_key>.json
@@ -260,21 +260,20 @@ txn/
 
 ### 2.6 `locks/` 组织
 
-锁目录保持极简：
+当前锁布局已经收敛为成熟第三方文件锁语义：
 
 ```text
 locks/
-  write.lock/
-    owner.json
-  gc.lock/
-    owner.json
+  repo.lock
 ```
 
 规则：
 
-- 锁是否存在，以目录创建成功与否为准
-- `owner.json` 只用于诊断与接管判断
-- 不允许在锁目录中保存仓库正确性所依赖的状态
+- `repo.lock` 由 `fasteners.InterProcessReaderWriterLock` 持有
+- 同一时刻允许多个 reader 共享读锁，但只允许一个 writer 持有写锁
+- writer 持锁期间，其他读写请求都必须阻塞
+- 锁文件本身只是同步原语，不保存任何仓库正确性所依赖的业务状态
+- `locks/` 下除 `repo.lock` 以外不应再出现任何其它锁协议产物；出现即视为异常文件系统垃圾并直接清理或报错处理
 
 ### 2.7 `cache/` 组织
 

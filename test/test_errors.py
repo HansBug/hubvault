@@ -6,7 +6,6 @@ from hubvault.errors import (
     HubVaultError,
     HubVaultValidationError,
     IntegrityError,
-    LockTimeoutError,
     RepositoryAlreadyExistsError,
     RepositoryNotFoundError,
     RevisionNotFoundError,
@@ -26,7 +25,6 @@ class TestErrors:
             ConflictError("conflict"),
             IntegrityError("integrity"),
             VerificationError("verify"),
-            LockTimeoutError("lock"),
             UnsupportedPathError("path-format"),
         ]
 

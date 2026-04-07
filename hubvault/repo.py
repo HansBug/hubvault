@@ -17,6 +17,7 @@ import re
 import secrets
 import shutil
 import stat
+from contextlib import contextmanager
 from fnmatch import fnmatch
 from datetime import datetime, timezone
 from html import escape as html_escape
@@ -24,11 +25,12 @@ from hashlib import sha1, sha256
 from pathlib import Path, PurePosixPath
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
+from fasteners import InterProcessReaderWriterLock
+
 from .errors import (
     ConflictError,
     EntryNotFoundError,
     IntegrityError,
-    LockTimeoutError,
     RepositoryAlreadyExistsError,
     RepositoryNotFoundError,
     RevisionNotFoundError,
@@ -52,7 +54,7 @@ FORMAT_VERSION = 1
 DEFAULT_BRANCH = "main"
 OBJECT_HASH = "sha256"
 LARGE_FILE_THRESHOLD = 16 * 1024 * 1024
-WRITE_LOCK_DIR = "write.lock"
+REPO_LOCK_FILENAME = "repo.lock"
 WINDOWS_RESERVED_NAMES = {
     "CON",
     "PRN",
@@ -99,6 +101,57 @@ def _utc_now() -> str:
     """
 
     return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_utc_timestamp(value: str) -> datetime:
+    """
+    Parse a repository UTC timestamp string.
+
+    :param value: Timestamp formatted as ``YYYY-MM-DDTHH:MM:SSZ``
+    :type value: str
+    :return: Timezone-aware UTC datetime
+    :rtype: datetime.datetime
+
+    Example::
+
+        >>> _parse_utc_timestamp("2024-01-01T00:00:00Z").tzinfo == timezone.utc
+        True
+    """
+
+    return datetime.strptime(str(value), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+
+
+def _fsync_directory(path: Path) -> None:
+    """
+    Best-effort fsync of a directory entry boundary.
+
+    :param path: Directory path to fsync
+    :type path: pathlib.Path
+    :return: ``None``.
+    :rtype: None
+
+    Example::
+
+        >>> import tempfile
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     _fsync_directory(Path(tmpdir))
+    """
+
+    if not path.exists():
+        return
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    try:
+        fd = os.open(str(path), flags)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
 
 
 def _stable_json_bytes(data: object) -> bytes:
@@ -363,6 +416,7 @@ def _write_bytes_atomic(path: Path, data: bytes) -> None:
         file_.flush()
         os.fsync(file_.fileno())
     os.replace(str(temp_path), str(path))
+    _fsync_directory(path.parent)
 
 
 def _write_text_atomic(path: Path, text: str) -> None:
@@ -624,61 +678,6 @@ def _build_object_container(object_type: str, payload: object) -> Tuple[str, byt
     return _object_id_from_container(container)
 
 
-class _WriteLock(object):
-    """
-    Small lock-handle wrapper for repository write locks.
-
-    Instances are created by :meth:`_RepositoryBackend._acquire_write_lock` and
-    encapsulate the filesystem paths that must be removed when the writer is
-    done.
-
-    Example::
-
-        >>> lock = _WriteLock(Path("/tmp/lock"), Path("/tmp/lock/owner.json"))
-        >>> isinstance(lock, _WriteLock)
-        True
-    """
-
-    def __init__(self, lock_dir: Path, owner_path: Path):
-        """
-        Initialize the lock handle.
-
-        :param lock_dir: Lock directory path
-        :type lock_dir: pathlib.Path
-        :param owner_path: Diagnostic owner metadata path
-        :type owner_path: pathlib.Path
-        :return: ``None``.
-        :rtype: None
-
-        Example::
-
-            >>> lock = _WriteLock(Path("/tmp/lock"), Path("/tmp/lock/owner.json"))
-            >>> isinstance(lock, _WriteLock)
-            True
-        """
-
-        self._lock_dir = lock_dir
-        self._owner_path = owner_path
-
-    def release(self) -> None:
-        """
-        Release the write lock and remove its diagnostic files.
-
-        :return: ``None``.
-        :rtype: None
-
-        Example::
-
-            >>> lock = _WriteLock(Path("/tmp/lock"), Path("/tmp/lock/owner.json"))  # doctest: +SKIP
-            >>> lock.release()  # doctest: +SKIP
-        """
-
-        if self._owner_path.exists():
-            self._owner_path.unlink()
-        if self._lock_dir.exists():
-            self._lock_dir.rmdir()
-
-
 class _RepositoryBackend(object):
     """
     Internal repository backend for the MVP.
@@ -711,6 +710,49 @@ class _RepositoryBackend(object):
         """
 
         self._repo_path = Path(repo_path)
+
+    @property
+    def _repo_lock_path(self) -> Path:
+        """
+        Return the filesystem path used for the repository RW lock file.
+
+        :return: Absolute lock file path
+        :rtype: pathlib.Path
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend._repo_lock_path.name
+            'repo.lock'
+        """
+
+        return self._repo_path / "locks" / REPO_LOCK_FILENAME
+
+    @contextmanager
+    def _read_locked(self):
+        """
+        Hold the repository shared read lock for the duration of a block.
+
+        :return: Iterator yielding ``None`` while the shared lock is held
+        :rtype: Iterator[None]
+        """
+
+        lock = InterProcessReaderWriterLock(str(self._repo_lock_path))
+        with lock.read_lock():
+            yield
+
+    @contextmanager
+    def _write_locked(self):
+        """
+        Hold the repository exclusive write lock for the duration of a block.
+
+        :return: Iterator yielding ``None`` while the exclusive lock is held
+        :rtype: Iterator[None]
+        """
+
+        lock = InterProcessReaderWriterLock(str(self._repo_lock_path))
+        with lock.write_lock():
+            yield
 
     def create_repo(
         self,
@@ -748,34 +790,44 @@ class _RepositoryBackend(object):
         """
 
         default_branch = _validate_ref_name(default_branch)
-
-        if self._is_repo():
-            if not exist_ok:
-                raise RepositoryAlreadyExistsError("repository already exists")
-            return self.repo_info()
-
-        if self._repo_path.exists():
-            entries = list(self._repo_path.iterdir())
-            if entries:
-                raise RepositoryAlreadyExistsError("target path is not empty")
-        else:
+        if not self._repo_path.exists():
             self._repo_path.mkdir(parents=True)
+            _fsync_directory(self._repo_path.parent)
 
-        self._ensure_layout()
-        _write_text_atomic(self._format_path, FORMAT_MARKER + "\n")
-        _write_json_atomic(
-            self._repo_config_path,
-            {
-                "format_version": FORMAT_VERSION,
-                "default_branch": default_branch,
-                "object_hash": OBJECT_HASH,
-                "file_mode": "whole-blob-first",
-                "large_file_threshold": LARGE_FILE_THRESHOLD,
-                "metadata": {},
-            },
-        )
-        self._write_ref(default_branch, None)
-        return self.repo_info()
+        (self._repo_path / "locks").mkdir(parents=True, exist_ok=True)
+        _fsync_directory(self._repo_path / "locks")
+
+        with self._write_locked():
+            if self._is_repo():
+                if not exist_ok:
+                    raise RepositoryAlreadyExistsError("repository already exists")
+                return self._repo_info_unlocked(revision=None)
+
+            visible_entries = [entry.name for entry in self._repo_path.iterdir() if entry.name != "locks"]
+            if visible_entries:
+                raise RepositoryAlreadyExistsError("target path is not empty")
+
+            extra_lock_entries = [
+                entry.name for entry in (self._repo_path / "locks").iterdir() if entry.name != REPO_LOCK_FILENAME
+            ]
+            if extra_lock_entries:
+                raise RepositoryAlreadyExistsError("target path is not empty")
+
+            self._ensure_layout()
+            _write_text_atomic(self._format_path, FORMAT_MARKER + "\n")
+            _write_json_atomic(
+                self._repo_config_path,
+                {
+                    "format_version": FORMAT_VERSION,
+                    "default_branch": default_branch,
+                    "object_hash": OBJECT_HASH,
+                    "file_mode": "whole-blob-first",
+                    "large_file_threshold": LARGE_FILE_THRESHOLD,
+                    "metadata": {},
+                },
+            )
+            self._write_ref(default_branch, None)
+            return self._repo_info_unlocked(revision=None)
 
     def repo_info(self, revision: Optional[str] = None) -> RepoInfo:
         """
@@ -806,10 +858,22 @@ class _RepositoryBackend(object):
         """
 
         self._ensure_repo()
-        self._recover_transactions()
+        self._rollback_interrupted_ref_updates_if_needed()
+        with self._read_locked():
+            return self._repo_info_unlocked(revision=revision)
+
+    def _repo_info_unlocked(self, revision: Optional[str]) -> RepoInfo:
+        """
+        Build repository metadata while the caller already holds a repo lock.
+
+        :param revision: Revision whose visible head should be resolved
+        :type revision: Optional[str]
+        :return: Current repository metadata view
+        :rtype: RepoInfo
+        """
 
         config = self._repo_config()
-        selected_revision = revision or config["default_branch"]
+        selected_revision = revision or str(config["default_branch"])
         head = self._resolve_revision(selected_revision, allow_empty_ref=True)
         return RepoInfo(
             repo_path=str(self._repo_path),
@@ -854,8 +918,6 @@ class _RepositoryBackend(object):
         :raises ConflictError: Raised when no operations are supplied, an
             unsupported operation is provided, or optimistic concurrency checks
             fail.
-        :raises LockTimeoutError: Raised when another writer currently holds the
-            repository write lock.
         :raises EntryNotFoundError: Raised when delete or copy operations refer
             to missing paths.
         :raises RevisionNotFoundError: Raised when the target revision cannot be
@@ -879,14 +941,11 @@ class _RepositoryBackend(object):
         """
 
         self._ensure_repo()
-        self._recover_transactions()
         if not operations:
             raise ConflictError("operations must not be empty")
         if commit_message is None or len(commit_message) == 0:
             raise ValueError("`commit_message` can't be empty, please pass a value.")
 
-        repo_config = self._repo_config()
-        branch_name = _validate_ref_name(revision or str(repo_config["default_branch"]))
         raw_commit_message = str(commit_message)
         if commit_description is None:
             stored_title, stored_description = self._split_commit_message(raw_commit_message)
@@ -896,71 +955,82 @@ class _RepositoryBackend(object):
             stored_description = str(commit_description)
             full_commit_message = self._compose_commit_text(stored_title, stored_description)
 
-        lock = self._acquire_write_lock()
-        txdir = self._create_txdir(branch_name, parent_commit)
-        try:
+        with self._write_locked():
+            self._recover_transactions()
+            repo_config = self._repo_config()
+            branch_name = _validate_ref_name(revision or str(repo_config["default_branch"]))
             current_head = self._read_ref(branch_name)
-            if parent_commit is not None and parent_commit != current_head:
-                raise ConflictError("expected head does not match current branch head")
+            txdir = self._create_txdir(branch_name, current_head)
+            try:
+                if parent_commit is not None and parent_commit != current_head:
+                    raise ConflictError("expected head does not match current branch head")
 
-            snapshot = self._snapshot_for_commit(current_head)
-            staged_snapshot = dict(snapshot)
-            source_snapshots = {None: dict(snapshot)}
+                snapshot = self._snapshot_for_commit(current_head)
+                staged_snapshot = dict(snapshot)
+                source_snapshots = {None: dict(snapshot)}
 
-            for operation in operations:
-                if isinstance(operation, CommitOperationAdd):
-                    normalized_path = _normalize_repo_path(operation.path_in_repo)
-                    _, file_object_id, _ = self._stage_add_operation(txdir, operation)
-                    staged_snapshot[normalized_path] = file_object_id
-                elif isinstance(operation, CommitOperationDelete):
-                    self._apply_delete(staged_snapshot, operation.path_in_repo, operation.is_folder)
-                elif isinstance(operation, CommitOperationCopy):
-                    source_snapshot = source_snapshots.get(operation.src_revision)
-                    if source_snapshot is None:
-                        source_snapshot = self._snapshot_for_revision(operation.src_revision)
-                        source_snapshots[operation.src_revision] = dict(source_snapshot)
-                    self._apply_copy(
-                        staged_snapshot,
-                        source_snapshot,
-                        operation.src_path_in_repo,
-                        operation.path_in_repo,
-                    )
-                else:
-                    raise ConflictError("unsupported commit operation")
+                for operation in operations:
+                    if isinstance(operation, CommitOperationAdd):
+                        normalized_path = _normalize_repo_path(operation.path_in_repo)
+                        _, file_object_id, _ = self._stage_add_operation(txdir, operation)
+                        staged_snapshot[normalized_path] = file_object_id
+                    elif isinstance(operation, CommitOperationDelete):
+                        self._apply_delete(staged_snapshot, operation.path_in_repo, operation.is_folder)
+                    elif isinstance(operation, CommitOperationCopy):
+                        source_snapshot = source_snapshots.get(operation.src_revision)
+                        if source_snapshot is None:
+                            source_snapshot = self._snapshot_for_revision(operation.src_revision)
+                            source_snapshots[operation.src_revision] = dict(source_snapshot)
+                        self._apply_copy(
+                            staged_snapshot,
+                            source_snapshot,
+                            operation.src_path_in_repo,
+                            operation.path_in_repo,
+                        )
+                    else:
+                        raise ConflictError("unsupported commit operation")
 
-            self._validate_snapshot(staged_snapshot)
-            tree_id = self._stage_tree_objects(txdir, staged_snapshot)
-            commit_payload = {
-                "format_version": FORMAT_VERSION,
-                "tree_id": tree_id,
-                "parents": [current_head] if current_head else [],
-                "author": "",
-                "committer": "",
-                "created_at": _utc_now(),
-                "message": full_commit_message,
-                "title": stored_title,
-                "description": stored_description,
-                "metadata": {},
-            }
-            commit_id = self._stage_json_object(txdir, "commits", commit_payload)
+                self._validate_snapshot(staged_snapshot)
+                tree_id = self._stage_tree_objects(txdir, staged_snapshot)
+                commit_payload = {
+                    "format_version": FORMAT_VERSION,
+                    "tree_id": tree_id,
+                    "parents": [current_head] if current_head else [],
+                    "author": "",
+                    "committer": "",
+                    "created_at": _utc_now(),
+                    "message": full_commit_message,
+                    "title": stored_title,
+                    "description": stored_description,
+                    "metadata": {},
+                }
+                commit_id = self._stage_json_object(txdir, "commits", commit_payload)
 
-            self._write_tx_state(txdir, "STAGED")
-            self._publish_staged_objects(txdir)
-            self._write_tx_state(txdir, "PUBLISHED_OBJECTS")
-            self._write_ref(branch_name, commit_id)
-            self._write_tx_state(txdir, "UPDATED_REF")
-            self._append_reflog(branch_name, current_head, commit_id, commit_message)
-            self._write_tx_state(txdir, "COMMITTED")
+                self._write_tx_state(txdir, "STAGED")
+                self._publish_staged_objects(txdir)
+                self._write_tx_state(txdir, "PUBLISHED_OBJECTS")
+                self._write_tx_ref_update(
+                    txdir=txdir,
+                    ref_kind="branch",
+                    ref_name=branch_name,
+                    old_head=current_head,
+                    new_head=commit_id,
+                    message=commit_message,
+                    ref_existed_before=True,
+                )
+                self._write_ref(branch_name, commit_id)
+                self._write_tx_state(txdir, "UPDATED_REF")
+                self._write_tx_state(txdir, "COMMITTED")
+                self._append_reflog(branch_name, current_head, commit_id, commit_message)
 
-            return CommitInfo(
-                commit_url=self._commit_url(commit_id),
-                commit_message=stored_title,
-                commit_description=stored_description,
-                oid=commit_id,
-            )
-        finally:
-            self._cleanup_txdir(txdir)
-            lock.release()
+                return CommitInfo(
+                    commit_url=self._commit_url(commit_id),
+                    commit_message=stored_title,
+                    commit_description=stored_description,
+                    oid=commit_id,
+                )
+            finally:
+                self._cleanup_txdir(txdir)
 
     def get_paths_info(
         self,
@@ -1001,19 +1071,22 @@ class _RepositoryBackend(object):
             'RepoFolder'
         """
 
-        snapshot = self._snapshot_for_revision(revision)
-        requested_paths = [paths] if isinstance(paths, str) else list(paths)
-        infos = []
-        for raw_path in requested_paths:
-            normalized_path = _normalize_repo_path(raw_path)
-            if normalized_path in snapshot:
-                infos.append(self._repo_file_info(normalized_path, snapshot[normalized_path]))
-                continue
+        self._ensure_repo()
+        self._rollback_interrupted_ref_updates_if_needed()
+        with self._read_locked():
+            snapshot = self._snapshot_for_revision(revision)
+            requested_paths = [paths] if isinstance(paths, str) else list(paths)
+            infos = []
+            for raw_path in requested_paths:
+                normalized_path = _normalize_repo_path(raw_path)
+                if normalized_path in snapshot:
+                    infos.append(self._repo_file_info(normalized_path, snapshot[normalized_path]))
+                    continue
 
-            prefix = normalized_path + "/"
-            if any(path.startswith(prefix) for path in snapshot):
-                infos.append(self._repo_folder_info(revision, normalized_path))
-        return infos
+                prefix = normalized_path + "/"
+                if any(path.startswith(prefix) for path in snapshot):
+                    infos.append(self._repo_folder_info(revision, normalized_path))
+            return infos
 
     def list_repo_tree(
         self,
@@ -1062,23 +1135,23 @@ class _RepositoryBackend(object):
         """
 
         self._ensure_repo()
-        self._recover_transactions()
+        self._rollback_interrupted_ref_updates_if_needed()
+        with self._read_locked():
+            head_commit_id = self._resolve_revision(revision, allow_empty_ref=True)
+            if head_commit_id is None:
+                return []
 
-        head_commit_id = self._resolve_revision(revision, allow_empty_ref=True)
-        if head_commit_id is None:
-            return []
+            commit_payload = self._read_object_payload("commits", head_commit_id)
+            root_tree_id = str(commit_payload["tree_id"])
 
-        commit_payload = self._read_object_payload("commits", head_commit_id)
-        root_tree_id = str(commit_payload["tree_id"])
+            if not path_in_repo:
+                tree_id = root_tree_id
+                prefix = ""
+            else:
+                prefix = _normalize_repo_path(path_in_repo)
+                tree_id = self._tree_id_for_directory(root_tree_id, prefix)
 
-        if not path_in_repo:
-            tree_id = root_tree_id
-            prefix = ""
-        else:
-            prefix = _normalize_repo_path(path_in_repo)
-            tree_id = self._tree_id_for_directory(root_tree_id, prefix)
-
-        return self._list_tree_entries(tree_id, prefix=prefix, recursive=recursive)
+            return self._list_tree_entries(tree_id, prefix=prefix, recursive=recursive)
 
     def list_repo_files(self, revision: str = DEFAULT_BRANCH) -> List[str]:
         """
@@ -1110,8 +1183,11 @@ class _RepositoryBackend(object):
             ['demo.txt']
         """
 
-        snapshot = self._snapshot_for_revision(revision)
-        return sorted(snapshot)
+        self._ensure_repo()
+        self._rollback_interrupted_ref_updates_if_needed()
+        with self._read_locked():
+            snapshot = self._snapshot_for_revision(revision)
+            return sorted(snapshot)
 
     def list_repo_commits(
         self,
@@ -1161,23 +1237,23 @@ class _RepositoryBackend(object):
         """
 
         self._ensure_repo()
-        self._recover_transactions()
+        self._rollback_interrupted_ref_updates_if_needed()
+        with self._read_locked():
+            head_commit_id = self._resolve_revision(revision, allow_empty_ref=True)
+            if head_commit_id is None:
+                return []
 
-        head_commit_id = self._resolve_revision(revision, allow_empty_ref=True)
-        if head_commit_id is None:
-            return []
-
-        commits = []
-        seen = set()
-        current_commit_id = head_commit_id
-        while current_commit_id is not None and current_commit_id not in seen:
-            seen.add(current_commit_id)
-            info = self._git_commit_info(current_commit_id, formatted=formatted)
-            commits.append(info)
-            commit_payload = self._read_object_payload("commits", current_commit_id)
-            parents = list(commit_payload.get("parents", []))
-            current_commit_id = str(parents[0]) if parents else None
-        return commits
+            commits = []
+            seen = set()
+            current_commit_id = head_commit_id
+            while current_commit_id is not None and current_commit_id not in seen:
+                seen.add(current_commit_id)
+                info = self._git_commit_info(current_commit_id, formatted=formatted)
+                commits.append(info)
+                commit_payload = self._read_object_payload("commits", current_commit_id)
+                parents = list(commit_payload.get("parents", []))
+                current_commit_id = str(parents[0]) if parents else None
+            return commits
 
     def list_repo_refs(self, include_pull_requests: bool = False) -> GitRefs:
         """
@@ -1207,30 +1283,30 @@ class _RepositoryBackend(object):
         """
 
         self._ensure_repo()
-        self._recover_transactions()
-
-        branches = [
-            GitRefInfo(
-                name=name,
-                ref="refs/heads/" + name,
-                target_commit=self._read_ref(name),
+        self._rollback_interrupted_ref_updates_if_needed()
+        with self._read_locked():
+            branches = [
+                GitRefInfo(
+                    name=name,
+                    ref="refs/heads/" + name,
+                    target_commit=self._read_ref(name),
+                )
+                for name in self._list_branch_names()
+            ]
+            tags = [
+                GitRefInfo(
+                    name=name,
+                    ref="refs/tags/" + name,
+                    target_commit=self._read_tag_ref(name),
+                )
+                for name in self._list_tag_names()
+            ]
+            return GitRefs(
+                branches=branches,
+                converts=[],
+                tags=tags,
+                pull_requests=[] if include_pull_requests else None,
             )
-            for name in self._list_branch_names()
-        ]
-        tags = [
-            GitRefInfo(
-                name=name,
-                ref="refs/tags/" + name,
-                target_commit=self._read_tag_ref(name),
-            )
-            for name in self._list_tag_names()
-        ]
-        return GitRefs(
-            branches=branches,
-            converts=[],
-            tags=tags,
-            pull_requests=[] if include_pull_requests else None,
-        )
 
     def create_branch(
         self,
@@ -1273,34 +1349,43 @@ class _RepositoryBackend(object):
         """
 
         self._ensure_repo()
-        self._recover_transactions()
+        with self._write_locked():
+            self._recover_transactions()
 
-        branch_name = _validate_ref_name(branch)
-        branch_path = self._ref_path(branch_name)
-        if branch_path.exists():
-            if exist_ok:
-                return
-            raise ConflictError("branch already exists: %s" % branch_name)
+            branch_name = _validate_ref_name(branch)
+            branch_path = self._ref_path(branch_name)
+            if branch_path.exists():
+                if exist_ok:
+                    return
+                raise ConflictError("branch already exists: %s" % branch_name)
 
-        repo_config = self._repo_config()
-        base_revision = revision or str(repo_config["default_branch"])
-        target_commit = self._resolve_revision(base_revision, allow_empty_ref=True)
+            repo_config = self._repo_config()
+            base_revision = revision or str(repo_config["default_branch"])
+            target_commit = self._resolve_revision(base_revision, allow_empty_ref=True)
 
-        lock = self._acquire_write_lock()
-        txdir = self._create_txdir(branch_name, target_commit)
-        try:
-            self._write_ref(branch_name, target_commit)
-            self._append_reflog(
-                branch_name,
-                None,
-                target_commit,
-                "create branch",
-                ref_kind="branch",
-            )
-            self._write_tx_state(txdir, "COMMITTED")
-        finally:
-            self._cleanup_txdir(txdir)
-            lock.release()
+            txdir = self._create_txdir(branch_name, target_commit)
+            try:
+                self._write_tx_ref_update(
+                    txdir=txdir,
+                    ref_kind="branch",
+                    ref_name=branch_name,
+                    old_head=None,
+                    new_head=target_commit,
+                    message="create branch",
+                    ref_existed_before=False,
+                )
+                self._write_ref(branch_name, target_commit)
+                self._write_tx_state(txdir, "UPDATED_REF")
+                self._write_tx_state(txdir, "COMMITTED")
+                self._append_reflog(
+                    branch_name,
+                    None,
+                    target_commit,
+                    "create branch",
+                    ref_kind="branch",
+                )
+            finally:
+                self._cleanup_txdir(txdir)
 
     def delete_branch(self, *, branch: str) -> None:
         """
@@ -1331,29 +1416,38 @@ class _RepositoryBackend(object):
         """
 
         self._ensure_repo()
-        self._recover_transactions()
+        with self._write_locked():
+            self._recover_transactions()
 
-        repo_config = self._repo_config()
-        branch_name = _validate_ref_name(branch)
-        if branch_name == str(repo_config["default_branch"]):
-            raise ConflictError("default branch cannot be deleted")
+            repo_config = self._repo_config()
+            branch_name = _validate_ref_name(branch)
+            if branch_name == str(repo_config["default_branch"]):
+                raise ConflictError("default branch cannot be deleted")
 
-        old_head = self._read_ref(branch_name)
-        lock = self._acquire_write_lock()
-        txdir = self._create_txdir(branch_name, old_head)
-        try:
-            self._append_reflog(
-                branch_name,
-                old_head,
-                None,
-                "delete branch",
-                ref_kind="branch",
-            )
-            self._delete_ref_file(self._ref_path(branch_name), self._repo_path / "refs" / "heads")
-            self._write_tx_state(txdir, "COMMITTED")
-        finally:
-            self._cleanup_txdir(txdir)
-            lock.release()
+            old_head = self._read_ref(branch_name)
+            txdir = self._create_txdir(branch_name, old_head)
+            try:
+                self._write_tx_ref_update(
+                    txdir=txdir,
+                    ref_kind="branch",
+                    ref_name=branch_name,
+                    old_head=old_head,
+                    new_head=None,
+                    message="delete branch",
+                    ref_existed_before=True,
+                )
+                self._delete_ref_file(self._ref_path(branch_name), self._repo_path / "refs" / "heads")
+                self._write_tx_state(txdir, "UPDATED_REF")
+                self._write_tx_state(txdir, "COMMITTED")
+                self._append_reflog(
+                    branch_name,
+                    old_head,
+                    None,
+                    "delete branch",
+                    ref_kind="branch",
+                )
+            finally:
+                self._cleanup_txdir(txdir)
 
     def create_tag(
         self,
@@ -1399,34 +1493,43 @@ class _RepositoryBackend(object):
         """
 
         self._ensure_repo()
-        self._recover_transactions()
+        with self._write_locked():
+            self._recover_transactions()
 
-        tag_name = _validate_ref_name(tag)
-        tag_path = self._tag_ref_path(tag_name)
-        if tag_path.exists():
-            if exist_ok:
-                return
-            raise ConflictError("tag already exists: %s" % tag_name)
+            tag_name = _validate_ref_name(tag)
+            tag_path = self._tag_ref_path(tag_name)
+            if tag_path.exists():
+                if exist_ok:
+                    return
+                raise ConflictError("tag already exists: %s" % tag_name)
 
-        repo_config = self._repo_config()
-        target_revision = revision or str(repo_config["default_branch"])
-        target_commit = self._resolve_revision(target_revision)
+            repo_config = self._repo_config()
+            target_revision = revision or str(repo_config["default_branch"])
+            target_commit = self._resolve_revision(target_revision)
 
-        lock = self._acquire_write_lock()
-        txdir = self._create_txdir(tag_name, target_commit)
-        try:
-            self._write_tag_ref(tag_name, target_commit)
-            self._append_reflog(
-                tag_name,
-                None,
-                target_commit,
-                tag_message or "create tag",
-                ref_kind="tag",
-            )
-            self._write_tx_state(txdir, "COMMITTED")
-        finally:
-            self._cleanup_txdir(txdir)
-            lock.release()
+            txdir = self._create_txdir(tag_name, target_commit)
+            try:
+                self._write_tx_ref_update(
+                    txdir=txdir,
+                    ref_kind="tag",
+                    ref_name=tag_name,
+                    old_head=None,
+                    new_head=target_commit,
+                    message=tag_message or "create tag",
+                    ref_existed_before=False,
+                )
+                self._write_tag_ref(tag_name, target_commit)
+                self._write_tx_state(txdir, "UPDATED_REF")
+                self._write_tx_state(txdir, "COMMITTED")
+                self._append_reflog(
+                    tag_name,
+                    None,
+                    target_commit,
+                    tag_message or "create tag",
+                    ref_kind="tag",
+                )
+            finally:
+                self._cleanup_txdir(txdir)
 
     def delete_tag(self, *, tag: str) -> None:
         """
@@ -1456,26 +1559,34 @@ class _RepositoryBackend(object):
         """
 
         self._ensure_repo()
-        self._recover_transactions()
+        with self._write_locked():
+            self._recover_transactions()
 
-        tag_name = _validate_ref_name(tag)
-        old_head = self._read_tag_ref(tag_name)
-
-        lock = self._acquire_write_lock()
-        txdir = self._create_txdir(tag_name, old_head)
-        try:
-            self._append_reflog(
-                tag_name,
-                old_head,
-                None,
-                "delete tag",
-                ref_kind="tag",
-            )
-            self._delete_ref_file(self._tag_ref_path(tag_name), self._repo_path / "refs" / "tags")
-            self._write_tx_state(txdir, "COMMITTED")
-        finally:
-            self._cleanup_txdir(txdir)
-            lock.release()
+            tag_name = _validate_ref_name(tag)
+            old_head = self._read_tag_ref(tag_name)
+            txdir = self._create_txdir(tag_name, old_head)
+            try:
+                self._write_tx_ref_update(
+                    txdir=txdir,
+                    ref_kind="tag",
+                    ref_name=tag_name,
+                    old_head=old_head,
+                    new_head=None,
+                    message="delete tag",
+                    ref_existed_before=True,
+                )
+                self._delete_ref_file(self._tag_ref_path(tag_name), self._repo_path / "refs" / "tags")
+                self._write_tx_state(txdir, "UPDATED_REF")
+                self._write_tx_state(txdir, "COMMITTED")
+                self._append_reflog(
+                    tag_name,
+                    old_head,
+                    None,
+                    "delete tag",
+                    ref_kind="tag",
+                )
+            finally:
+                self._cleanup_txdir(txdir)
 
     def list_repo_reflog(
         self,
@@ -1517,37 +1628,35 @@ class _RepositoryBackend(object):
         """
 
         self._ensure_repo()
-        self._recover_transactions()
+        self._rollback_interrupted_ref_updates_if_needed()
+        with self._read_locked():
+            if limit is not None and limit < 0:
+                raise ValueError("limit must be >= 0")
 
-        if limit is not None and limit < 0:
-            raise ValueError("limit must be >= 0")
+            reflog_path, _ = self._resolve_reflog_query(ref_name)
+            if not reflog_path.exists():
+                return []
 
-        reflog_path, _ = self._resolve_reflog_query(ref_name)
-        if not reflog_path.exists():
-            return []
-
-        entries = []
-        for line in reflog_path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            payload = json.loads(line)
-            entries.append(
-                ReflogEntry(
-                    timestamp=datetime.strptime(str(payload["timestamp"]), "%Y-%m-%dT%H:%M:%SZ").replace(
-                        tzinfo=timezone.utc
-                    ),
-                    ref_name=str(payload["ref_name"]),
-                    old_head=payload.get("old_head"),
-                    new_head=payload.get("new_head"),
-                    message=str(payload.get("message", "")),
-                    checksum=str(payload["checksum"]),
+            entries = []
+            for line in reflog_path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                payload = json.loads(line)
+                entries.append(
+                    ReflogEntry(
+                        timestamp=_parse_utc_timestamp(str(payload["timestamp"])),
+                        ref_name=str(payload["ref_name"]),
+                        old_head=payload.get("old_head"),
+                        new_head=payload.get("new_head"),
+                        message=str(payload.get("message", "")),
+                        checksum=str(payload["checksum"]),
+                    )
                 )
-            )
 
-        entries.reverse()
-        if limit is not None:
-            return entries[:limit]
-        return entries
+            entries.reverse()
+            if limit is not None:
+                return entries[:limit]
+            return entries
 
     def open_file(self, path_in_repo: str, revision: str = DEFAULT_BRANCH) -> io.BufferedReader:
         """
@@ -1622,14 +1731,29 @@ class _RepositoryBackend(object):
             b'hello'
         """
 
-        snapshot = self._snapshot_for_revision(revision)
-        normalized_path = _normalize_repo_path(path_in_repo)
-        try:
-            file_object_id = snapshot[normalized_path]
-        except KeyError:
-            raise EntryNotFoundError("path not found: %s" % normalized_path)
+        self._ensure_repo()
+        self._rollback_interrupted_ref_updates_if_needed()
+        with self._read_locked():
+            snapshot = self._snapshot_for_revision(revision)
+            normalized_path = _normalize_repo_path(path_in_repo)
+            try:
+                file_object_id = snapshot[normalized_path]
+            except KeyError:
+                raise EntryNotFoundError("path not found: %s" % normalized_path)
+            return self._read_file_bytes_by_object_id(file_object_id)
+
+    def _read_file_bytes_by_object_id(self, file_object_id: str) -> bytes:
+        """
+        Read verified file bytes while the caller already holds a repo lock.
+
+        :param file_object_id: File object identifier
+        :type file_object_id: str
+        :return: Verified logical file bytes
+        :rtype: bytes
+        """
+
         file_payload = self._read_object_payload("files", file_object_id)
-        blob_object_id = file_payload["content_object_id"]
+        blob_object_id = str(file_payload["content_object_id"])
         blob_meta = self._read_object_payload("blobs", blob_object_id)
         blob_data_path = self._blob_data_path(blob_object_id)
         data = blob_data_path.read_bytes()
@@ -1681,43 +1805,47 @@ class _RepositoryBackend(object):
             True
         """
 
+        self._ensure_repo()
+        self._rollback_interrupted_ref_updates_if_needed()
         resolved_revision = revision or DEFAULT_BRANCH
         normalized_path = _normalize_repo_path(filename)
-        snapshot = self._snapshot_for_revision(resolved_revision)
-        try:
-            file_object_id = snapshot[normalized_path]
-        except KeyError:
-            raise EntryNotFoundError("path not found: %s" % normalized_path)
 
-        file_payload = self._read_object_payload("files", file_object_id)
-        data = self.read_bytes(normalized_path, revision=resolved_revision)
-        self._materialize_content_pool(file_payload, data)
+        with self._read_locked():
+            snapshot = self._snapshot_for_revision(resolved_revision)
+            try:
+                file_object_id = snapshot[normalized_path]
+            except KeyError:
+                raise EntryNotFoundError("path not found: %s" % normalized_path)
 
-        if local_dir is not None:
-            target_root = Path(local_dir)
-            self._validate_detached_target_root(target_root)
-            target_path = target_root / normalized_path
+            file_payload = self._read_object_payload("files", file_object_id)
+            data = self._read_file_bytes_by_object_id(file_object_id)
+            self._materialize_content_pool(file_payload, data)
+
+            if local_dir is not None:
+                target_root = Path(local_dir)
+                self._validate_detached_target_root(target_root)
+                target_path = target_root / normalized_path
+                self._ensure_detached_view(target_path, data, file_payload)
+                return str(target_path)
+
+            resolved_head = self._resolve_revision(resolved_revision)
+            view_key = _sha256_hex(((resolved_head or "") + ":" + normalized_path).encode("utf-8"))
+            view_root = self._repo_path / "cache" / "files" / view_key
+            target_path = view_root / normalized_path
             self._ensure_detached_view(target_path, data, file_payload)
+            _write_json_atomic(
+                self._repo_path / "cache" / "views" / "files" / (view_key + ".json"),
+                {
+                    "view_key": view_key,
+                    "revision": resolved_revision,
+                    "path_in_repo": normalized_path,
+                    "sha256": _public_sha256_hex(str(file_payload["sha256"])),
+                    "oid": file_payload["oid"],
+                    "target_path": str(target_path.relative_to(self._repo_path)),
+                    "created_at": _utc_now(),
+                },
+            )
             return str(target_path)
-
-        resolved_head = self._resolve_revision(resolved_revision)
-        view_key = _sha256_hex(((resolved_head or "") + ":" + normalized_path).encode("utf-8"))
-        view_root = self._repo_path / "cache" / "files" / view_key
-        target_path = view_root / normalized_path
-        self._ensure_detached_view(target_path, data, file_payload)
-        _write_json_atomic(
-            self._repo_path / "cache" / "views" / "files" / (view_key + ".json"),
-            {
-                "view_key": view_key,
-                "revision": resolved_revision,
-                "path_in_repo": normalized_path,
-                "sha256": _public_sha256_hex(str(file_payload["sha256"])),
-                "oid": file_payload["oid"],
-                "target_path": str(target_path.relative_to(self._repo_path)),
-                "created_at": _utc_now(),
-            },
-        )
-        return str(target_path)
 
     def snapshot_download(
         self,
@@ -1765,86 +1893,87 @@ class _RepositoryBackend(object):
         """
 
         self._ensure_repo()
-        self._recover_transactions()
-
+        self._rollback_interrupted_ref_updates_if_needed()
         selected_revision = revision or DEFAULT_BRANCH
-        resolved_head = self._resolve_revision(selected_revision, allow_empty_ref=True)
-        snapshot = self._snapshot_for_commit(resolved_head)
-        selected_paths = _filter_repo_paths(
-            sorted(snapshot),
-            allow_patterns=allow_patterns,
-            ignore_patterns=ignore_patterns,
-        )
-        normalized_allow = _normalize_glob_patterns(allow_patterns) or []
-        normalized_ignore = _normalize_glob_patterns(ignore_patterns) or []
 
-        view_key = _sha256_hex(
-            _stable_json_bytes(
-                {
-                    "revision": selected_revision,
-                    "commit_id": resolved_head,
-                    "allow_patterns": normalized_allow,
-                    "ignore_patterns": normalized_ignore,
-                }
+        with self._read_locked():
+            resolved_head = self._resolve_revision(selected_revision, allow_empty_ref=True)
+            snapshot = self._snapshot_for_commit(resolved_head)
+            selected_paths = _filter_repo_paths(
+                sorted(snapshot),
+                allow_patterns=allow_patterns,
+                ignore_patterns=ignore_patterns,
             )
-        )
+            normalized_allow = _normalize_glob_patterns(allow_patterns) or []
+            normalized_ignore = _normalize_glob_patterns(ignore_patterns) or []
 
-        if local_dir is None:
-            target_root = self._repo_path / "cache" / "snapshots" / view_key
-            meta_path = self._repo_path / "cache" / "views" / "snapshots" / (view_key + ".json")
-            target_metadata_path = str(target_root.relative_to(self._repo_path))
-        else:
-            target_root = Path(local_dir)
-            self._validate_detached_target_root(target_root)
-            meta_path = target_root / ".cache" / "hubvault" / "snapshot.json"
-            target_metadata_path = os.path.realpath(str(target_root))
-
-        previous_paths = []
-        if meta_path.exists():
-            try:
-                previous_meta = _read_json(meta_path)
-                previous_paths = [str(item["path"]) for item in previous_meta.get("files", [])]
-            except Exception:
-                previous_paths = []
-
-        target_root.mkdir(parents=True, exist_ok=True)
-        current_paths = set(selected_paths)
-        for stale_path in previous_paths:
-            if stale_path in current_paths:
-                continue
-            self._remove_detached_path(target_root / stale_path, target_root)
-
-        file_entries = []
-        for repo_path in selected_paths:
-            file_object_id = snapshot[repo_path]
-            file_payload = self._read_object_payload("files", file_object_id)
-            data = self.read_bytes(repo_path, revision=selected_revision)
-            self._materialize_content_pool(file_payload, data)
-            self._ensure_detached_view(target_root / repo_path, data, file_payload)
-            file_entries.append(
-                {
-                    "path": repo_path,
-                    "sha256": _public_sha256_hex(str(file_payload["sha256"])),
-                    "oid": str(file_payload["oid"]),
-                    "size": int(file_payload["logical_size"]),
-                }
+            view_key = _sha256_hex(
+                _stable_json_bytes(
+                    {
+                        "revision": selected_revision,
+                        "commit_id": resolved_head,
+                        "allow_patterns": normalized_allow,
+                        "ignore_patterns": normalized_ignore,
+                    }
+                )
             )
 
-        metadata = {
-            "view_key": view_key,
-            "revision": selected_revision,
-            "commit_id": resolved_head,
-            "allow_patterns": normalized_allow,
-            "ignore_patterns": normalized_ignore,
-            "target_path": target_metadata_path,
-            "files": file_entries,
-            "created_at": _utc_now(),
-        }
-        _write_json_atomic(meta_path, metadata)
+            if local_dir is None:
+                target_root = self._repo_path / "cache" / "snapshots" / view_key
+                meta_path = self._repo_path / "cache" / "views" / "snapshots" / (view_key + ".json")
+                target_metadata_path = str(target_root.relative_to(self._repo_path))
+            else:
+                target_root = Path(local_dir)
+                self._validate_detached_target_root(target_root)
+                meta_path = target_root / ".cache" / "hubvault" / "snapshot.json"
+                target_metadata_path = os.path.realpath(str(target_root))
 
-        if local_dir is not None:
-            return os.path.realpath(str(target_root))
-        return str(target_root)
+            previous_paths = []
+            if meta_path.exists():
+                try:
+                    previous_meta = _read_json(meta_path)
+                    previous_paths = [str(item["path"]) for item in previous_meta.get("files", [])]
+                except Exception:
+                    previous_paths = []
+
+            target_root.mkdir(parents=True, exist_ok=True)
+            current_paths = set(selected_paths)
+            for stale_path in previous_paths:
+                if stale_path in current_paths:
+                    continue
+                self._remove_detached_path(target_root / stale_path, target_root)
+
+            file_entries = []
+            for repo_path in selected_paths:
+                file_object_id = snapshot[repo_path]
+                file_payload = self._read_object_payload("files", file_object_id)
+                data = self._read_file_bytes_by_object_id(file_object_id)
+                self._materialize_content_pool(file_payload, data)
+                self._ensure_detached_view(target_root / repo_path, data, file_payload)
+                file_entries.append(
+                    {
+                        "path": repo_path,
+                        "sha256": _public_sha256_hex(str(file_payload["sha256"])),
+                        "oid": str(file_payload["oid"]),
+                        "size": int(file_payload["logical_size"]),
+                    }
+                )
+
+            metadata = {
+                "view_key": view_key,
+                "revision": selected_revision,
+                "commit_id": resolved_head,
+                "allow_patterns": normalized_allow,
+                "ignore_patterns": normalized_ignore,
+                "target_path": target_metadata_path,
+                "files": file_entries,
+                "created_at": _utc_now(),
+            }
+            _write_json_atomic(meta_path, metadata)
+
+            if local_dir is not None:
+                return os.path.realpath(str(target_root))
+            return str(target_root)
 
     def upload_file(
         self,
@@ -1886,8 +2015,6 @@ class _RepositoryBackend(object):
         """
 
         self._ensure_repo()
-        self._recover_transactions()
-
         repo_config = self._repo_config()
         normalized_path = _normalize_repo_path(path_in_repo)
         selected_revision = revision or str(repo_config["default_branch"])
@@ -1966,8 +2093,6 @@ class _RepositoryBackend(object):
         """
 
         self._ensure_repo()
-        self._recover_transactions()
-
         root = Path(folder_path)
         if not root.is_dir():
             raise ValueError("folder_path must point to an existing local directory")
@@ -2067,8 +2192,6 @@ class _RepositoryBackend(object):
         """
 
         self._ensure_repo()
-        self._recover_transactions()
-
         repo_config = self._repo_config()
         normalized_path = _normalize_repo_path(path_in_repo)
         return self.create_commit(
@@ -2105,8 +2228,6 @@ class _RepositoryBackend(object):
         """
 
         self._ensure_repo()
-        self._recover_transactions()
-
         repo_config = self._repo_config()
         normalized_path = _normalize_repo_path(path_in_repo)
         return self.create_commit(
@@ -2130,8 +2251,6 @@ class _RepositoryBackend(object):
         :type to_revision: str
         :return: Public commit metadata for the new branch head
         :rtype: CommitInfo
-        :raises LockTimeoutError: Raised when another writer already holds the
-            repository lock.
         :raises RevisionNotFoundError: Raised when the target revision cannot be
             resolved.
         :raises UnsupportedPathError: Raised when ``ref_name`` violates ref
@@ -2153,20 +2272,29 @@ class _RepositoryBackend(object):
         """
 
         self._ensure_repo()
-        self._recover_transactions()
-        branch_name = _validate_ref_name(ref_name)
-        target_commit_id = self._resolve_revision(to_revision)
-        lock = self._acquire_write_lock()
-        txdir = self._create_txdir(branch_name, target_commit_id)
-        try:
-            old_head = self._read_ref(branch_name)
-            self._write_ref(branch_name, target_commit_id)
-            self._append_reflog(branch_name, old_head, target_commit_id, "reset ref")
-            self._write_tx_state(txdir, "COMMITTED")
-        finally:
-            self._cleanup_txdir(txdir)
-            lock.release()
-        return self._commit_info(target_commit_id, branch_name)
+        with self._write_locked():
+            self._recover_transactions()
+            branch_name = _validate_ref_name(ref_name)
+            target_commit_id = self._resolve_revision(to_revision)
+            txdir = self._create_txdir(branch_name, target_commit_id)
+            try:
+                old_head = self._read_ref(branch_name)
+                self._write_tx_ref_update(
+                    txdir=txdir,
+                    ref_kind="branch",
+                    ref_name=branch_name,
+                    old_head=old_head,
+                    new_head=target_commit_id,
+                    message="reset ref",
+                    ref_existed_before=True,
+                )
+                self._write_ref(branch_name, target_commit_id)
+                self._write_tx_state(txdir, "UPDATED_REF")
+                self._write_tx_state(txdir, "COMMITTED")
+                self._append_reflog(branch_name, old_head, target_commit_id, "reset ref")
+            finally:
+                self._cleanup_txdir(txdir)
+            return self._commit_info(target_commit_id, branch_name)
 
     def quick_verify(self) -> VerifyReport:
         """
@@ -2192,81 +2320,84 @@ class _RepositoryBackend(object):
         """
 
         self._ensure_repo()
-        self._recover_transactions()
+        self._rollback_interrupted_ref_updates_if_needed()
+        with self._read_locked():
+            warnings = []
+            errors = []
+            checked_refs = []
+            config = self._repo_config()
 
-        warnings = []
-        errors = []
-        checked_refs = []
-        config = self._repo_config()
+            if config.get("format_version") != FORMAT_VERSION:
+                errors.append("unsupported format version")
 
-        if config.get("format_version") != FORMAT_VERSION:
-            errors.append("unsupported format version")
+            for ref_name in self._list_branch_names():
+                checked_refs.append("refs/heads/" + ref_name)
+                head = self._read_ref(ref_name)
+                if head is None:
+                    continue
+                try:
+                    self._verify_commit_closure(head)
+                except IntegrityError as err:
+                    errors.append("refs/heads/%s: %s" % (ref_name, err))
 
-        for ref_name in self._list_branch_names():
-            checked_refs.append("refs/heads/" + ref_name)
-            head = self._read_ref(ref_name)
-            if head is None:
-                continue
-            try:
-                self._verify_commit_closure(head)
-            except IntegrityError as err:
-                errors.append("refs/heads/%s: %s" % (ref_name, err))
+            for ref_name in self._list_tag_names():
+                checked_refs.append("refs/tags/" + ref_name)
+                head = self._read_tag_ref(ref_name)
+                if head is None:
+                    continue
+                try:
+                    self._verify_commit_closure(head)
+                except IntegrityError as err:
+                    errors.append("refs/tags/%s: %s" % (ref_name, err))
 
-        for ref_name in self._list_tag_names():
-            checked_refs.append("refs/tags/" + ref_name)
-            head = self._read_tag_ref(ref_name)
-            if head is None:
-                continue
-            try:
-                self._verify_commit_closure(head)
-            except IntegrityError as err:
-                errors.append("refs/tags/%s: %s" % (ref_name, err))
+            for view_meta_path in sorted((self._repo_path / "cache" / "views" / "files").glob("*.json")):
+                try:
+                    view_meta = _read_json(view_meta_path)
+                    target_path = self._repo_path / str(view_meta["target_path"])
+                    if target_path.exists():
+                        data_sha256 = _sha256_hex(target_path.read_bytes())
+                        if data_sha256 != _public_sha256_hex(str(view_meta["sha256"])):
+                            warnings.append("stale file view: %s" % view_meta_path.name)
+                except Exception as err:  # pragma: no cover - defensive path
+                    warnings.append("failed to inspect file view %s: %s" % (view_meta_path.name, err))
 
-        for view_meta_path in sorted((self._repo_path / "cache" / "views" / "files").glob("*.json")):
-            try:
-                view_meta = _read_json(view_meta_path)
-                target_path = self._repo_path / str(view_meta["target_path"])
-                if target_path.exists():
-                    data_sha256 = _sha256_hex(target_path.read_bytes())
-                    if data_sha256 != _public_sha256_hex(str(view_meta["sha256"])):
-                        warnings.append("stale file view: %s" % view_meta_path.name)
-            except Exception as err:  # pragma: no cover - defensive path
-                warnings.append("failed to inspect file view %s: %s" % (view_meta_path.name, err))
+            for view_meta_path in sorted((self._repo_path / "cache" / "views" / "snapshots").glob("*.json")):
+                try:
+                    view_meta = _read_json(view_meta_path)
+                    target_root = self._repo_path / str(view_meta["target_path"])
+                    for file_info in view_meta.get("files", []):
+                        target_path = target_root / str(file_info["path"])
+                        if not target_path.exists():
+                            warnings.append("stale snapshot view: %s" % view_meta_path.name)
+                            break
+                        data_sha256 = _sha256_hex(target_path.read_bytes())
+                        if data_sha256 != str(file_info["sha256"]):
+                            warnings.append("stale snapshot view: %s" % view_meta_path.name)
+                            break
+                except Exception as err:  # pragma: no cover - defensive path
+                    warnings.append("failed to inspect snapshot view %s: %s" % (view_meta_path.name, err))
 
-        for view_meta_path in sorted((self._repo_path / "cache" / "views" / "snapshots").glob("*.json")):
-            try:
-                view_meta = _read_json(view_meta_path)
-                target_root = self._repo_path / str(view_meta["target_path"])
-                for file_info in view_meta.get("files", []):
-                    target_path = target_root / str(file_info["path"])
-                    if not target_path.exists():
-                        warnings.append("stale snapshot view: %s" % view_meta_path.name)
-                        break
-                    data_sha256 = _sha256_hex(target_path.read_bytes())
-                    if data_sha256 != str(file_info["sha256"]):
-                        warnings.append("stale snapshot view: %s" % view_meta_path.name)
-                        break
-            except Exception as err:  # pragma: no cover - defensive path
-                warnings.append("failed to inspect snapshot view %s: %s" % (view_meta_path.name, err))
+            txn_root = self._repo_path / "txn"
+            if txn_root.exists():
+                for txn_entry in sorted(txn_root.iterdir()):
+                    if not txn_entry.is_dir():
+                        warnings.append("unexpected txn entry: %s" % txn_entry.name)
+                    else:
+                        warnings.append("pending transaction directory: %s" % txn_entry.name)
 
-        txn_root = self._repo_path / "txn"
-        if txn_root.exists():
-            for txn_entry in sorted(txn_root.iterdir()):
-                if not txn_entry.is_dir():
-                    warnings.append("unexpected txn entry: %s" % txn_entry.name)
+            lock_root = self._repo_path / "locks"
+            if lock_root.exists():
+                for lock_entry in sorted(lock_root.iterdir()):
+                    if lock_entry.name == REPO_LOCK_FILENAME and lock_entry.is_file():
+                        continue
+                    warnings.append("unexpected lock artifact: %s" % lock_entry.name)
 
-        lock_root = self._repo_path / "locks"
-        if lock_root.exists():
-            for lock_entry in sorted(lock_root.iterdir()):
-                if lock_entry.is_dir():
-                    warnings.append("active lock directory: %s" % lock_entry.name)
-
-        return VerifyReport(
-            ok=not errors,
-            checked_refs=checked_refs,
-            warnings=warnings,
-            errors=errors,
-        )
+            return VerifyReport(
+                ok=not errors,
+                checked_refs=checked_refs,
+                warnings=warnings,
+                errors=errors,
+            )
 
     @property
     def _format_path(self) -> Path:
@@ -2600,10 +2731,12 @@ class _RepositoryBackend(object):
         """
 
         path.unlink()
+        _fsync_directory(path.parent)
         parent = path.parent
         while parent != stop_root and parent.exists():
             try:
                 parent.rmdir()
+                _fsync_directory(parent.parent)
             except OSError:
                 break
             parent = parent.parent
@@ -3535,8 +3668,10 @@ class _RepositoryBackend(object):
                 if path.read_bytes() != target.read_bytes():
                     raise IntegrityError("staged object does not match existing object")
                 path.unlink()
+                _fsync_directory(path.parent)
                 continue
             os.replace(str(path), str(target))
+            _fsync_directory(target.parent)
 
     def _commit_info(self, commit_id: str, revision: str) -> CommitInfo:
         """
@@ -3780,39 +3915,6 @@ class _RepositoryBackend(object):
         except (FileNotFoundError, KeyError, TypeError, ValueError, RevisionNotFoundError) as err:
             raise IntegrityError("invalid file object %s: %s" % (file_object_id, err))
 
-    def _acquire_write_lock(self) -> _WriteLock:
-        """
-        Acquire the repository's single-writer lock.
-
-        :return: Lock handle that must be released by the caller
-        :rtype: _WriteLock
-        :raises LockTimeoutError: Raised when another writer already holds the
-            lock.
-
-        Example::
-
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
-            >>> lock = backend._acquire_write_lock()  # doctest: +SKIP
-            >>> lock.release()  # doctest: +SKIP
-        """
-
-        lock_dir = self._repo_path / "locks" / WRITE_LOCK_DIR
-        owner_path = lock_dir / "owner.json"
-        try:
-            lock_dir.mkdir()
-        except FileExistsError:
-            raise LockTimeoutError("write lock is already held")
-        _write_json_atomic(
-            owner_path,
-            {
-                "pid": os.getpid(),
-                "hostname": os.environ.get("HOSTNAME") or os.environ.get("COMPUTERNAME") or "",
-                "started_at": _utc_now(),
-                "heartbeat_at": _utc_now(),
-            },
-        )
-        return _WriteLock(lock_dir=lock_dir, owner_path=owner_path)
-
     def _create_txdir(self, revision: str, expected_head: Optional[str]) -> Path:
         """
         Create a new transaction working directory.
@@ -3834,6 +3936,7 @@ class _RepositoryBackend(object):
         txid = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(4)
         txdir = self._repo_path / "txn" / txid
         txdir.mkdir(parents=True, exist_ok=False)
+        _fsync_directory(txdir.parent)
         _write_json_atomic(
             txdir / "meta.json",
             {
@@ -3845,6 +3948,55 @@ class _RepositoryBackend(object):
         )
         self._write_tx_state(txdir, "PREPARING")
         return txdir
+
+    def _write_tx_ref_update(
+        self,
+        txdir: Path,
+        ref_kind: str,
+        ref_name: str,
+        old_head: Optional[str],
+        new_head: Optional[str],
+        message: str,
+        ref_existed_before: bool,
+    ) -> None:
+        """
+        Persist ref-transition metadata needed for crash recovery.
+
+        :param txdir: Transaction working directory
+        :type txdir: pathlib.Path
+        :param ref_kind: Ref collection kind, either ``"branch"`` or ``"tag"``
+        :type ref_kind: str
+        :param ref_name: Normalized branch or tag name
+        :type ref_name: str
+        :param old_head: Previous ref head
+        :type old_head: Optional[str]
+        :param new_head: New ref head
+        :type new_head: Optional[str]
+        :param message: Reflog message for successful committed writes
+        :type message: str
+        :param ref_existed_before: Whether the ref existed before the write began
+        :type ref_existed_before: bool
+        :return: ``None``.
+        :rtype: None
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._write_tx_ref_update(Path("/tmp/demo-repo/txn/demo"), "branch", "main", None, None, "seed", True)  # doctest: +SKIP
+        """
+
+        _write_json_atomic(
+            txdir / "REF_UPDATE.json",
+            {
+                "ref_kind": ref_kind,
+                "ref_name": ref_name,
+                "old_head": old_head,
+                "new_head": new_head,
+                "message": message,
+                "ref_existed_before": bool(ref_existed_before),
+                "updated_at": _utc_now(),
+            },
+        )
 
     def _write_tx_state(self, txdir: Path, state: str) -> None:
         """
@@ -3865,6 +4017,103 @@ class _RepositoryBackend(object):
 
         _write_json_atomic(txdir / "STATE.json", {"state": state, "updated_at": _utc_now()})
 
+    def _read_tx_state(self, txdir: Path) -> Optional[str]:
+        """
+        Read the persisted transaction state marker if available.
+
+        :param txdir: Transaction working directory
+        :type txdir: pathlib.Path
+        :return: State label, or ``None`` when missing/unreadable
+        :rtype: Optional[str]
+        """
+
+        state_path = txdir / "STATE.json"
+        if not state_path.exists():
+            return None
+        try:
+            return str(_read_json(state_path).get("state", ""))
+        except Exception:
+            return None
+
+    def _restore_ref_value(
+        self,
+        ref_kind: str,
+        ref_name: str,
+        old_head: Optional[str],
+        ref_existed_before: bool,
+    ) -> None:
+        """
+        Restore a branch or tag to its pre-transaction value.
+
+        :param ref_kind: Ref collection kind, either ``"branch"`` or ``"tag"``
+        :type ref_kind: str
+        :param ref_name: Normalized branch or tag name
+        :type ref_name: str
+        :param old_head: Previous ref target
+        :type old_head: Optional[str]
+        :param ref_existed_before: Whether the ref existed before the write began
+        :type ref_existed_before: bool
+        :return: ``None``.
+        :rtype: None
+        """
+
+        if ref_kind == "branch":
+            path = self._ref_path(ref_name)
+            if ref_existed_before:
+                self._write_ref(ref_name, old_head)
+            elif path.exists():
+                self._delete_ref_file(path, self._repo_path / "refs" / "heads")
+            return
+
+        if ref_kind == "tag":
+            path = self._tag_ref_path(ref_name)
+            if ref_existed_before and old_head is not None:
+                self._write_tag_ref(ref_name, old_head)
+            elif path.exists():
+                self._delete_ref_file(path, self._repo_path / "refs" / "tags")
+            return
+
+        raise ValueError("ref_kind must be 'branch' or 'tag'")
+
+    def _recover_ref_update_transaction(self, txdir: Path) -> None:
+        """
+        Resolve a ref-changing transaction by cleanup or rollback.
+
+        :param txdir: Transaction working directory
+        :type txdir: pathlib.Path
+        :return: ``None``.
+        :rtype: None
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._recover_ref_update_transaction(Path("/tmp/demo-repo/txn/demo"))  # doctest: +SKIP
+        """
+
+        ref_update_path = txdir / "REF_UPDATE.json"
+        if not ref_update_path.exists():
+            self._cleanup_txdir(txdir)
+            return
+
+        try:
+            payload = dict(_read_json(ref_update_path))
+            ref_kind = str(payload["ref_kind"])
+            ref_name = str(payload["ref_name"])
+            old_head = payload.get("old_head")
+            ref_existed_before = bool(payload.get("ref_existed_before", True))
+        except Exception:
+            self._cleanup_txdir(txdir)
+            return
+
+        if self._read_tx_state(txdir) != "COMMITTED":
+            self._restore_ref_value(
+                ref_kind=ref_kind,
+                ref_name=ref_name,
+                old_head=old_head,
+                ref_existed_before=ref_existed_before,
+            )
+        self._cleanup_txdir(txdir)
+
     def _cleanup_txdir(self, txdir: Path) -> None:
         """
         Remove a transaction directory if it still exists.
@@ -3882,10 +4131,45 @@ class _RepositoryBackend(object):
 
         if txdir.exists():
             shutil.rmtree(str(txdir))
+            _fsync_directory(txdir.parent)
+
+    def _has_ref_update_transactions(self) -> bool:
+        """
+        Check whether the transaction area contains ref-changing leftovers.
+
+        :return: Whether any transaction still carries ``REF_UPDATE.json``
+        :rtype: bool
+        """
+
+        txn_root = self._repo_path / "txn"
+        if not txn_root.exists():
+            return False
+        for txdir in txn_root.iterdir():
+            if txdir.is_dir() and (txdir / "REF_UPDATE.json").exists():
+                return True
+        return False
+
+    def _rollback_interrupted_ref_updates_if_needed(self) -> None:
+        """
+        Roll back interrupted ref-changing transactions before serving reads.
+
+        :return: ``None``.
+        :rtype: None
+        """
+
+        if not self._has_ref_update_transactions():
+            return
+        with self._write_locked():
+            txn_root = self._repo_path / "txn"
+            if not txn_root.exists():
+                return
+            for txdir in sorted(txn_root.iterdir()):
+                if txdir.is_dir() and (txdir / "REF_UPDATE.json").exists():
+                    self._recover_ref_update_transaction(txdir)
 
     def _recover_transactions(self) -> None:
         """
-        Remove abandoned transaction directories from previous interrupted work.
+        Recover or clean abandoned transactions while holding the write lock.
 
         :return: ``None``.
         :rtype: None
@@ -3899,10 +4183,95 @@ class _RepositoryBackend(object):
         txn_root = self._repo_path / "txn"
         if not txn_root.exists():
             return
-        for txdir in txn_root.iterdir():
+
+        for txdir in sorted(txn_root.iterdir()):
             if not txdir.is_dir():
                 continue
-            shutil.rmtree(str(txdir))
+            if (txdir / "REF_UPDATE.json").exists():
+                self._recover_ref_update_transaction(txdir)
+            else:
+                self._cleanup_txdir(txdir)
+
+    def _reflog_record(
+        self,
+        revision: str,
+        old_head: Optional[str],
+        new_head: Optional[str],
+        message: str,
+        ref_kind: str,
+    ) -> Tuple[Path, Dict[str, object]]:
+        """
+        Build the reflog path and record payload for a ref update.
+
+        :param revision: Branch or tag name
+        :type revision: str
+        :param old_head: Previous head commit
+        :type old_head: Optional[str]
+        :param new_head: New head commit
+        :type new_head: Optional[str]
+        :param message: Short reflog message
+        :type message: str
+        :param ref_kind: Ref collection kind, either ``"branch"`` or ``"tag"``
+        :type ref_kind: str
+        :return: Tuple of reflog file path and JSON-serializable record
+        :rtype: Tuple[pathlib.Path, Dict[str, object]]
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend._reflog_record("main", None, None, "seed", "branch")[0].name
+            'main.log'
+        """
+
+        if ref_kind == "branch":
+            path = self._reflog_path(revision)
+            full_ref_name = "refs/heads/" + revision
+        elif ref_kind == "tag":
+            path = self._tag_reflog_path(revision)
+            full_ref_name = "refs/tags/" + revision
+        else:
+            raise ValueError("ref_kind must be 'branch' or 'tag'")
+
+        record = {
+            "timestamp": _utc_now(),
+            "ref_name": full_ref_name,
+            "old_head": old_head,
+            "new_head": new_head,
+            "message": message,
+            "checksum": OBJECT_HASH + ":" + _sha256_hex(_stable_json_bytes([old_head, new_head, message])),
+        }
+        return path, record
+
+    @staticmethod
+    def _last_jsonl_record(path: Path) -> Optional[Dict[str, object]]:
+        """
+        Read the last non-empty JSON Lines record from a file.
+
+        :param path: JSONL file path
+        :type path: pathlib.Path
+        :return: Parsed last record, or ``None`` if unavailable
+        :rtype: Optional[Dict[str, object]]
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend._last_jsonl_record(Path("/tmp/missing.jsonl"))
+        """
+
+        if not path.exists():
+            return None
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for line in reversed(lines):
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except Exception:
+                return None
+            if isinstance(payload, dict):
+                return dict(payload)
+            return None
+        return None
 
     def _append_reflog(
         self,
@@ -3934,27 +4303,30 @@ class _RepositoryBackend(object):
             >>> backend._append_reflog("main", None, "sha256:" + "a" * 64, "seed")  # doctest: +SKIP
         """
 
-        if ref_kind == "branch":
-            path = self._reflog_path(revision)
-            full_ref_name = "refs/heads/" + revision
-        elif ref_kind == "tag":
-            path = self._tag_reflog_path(revision)
-            full_ref_name = "refs/tags/" + revision
-        else:
-            raise ValueError("ref_kind must be 'branch' or 'tag'")
-
+        path, record = self._reflog_record(
+            revision=revision,
+            old_head=old_head,
+            new_head=new_head,
+            message=message,
+            ref_kind=ref_kind,
+        )
         path.parent.mkdir(parents=True, exist_ok=True)
-        record = {
-            "timestamp": _utc_now(),
-            "ref_name": full_ref_name,
-            "old_head": old_head,
-            "new_head": new_head,
-            "message": message,
-            "checksum": OBJECT_HASH + ":" + _sha256_hex(_stable_json_bytes([old_head, new_head, message])),
-        }
+        last_record = self._last_jsonl_record(path)
+        if (
+            last_record is not None
+            and last_record.get("checksum") == record["checksum"]
+            and last_record.get("ref_name") == record["ref_name"]
+            and last_record.get("old_head") == record["old_head"]
+            and last_record.get("new_head") == record["new_head"]
+            and last_record.get("message") == record["message"]
+        ):
+            return
         with path.open("a", encoding="utf-8") as file_:
             file_.write(json.dumps(record, sort_keys=True, ensure_ascii=False))
             file_.write("\n")
+            file_.flush()
+            os.fsync(file_.fileno())
+        _fsync_directory(path.parent)
 
     def _materialize_content_pool(self, file_payload: Dict[str, object], data: bytes) -> None:
         """

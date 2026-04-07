@@ -54,12 +54,6 @@ VerificationError
 .. autoclass:: VerificationError
 
 
-LockTimeoutError
------------------------------------------------------
-
-.. autoclass:: LockTimeoutError
-
-
 HubVaultValidationError
 -----------------------------------------------------
 

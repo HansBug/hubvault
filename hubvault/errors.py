@@ -15,7 +15,6 @@ The module contains:
 * :class:`ConflictError` - Raised when optimistic concurrency checks fail
 * :class:`IntegrityError` - Raised when stored data does not match expected integrity checks
 * :class:`VerificationError` - Raised when repository verification fails
-* :class:`LockTimeoutError` - Raised when a write lock cannot be acquired
 * :class:`HubVaultValidationError` - Raised when public inputs fail validation
 * :class:`UnsupportedPathError` - Raised when a repo path or ref name is invalid
 
@@ -114,17 +113,6 @@ class VerificationError(HubVaultError):
 
         >>> str(VerificationError("verify"))
         'verify'
-    """
-
-
-class LockTimeoutError(HubVaultError):
-    """
-    Raised when a write lock cannot be acquired.
-
-    Example::
-
-        >>> str(LockTimeoutError("locked"))
-        'locked'
     """
 
 

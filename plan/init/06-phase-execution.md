@@ -13,6 +13,7 @@
 - 当前 MVP 已支持 `create_repo -> create_commit -> refs -> list -> list_repo_commits -> read -> hf_hub_download -> snapshot_download -> reset_ref -> quick_verify` 的闭环。
 - 当前单元测试已经按 `hubvault/` 模块树拆分为对应的 `test/**/test_<module>.py` 文件，不再依赖单一 MVP 汇总测试文件。
 - 当前回归基线应至少包括 `make unittest` 与 `make rst_auto`，并且 Phase 2 公开集成回归已补到 `test/test_phase2.py`。
+- 当前仓库并发与恢复基线已经收敛为 `fasteners.InterProcessReaderWriterLock` + rollback-only 恢复：多个 reader 可并发，writer 独占；中断写事务只回滚，不继续补完。
 
 优先级排序如下：
 
@@ -120,6 +121,8 @@
 * [x] 增加“删除/污染用户视图后重新下载可恢复，repo 真相不变”的公开 API 回归。
 * [x] 增加公开 API 的用例测试，覆盖 refs、reflog、便捷上传/删除、快照缓存和回滚。
 * [x] 新增 `test/test_phase2.py`，覆盖 Phase 2 的真实全周期使用场景。
+* [x] 用成熟第三方 RW 文件锁替换自造锁协议，并补上跨进程 reader/writer 阻塞回归。
+* [x] 将中断写事务的恢复策略固定为 rollback-only，不再继续补完未完成写入。
 
 ### Checklist
 
@@ -130,6 +133,8 @@
 * [x] 仓库归档恢复后不需要任何外部 sidecar 状态即可继续工作。
 * [x] 外部导出模式下仍能拿到与 repo 相对路径一致的文件路径后缀。
 * [x] 快照目录和单文件下载目录都与 repo 真相隔离，污染后可重建。
+* [x] 读写并发语义已经收敛为“纯读并发、写独占、写时阻塞其余读写”。
+* [x] 中断写事务在恢复后等效于未发生，不会被继续推进到完成状态。
 * [x] `make unittest` 通过。
 
 ## Phase 3. 大文件引擎

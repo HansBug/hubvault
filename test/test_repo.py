@@ -1,6 +1,11 @@
 import json
+import os
 import shutil
+import subprocess
+import sys
+import time
 from pathlib import Path
+from textwrap import dedent
 
 import pytest
 
@@ -12,7 +17,6 @@ from hubvault import (
     EntryNotFoundError,
     HubVaultApi,
     IntegrityError,
-    LockTimeoutError,
     RepositoryAlreadyExistsError,
     RevisionNotFoundError,
     UnsupportedPathError,
@@ -48,6 +52,19 @@ def _read_json(path):
 
 def _write_json(path, payload):
     path.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+
+
+def _wait_for_path(path, timeout=10.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if Path(path).exists():
+            return
+        time.sleep(0.01)
+    raise AssertionError("timed out waiting for %s" % path)
+
+
+def _repo_root():
+    return Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.unittest
@@ -288,7 +305,7 @@ class TestRepoSemantics:
         assert empty_history[0].title == ""
         assert empty_history[0].message == ""
 
-    def test_repo_recovers_transaction_leftovers_and_lock_conflicts(self, tmp_path):
+    def test_repo_only_writers_recover_transactions_and_verify_surfaces_leftovers(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")
         api.create_repo()
 
@@ -301,21 +318,199 @@ class TestRepoSemantics:
         info = api.repo_info()
         assert info.default_branch == "main"
         assert stray_file.is_file()
-        assert not stale_dir.exists()
+        assert stale_dir.exists()
 
-        lock_owner = tmp_path / "repo" / "locks" / "write.lock"
-        lock_owner.mkdir(parents=True)
-        (lock_owner / "owner.json").write_text("{}", encoding="utf-8")
-
-        with pytest.raises(LockTimeoutError):
-            api.create_commit(
-                operations=[CommitOperationAdd("blocked.bin", b"x")],
-                commit_message="blocked",
-            )
+        lock_artifact = tmp_path / "repo" / "locks" / "orphaned.lock"
+        lock_artifact.mkdir(parents=True)
 
         report = api.quick_verify()
         assert any("unexpected txn entry: note.txt" in warning for warning in report.warnings)
-        assert any("active lock directory: write.lock" in warning for warning in report.warnings)
+        assert any("pending transaction directory: stale" in warning for warning in report.warnings)
+        assert any("unexpected lock artifact: orphaned.lock" in warning for warning in report.warnings)
+
+        api.create_commit(
+            operations=[CommitOperationAdd("recovered.bin", b"x")],
+            commit_message="recover leftover txn",
+        )
+
+        assert stray_file.is_file()
+        assert not stale_dir.exists()
+
+    def test_repo_rolls_back_interrupted_ref_updates_before_serving_reads(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        first_commit = api.create_commit(
+            operations=[CommitOperationAdd("file.bin", b"v1")],
+            commit_message="seed",
+        )
+        second_commit = api.create_commit(
+            operations=[CommitOperationAdd("file.bin", b"v2")],
+            parent_commit=first_commit.oid,
+            commit_message="advance",
+        )
+        api.reset_ref("main", to_revision=first_commit.oid)
+
+        txdir = tmp_path / "repo" / "txn" / "interrupted"
+        txdir.mkdir(parents=True)
+        _write_json(
+            txdir / "REF_UPDATE.json",
+            {
+                "ref_kind": "branch",
+                "ref_name": "main",
+                "old_head": first_commit.oid,
+                "new_head": second_commit.oid,
+                "message": "interrupted advance",
+                "ref_existed_before": True,
+                "updated_at": "2026-04-07T00:00:00Z",
+            },
+        )
+        _write_json(
+            txdir / "STATE.json",
+            {
+                "state": "UPDATED_REF",
+                "updated_at": "2026-04-07T00:00:00Z",
+            },
+        )
+        (tmp_path / "repo" / "refs" / "heads" / "main").write_text(second_commit.oid + "\n", encoding="utf-8")
+
+        info = api.repo_info()
+        assert info.head == first_commit.oid
+        assert api.read_bytes("file.bin") == b"v1"
+        assert not txdir.exists()
+
+    def test_repo_write_lock_blocks_other_process_readers_and_writers(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        api.create_commit(
+            operations=[CommitOperationAdd("seed.txt", b"seed")],
+            commit_message="seed",
+        )
+
+        control_dir = tmp_path / "control"
+        control_dir.mkdir()
+        writer_entered = control_dir / "writer-entered"
+        release_writer = control_dir / "release-writer"
+        writer_done = control_dir / "writer-done"
+        reader_done = control_dir / "reader-done"
+        second_writer_done = control_dir / "second-writer-done"
+
+        blocking_writer_code = dedent(
+            """
+            import io
+            import sys
+            import time
+            from pathlib import Path
+
+            from hubvault import CommitOperationAdd, HubVaultApi
+
+            class BlockingBytesIO(io.BytesIO):
+                def __init__(self, payload, entered_path, release_path):
+                    io.BytesIO.__init__(self, payload)
+                    self._entered_path = Path(entered_path)
+                    self._release_path = Path(release_path)
+
+                def read(self, *args, **kwargs):
+                    self._entered_path.write_text("entered", encoding="utf-8")
+                    while not self._release_path.exists():
+                        time.sleep(0.01)
+                    return io.BytesIO.read(self, *args, **kwargs)
+
+            repo_path, entered_path, release_path, done_path = sys.argv[1:5]
+            api = HubVaultApi(repo_path)
+            api.create_commit(
+                operations=[CommitOperationAdd("blocked.bin", BlockingBytesIO(b"blocked", entered_path, release_path))],
+                commit_message="blocked writer",
+            )
+            Path(done_path).write_text("done", encoding="utf-8")
+            """
+        )
+        reader_code = dedent(
+            """
+            import sys
+            from pathlib import Path
+
+            from hubvault import HubVaultApi
+
+            repo_path, done_path = sys.argv[1:3]
+            data = HubVaultApi(repo_path).read_bytes("seed.txt")
+            Path(done_path).write_bytes(data)
+            """
+        )
+        second_writer_code = dedent(
+            """
+            import sys
+            from pathlib import Path
+
+            from hubvault import CommitOperationAdd, HubVaultApi
+
+            repo_path, done_path = sys.argv[1:3]
+            HubVaultApi(repo_path).create_commit(
+                operations=[CommitOperationAdd("second.bin", b"second")],
+                commit_message="second writer",
+            )
+            Path(done_path).write_text("done", encoding="utf-8")
+            """
+        )
+
+        env = dict(os.environ)
+        repo_root = str(_repo_root())
+        env["PYTHONPATH"] = repo_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+
+        blocking_writer = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                blocking_writer_code,
+                str(tmp_path / "repo"),
+                str(writer_entered),
+                str(release_writer),
+                str(writer_done),
+            ],
+            cwd=repo_root,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        _wait_for_path(writer_entered)
+
+        reader = subprocess.Popen(
+            [sys.executable, "-c", reader_code, str(tmp_path / "repo"), str(reader_done)],
+            cwd=repo_root,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        second_writer = subprocess.Popen(
+            [sys.executable, "-c", second_writer_code, str(tmp_path / "repo"), str(second_writer_done)],
+            cwd=repo_root,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+        time.sleep(0.3)
+        assert not reader_done.exists()
+        assert not second_writer_done.exists()
+        assert not writer_done.exists()
+
+        release_writer.write_text("release", encoding="utf-8")
+
+        writer_stdout, writer_stderr = blocking_writer.communicate(timeout=10)
+        reader_stdout, reader_stderr = reader.communicate(timeout=10)
+        second_writer_stdout, second_writer_stderr = second_writer.communicate(timeout=10)
+
+        assert blocking_writer.returncode == 0, writer_stdout + writer_stderr
+        assert reader.returncode == 0, reader_stdout + reader_stderr
+        assert second_writer.returncode == 0, second_writer_stdout + second_writer_stderr
+
+        assert writer_done.read_text(encoding="utf-8") == "done"
+        assert reader_done.read_bytes() == b"seed"
+        assert second_writer_done.read_text(encoding="utf-8") == "done"
+        assert api.read_bytes("blocked.bin") == b"blocked"
+        assert api.read_bytes("second.bin") == b"second"
 
     def test_repo_detects_ref_and_config_corruption(self, tmp_path):
         api, repo_dir = _single_file_repo(tmp_path, repo_name="corrupt-refs")

@@ -36,10 +36,10 @@ LARGE\_FILE\_THRESHOLD
 .. autodata:: LARGE_FILE_THRESHOLD
 
 
-WRITE\_LOCK\_DIR
+REPO\_LOCK\_FILENAME
 -----------------------------------------------------
 
-.. autodata:: WRITE_LOCK_DIR
+.. autodata:: REPO_LOCK_FILENAME
 
 
 WINDOWS\_RESERVED\_NAMES

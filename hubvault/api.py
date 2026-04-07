@@ -851,8 +851,6 @@ class HubVaultApi:
         :type to_revision: str
         :return: Commit metadata for the target head
         :rtype: CommitInfo
-        :raises hubvault.errors.LockTimeoutError: Raised when another writer is
-            currently holding the repository lock.
         :raises hubvault.errors.RevisionNotFoundError: Raised when the target
             revision or branch cannot be resolved.
         :raises hubvault.errors.UnsupportedPathError: Raised when the branch

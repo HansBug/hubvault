@@ -62,7 +62,6 @@ from hubvault import (
     ConflictError,
     IntegrityError,
     VerificationError,
-    LockTimeoutError,
 )
 ```
 
@@ -463,7 +462,6 @@ class HubVaultApi:
 - `ConflictError`
 - `IntegrityError`
 - `VerificationError`
-- `LockTimeoutError`
 
 这些异常保留的原因都是真实存在的本地事务/校验需求，而不是兼容外观。
 

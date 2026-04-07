@@ -22,7 +22,6 @@ class TestPackageInit:
             "HubVaultValidationError",
             "IntegrityError",
             "LastCommitInfo",
-            "LockTimeoutError",
             "ReflogEntry",
             "RepoFile",
             "RepoFolder",

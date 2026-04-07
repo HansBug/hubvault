@@ -14,54 +14,42 @@
 
 ## 2. 锁协议
 
-为保持跨平台与实现简洁，首版建议使用“锁目录”而不是平台专属文件锁。
+当前实现已经收敛到成熟第三方跨进程文件锁，而不是自造锁目录协议。
 
-### 2.1 写锁
+### 2.1 Repo 读写锁
 
-写事务尝试创建：
+当前基线：
 
 ```text
-locks/write.lock/
+locks/repo.lock
 ```
 
-创建成功则获得写锁，目录内记录：
+实现约束：
 
-- `owner.json`
-- `pid`
-- `hostname`
-- `started_at`
-- `heartbeat_at`
+- 使用 `fasteners.InterProcessReaderWriterLock`
+- `repo_info()`、`list_repo_tree()`、`read_bytes()`、`hf_hub_download()`、`snapshot_download()` 等读操作持有共享读锁
+- `create_commit()`、`reset_ref()`、`create_branch()`、`delete_branch()`、`create_tag()`、`delete_tag()` 等写操作持有独占写锁
+- 多个纯读请求允许并发
+- writer 持锁期间，其余所有读写请求一律阻塞
+- 锁文件本身不保存任何仓库正确性所依赖的业务状态
 
-这些字段仅用于诊断与恢复，不得成为仓库可用性的前提；其中也不应记录必须参与正确性的绝对路径。
+对齐说明：
 
-如果锁已存在，则：
-
-- 默认立即失败并抛出 `LockTimeoutError`
-- 或按显式超时参数等待
+- `huggingface_hub` 本地缓存层实际使用的是 `filelock`
+- 由于 `hubvault` 明确要求“纯读可并发、写时阻塞全部读写”，因此本地仓库层改用提供跨进程 RW 语义的 `fasteners`
 
 ### 2.2 GC 锁
 
-GC 和 compact 使用独立锁：
-
-```text
-locks/gc.lock/
-```
-
-GC 启动前必须确认没有活跃写事务。
+GC 和 compact 目前尚未落地；进入后续 phase 时，也必须复用成熟第三方文件锁，而不是新增手造锁协议。
 
 ### 2.3 锁失效恢复
 
-如果进程崩溃导致锁残留，可按以下顺序处理：
-
-1. 读取 `owner.json`
-2. 判断 `heartbeat_at` 是否过期
-3. 如平台支持，再判断进程是否仍存活
-4. 只有满足“锁已超时且持有者不存在或不可达”时，才允许接管
+锁恢复依赖操作系统文件锁语义，而不是 repo 内 owner 心跳文件。
 
 仓库搬迁或归档恢复后的要求：
 
 - 关闭状态下搬迁 repo root 不应留下不可恢复的路径依赖
-- 如果归档中包含陈旧锁目录，打开仓库时应把它视为可恢复诊断状态，而不是永久阻塞条件
+- `locks/` 下只允许当前协议定义的 `repo.lock`；其余锁产物都视为异常垃圾，不保留任何历史兼容处理
 
 ## 3. 事务状态机
 
@@ -81,8 +69,15 @@ GC 启动前必须确认没有活跃写事务。
 - `PREPARING -> STAGED`：所有对象都已写入事务目录并刷盘
 - `STAGED -> PUBLISHED_OBJECTS`：对象已发布到正式目录
 - `PUBLISHED_OBJECTS -> UPDATED_REF`：目标 ref 已用 `os.replace()` 更新
-- `UPDATED_REF -> COMMITTED`：reflog 已追加，事务可安全清理
+- `UPDATED_REF -> COMMITTED`：本地完成标记已持久化，事务之后只允许做清理或补记日志，绝不再改变提交结果
 - 任意未线性化状态都可以转 `ABORTED`
+
+当前设计原则已经进一步收紧：
+
+- **不做 roll-forward**
+- 中断写事务不继续“补完提交”
+- 只要事务没有进入 `COMMITTED`，恢复动作就必须把 ref 回滚到操作前安全状态
+- 已发布但不可达的新对象允许遗留为孤儿对象，等待后续 GC，不影响主状态
 
 ## 4. 提交流程
 
@@ -98,14 +93,19 @@ GC 启动前必须确认没有活跃写事务。
 8. 将状态写为 `STAGED`
 9. 原子发布对象到正式目录
 10. 将状态写为 `PUBLISHED_OBJECTS`
-11. 使用 `os.replace()` 原子更新 ref
-12. 将状态写为 `UPDATED_REF`
-13. 追加 reflog
+11. 写入 `REF_UPDATE.json`，记录旧 ref、新 ref 与回滚所需信息
+12. 使用 `os.replace()` 原子更新 ref
+13. 将状态写为 `UPDATED_REF`
 14. 将状态写为 `COMMITTED`
-15. 删除事务目录
-16. 释放写锁
+15. 追加 reflog
+16. 删除事务目录
+17. 释放写锁
 
-线性化点是第 11 步的 `os.replace()`。
+当前实现语义：
+
+- 第 12 步之前中断：旧 ref 仍然有效，视为“什么都没发生”
+- 第 12 步到第 14 步之间中断：恢复流程必须按 `REF_UPDATE.json` 把 ref 回滚到旧值
+- 第 14 步之后：事务已经被视为完成，后续至多只做清理，不再做结果回滚或继续推进其它业务步骤
 
 ## 5. 代表性提交代码片段
 
@@ -124,9 +124,10 @@ def create_commit(self, revision, operations, parent_commit=None):
         )
         txn.mark_staged()
         txn.publish_objects(staged.object_paths)
+        txn.record_ref_rollback_info(revision, old_head=current_head, new_head=staged.commit_id)
         txn.update_ref_atomically(revision, staged.commit_id)
-        txn.append_reflog(revision, old_head=current_head, new_head=staged.commit_id)
         txn.mark_committed()
+        txn.append_reflog(revision, old_head=current_head, new_head=staged.commit_id)
         return staged.commit_info
 ```
 
@@ -146,19 +147,20 @@ def create_commit(self, revision, operations, parent_commit=None):
 
 结果：
 
-- 新 commit 已生效
-- 即使 reflog 尚未完整追加，也不影响主状态
-- 恢复流程应补写日志或记录诊断信息
+- 如果事务尚未进入 `COMMITTED`，恢复流程必须把 ref 回滚到旧值
+- 不做“继续提交”“补写主状态”“继续推进剩余步骤”这类 roll-forward 行为
+- 若对象已发布但回滚后不可达，只留下孤儿对象，不影响主状态
+- reflog 只在已完成事务上视为补充审计信息，不参与主状态恢复判定
 
 ### 6.3 仓库打开时的恢复动作
 
-仓库打开时建议执行轻量恢复：
+仓库打开时建议执行轻量恢复，但只允许做安全回滚和清理：
 
 - 扫描 `txn/` 下未完成事务
-- 读取其 `STATE.json`
-- 对 `COMMITTED` 但未清理的事务做善后
-- 对 `UPDATED_REF` 的事务补写 reflog
-- 对其余状态的事务执行回收
+- 对已经进入 `COMMITTED` 但尚未清理的事务做善后删除
+- 对带有 `REF_UPDATE.json` 且尚未 `COMMITTED` 的事务执行 ref 回滚
+- 对其余状态的事务直接清理暂存目录
+- 不允许把未完成事务继续推进成“已完成”
 
 这一恢复过程不应依赖旧路径上下文；只要 repo root 本身完整存在，就应能在新位置完成恢复。
 
@@ -200,7 +202,7 @@ MVP 的 `quick_verify()` 重点检查：
 - refs 是否指向存在的 commit
 - commit/tree/file/blob 对象封装和 checksum 是否正常
 - `File -> Blob` 引用闭包是否完整
-- 残留事务是否可恢复或可安全清理
+- 残留事务是否需要回滚或可安全清理
 - 仓库内没有要求访问 repo root 外持久化状态的格式残留
 - 文件 `oid` / `sha256` / `etag` 与持久化文件对象记录一致
 - 用户视图目录如果存在，对应视图元数据与正式对象的一致性可被校验并可被修复

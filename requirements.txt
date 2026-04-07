@@ -1,4 +1,5 @@
 hbutils>=0.10.1
+fasteners>=0.20
 tqdm
 click>=7
 typing_extensions>=4; python_version < "3.10"
