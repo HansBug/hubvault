@@ -14,6 +14,10 @@ Example::
     >>> # Execute via Python module invocation
     >>> # python -m hubvault
 
+.. note::
+   The module intentionally stays minimal. The real CLI implementation lives in
+   :mod:`hubvault.entry`, while this module only delegates execution when run as
+   ``python -m hubvault``.
 """
 from .entry import hubvaultcli
 

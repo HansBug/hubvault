@@ -2,9 +2,9 @@
 Command-line interface assembly for the hubvault entry points.
 
 This module composes the top-level CLI command group by applying a sequence
-of subcommand decorators. It exposes a ready-to-use Click group that includes
-the available subcommands registered by :mod:`hubvault.entry.generate`,
-:mod:`hubvault.entry.plantuml`, and :mod:`hubvault.entry.simulate`.
+of subcommand decorators. In the current repository state there are no extra
+subcommands yet, so the exported group is the same top-level command defined in
+:mod:`hubvault.entry.dispatch`.
 
 The module contains the following main component:
 
@@ -19,7 +19,8 @@ Example::
 
 .. note::
    Subcommands are added by decorator functions that mutate the Click group in
-   place and return it for chaining.
+   place and return it for chaining. Phase 2 and later work may append
+   decorators here while keeping the exported object stable.
 """
 
 from typing import Callable, List

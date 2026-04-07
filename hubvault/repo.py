@@ -70,10 +70,43 @@ DRIVE_PATTERN = re.compile(r"^[A-Za-z]:")
 
 
 def _utc_now() -> str:
+    """
+    Return the current UTC timestamp in repository string format.
+
+    The repository persists timestamps in a compact UTC form so metadata stays
+    stable across platforms and archive moves.
+
+    :return: Timestamp formatted as ``YYYY-MM-DDTHH:MM:SSZ``
+    :rtype: str
+
+    Example::
+
+        >>> timestamp = _utc_now()
+        >>> timestamp.endswith("Z")
+        True
+    """
+
     return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _stable_json_bytes(data: object) -> bytes:
+    """
+    Encode JSON data with the repository's canonical serialization settings.
+
+    Canonical encoding keeps object IDs stable by ensuring key ordering and
+    whitespace rules do not vary between processes or platforms.
+
+    :param data: JSON-serializable object to encode
+    :type data: object
+    :return: Canonically encoded UTF-8 JSON bytes
+    :rtype: bytes
+
+    Example::
+
+        >>> _stable_json_bytes({"b": 1, "a": 2})
+        b'{"a":2,"b":1}'
+    """
+
     return json.dumps(
         data,
         sort_keys=True,
@@ -83,15 +116,69 @@ def _stable_json_bytes(data: object) -> bytes:
 
 
 def _sha256_hex(data: bytes) -> str:
+    """
+    Compute the hexadecimal SHA-256 digest for a byte string.
+
+    :param data: Input bytes
+    :type data: bytes
+    :return: Lowercase hexadecimal SHA-256 digest
+    :rtype: str
+
+    Example::
+
+        >>> _sha256_hex(b"abc")
+        'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'
+    """
+
     return sha256(data).hexdigest()
 
 
 def _git_blob_oid(data: bytes) -> str:
+    """
+    Compute a Git-compatible blob object ID for file content bytes.
+
+    The public file ``oid`` exposed by :mod:`hubvault` is aligned with the
+    conventional Git blob hashing scheme used by Hugging Face metadata.
+
+    :param data: Logical file content
+    :type data: bytes
+    :return: Git blob SHA-1 digest
+    :rtype: str
+
+    Example::
+
+        >>> len(_git_blob_oid(b"hello"))
+        40
+    """
+
     header = "blob %d\0" % len(data)
     return sha1(header.encode("utf-8") + data).hexdigest()
 
 
 def _write_bytes_atomic(path: Path, data: bytes) -> None:
+    """
+    Atomically replace a file with the provided bytes.
+
+    The helper writes to a temporary sibling file first and then swaps it into
+    place, which avoids partial writes becoming visible to readers.
+
+    :param path: Destination filesystem path
+    :type path: pathlib.Path
+    :param data: Bytes to write
+    :type data: bytes
+    :return: ``None``.
+    :rtype: None
+
+    Example::
+
+        >>> import tempfile
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     path = Path(tmpdir) / "demo.bin"
+        ...     _write_bytes_atomic(path, b"hello")
+        ...     path.read_bytes()
+        b'hello'
+    """
+
     path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = path.parent / (path.name + ".tmp." + secrets.token_hex(4))
     with temp_path.open("wb") as file_:
@@ -102,23 +189,124 @@ def _write_bytes_atomic(path: Path, data: bytes) -> None:
 
 
 def _write_text_atomic(path: Path, text: str) -> None:
+    """
+    Atomically replace a UTF-8 text file.
+
+    This helper delegates to :func:`_write_bytes_atomic` after encoding the text
+    as UTF-8.
+
+    :param path: Destination filesystem path
+    :type path: pathlib.Path
+    :param text: Text content to write
+    :type text: str
+    :return: ``None``.
+    :rtype: None
+
+    Example::
+
+        >>> import tempfile
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     path = Path(tmpdir) / "demo.txt"
+        ...     _write_text_atomic(path, "hello")
+        ...     path.read_text(encoding="utf-8")
+        'hello'
+    """
+
     _write_bytes_atomic(path, text.encode("utf-8"))
 
 
 def _write_json_atomic(path: Path, payload: object) -> None:
+    """
+    Atomically replace a JSON file using canonical repository encoding.
+
+    Repository metadata files use this helper so their serialized bytes remain
+    stable and safe to publish with a final atomic swap.
+
+    :param path: Destination filesystem path
+    :type path: pathlib.Path
+    :param payload: JSON-serializable payload
+    :type payload: object
+    :return: ``None``.
+    :rtype: None
+
+    Example::
+
+        >>> import tempfile
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     path = Path(tmpdir) / "demo.json"
+        ...     _write_json_atomic(path, {"answer": 42})
+        ...     _read_json(path)["answer"]
+        42
+    """
+
     _write_bytes_atomic(path, _stable_json_bytes(payload))
 
 
 def _read_text(path: Path) -> str:
+    """
+    Read a UTF-8 text file.
+
+    :param path: Source filesystem path
+    :type path: pathlib.Path
+    :return: Decoded text content
+    :rtype: str
+
+    Example::
+
+        >>> import tempfile
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     path = Path(tmpdir) / "demo.txt"
+        ...     path.write_text("hello", encoding="utf-8")
+        ...     _read_text(path)
+        'hello'
+    """
+
     return path.read_text(encoding="utf-8")
 
 
 def _read_json(path: Path) -> object:
+    """
+    Read and decode a JSON file.
+
+    :param path: Source filesystem path
+    :type path: pathlib.Path
+    :return: Decoded JSON payload
+    :rtype: object
+
+    Example::
+
+        >>> import tempfile
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     path = Path(tmpdir) / "demo.json"
+        ...     path.write_text('{"answer": 42}', encoding="utf-8")
+        ...     _read_json(path)["answer"]
+        42
+    """
+
     with path.open("r", encoding="utf-8") as file_:
         return json.load(file_)
 
 
 def _normalize_repo_path(path_in_repo: str) -> str:
+    """
+    Normalize and validate a repo-relative logical path.
+
+    Logical repository paths always use POSIX separators and must stay safe on
+    all supported platforms, including Windows.
+
+    :param path_in_repo: User-supplied repo-relative path
+    :type path_in_repo: str
+    :return: Normalized POSIX path
+    :rtype: str
+    :raises UnsupportedPathError: Raised when the path is empty, absolute, or
+        contains platform-unsafe segments.
+
+    Example::
+
+        >>> _normalize_repo_path("models\\\\demo.bin")
+        'models/demo.bin'
+    """
+
     raw = str(path_in_repo).replace("\\", "/")
     if not raw:
         raise UnsupportedPathError("path_in_repo must not be empty")
@@ -150,6 +338,25 @@ def _normalize_repo_path(path_in_repo: str) -> str:
 
 
 def _validate_ref_name(name: str) -> str:
+    """
+    Validate and normalize a branch or tag name.
+
+    Ref names share the same safety rules as repo-relative paths so they can be
+    mapped directly into the repository directory structure.
+
+    :param name: User-supplied ref name
+    :type name: str
+    :return: Normalized ref name
+    :rtype: str
+    :raises UnsupportedPathError: Raised when the ref name violates repository
+        naming rules.
+
+    Example::
+
+        >>> _validate_ref_name("release/v1")
+        'release/v1'
+    """
+
     if not REF_NAME_PATTERN.fullmatch(name or ""):
         raise UnsupportedPathError("invalid ref name")
     normalized = _normalize_repo_path(name)
@@ -157,6 +364,22 @@ def _validate_ref_name(name: str) -> str:
 
 
 def _split_object_id(object_id: str) -> Tuple[str, str]:
+    """
+    Split a repository object ID into algorithm and digest parts.
+
+    :param object_id: Object identifier such as ``sha256:<digest>``
+    :type object_id: str
+    :return: Two-tuple of algorithm and digest
+    :rtype: Tuple[str, str]
+    :raises IntegrityError: Raised when the object ID is malformed or uses an
+        unsupported hash scheme.
+
+    Example::
+
+        >>> _split_object_id("sha256:abc123")
+        ('sha256', 'abc123')
+    """
+
     try:
         algorithm, digest = object_id.split(":", 1)
     except ValueError:
@@ -167,11 +390,53 @@ def _split_object_id(object_id: str) -> Tuple[str, str]:
 
 
 def _object_id_from_container(container: object) -> Tuple[str, bytes]:
+    """
+    Compute the repository object ID for a serialized container.
+
+    The object ID is derived from canonical container bytes rather than only the
+    logical payload so stored metadata is part of integrity verification.
+
+    :param container: Canonical object container payload
+    :type container: object
+    :return: Tuple of object ID and serialized bytes
+    :rtype: Tuple[str, bytes]
+
+    Example::
+
+        >>> object_id, payload = _object_id_from_container({"payload": 1})
+        >>> object_id.startswith("sha256:")
+        True
+        >>> isinstance(payload, bytes)
+        True
+    """
+
     container_bytes = _stable_json_bytes(container)
     return OBJECT_HASH + ":" + _sha256_hex(container_bytes), container_bytes
 
 
 def _build_object_container(object_type: str, payload: object) -> Tuple[str, bytes]:
+    """
+    Wrap an object payload in the repository container format.
+
+    The wrapper records both object kind and the payload checksum so later reads
+    can verify a stored object belongs to the expected logical collection.
+
+    :param object_type: Logical object type name
+    :type object_type: str
+    :param payload: Logical payload to embed
+    :type payload: object
+    :return: Tuple of object ID and serialized container bytes
+    :rtype: Tuple[str, bytes]
+
+    Example::
+
+        >>> object_id, container = _build_object_container("tree", {"entries": []})
+        >>> object_id.startswith("sha256:")
+        True
+        >>> isinstance(container, bytes)
+        True
+    """
+
     payload_bytes = _stable_json_bytes(payload)
     container = {
         "format_version": FORMAT_VERSION,
@@ -183,11 +448,54 @@ def _build_object_container(object_type: str, payload: object) -> Tuple[str, byt
 
 
 class _WriteLock(object):
+    """
+    Small lock-handle wrapper for repository write locks.
+
+    Instances are created by :meth:`_RepositoryBackend._acquire_write_lock` and
+    encapsulate the filesystem paths that must be removed when the writer is
+    done.
+
+    Example::
+
+        >>> lock = _WriteLock(Path("/tmp/lock"), Path("/tmp/lock/owner.json"))
+        >>> isinstance(lock, _WriteLock)
+        True
+    """
+
     def __init__(self, lock_dir: Path, owner_path: Path):
+        """
+        Initialize the lock handle.
+
+        :param lock_dir: Lock directory path
+        :type lock_dir: pathlib.Path
+        :param owner_path: Diagnostic owner metadata path
+        :type owner_path: pathlib.Path
+        :return: ``None``.
+        :rtype: None
+
+        Example::
+
+            >>> lock = _WriteLock(Path("/tmp/lock"), Path("/tmp/lock/owner.json"))
+            >>> isinstance(lock, _WriteLock)
+            True
+        """
+
         self._lock_dir = lock_dir
         self._owner_path = owner_path
 
     def release(self) -> None:
+        """
+        Release the write lock and remove its diagnostic files.
+
+        :return: ``None``.
+        :rtype: None
+
+        Example::
+
+            >>> lock = _WriteLock(Path("/tmp/lock"), Path("/tmp/lock/owner.json"))  # doctest: +SKIP
+            >>> lock.release()  # doctest: +SKIP
+        """
+
         if self._owner_path.exists():
             self._owner_path.unlink()
         if self._lock_dir.exists():
@@ -197,9 +505,34 @@ class _WriteLock(object):
 class _RepositoryBackend(object):
     """
     Internal repository backend for the MVP.
+
+    This backend owns the on-disk format, object storage, revision resolution,
+    detached read views, and transaction lifecycle used by
+    :class:`hubvault.api.HubVaultApi`.
+
+    Example::
+
+        >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+        >>> isinstance(backend, _RepositoryBackend)
+        True
     """
 
     def __init__(self, repo_path: Path):
+        """
+        Initialize the repository backend for a root directory.
+
+        :param repo_path: Filesystem path to the repository root
+        :type repo_path: pathlib.Path
+        :return: ``None``.
+        :rtype: None
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend._repo_path.as_posix().endswith("demo-repo")
+            True
+        """
+
         self._repo_path = Path(repo_path)
 
     def create_repo(
@@ -210,6 +543,35 @@ class _RepositoryBackend(object):
     ) -> RepoInfo:
         """
         Create a repository at the configured root path.
+
+        This method bootstraps the self-contained on-disk layout, writes the
+        format marker and repository configuration, and initializes the default
+        branch as an empty ref.
+
+        :param default_branch: Default branch name to create, defaults to
+            :data:`DEFAULT_BRANCH`
+        :type default_branch: str, optional
+        :param exist_ok: Whether an existing repository may be reused,
+            defaults to ``False``
+        :type exist_ok: bool, optional
+        :param metadata: Optional repository metadata persisted in
+            ``repo.json``
+        :type metadata: Optional[Dict[str, str]], optional
+        :return: Public metadata for the created or reused repository
+        :rtype: RepoInfo
+        :raises RepoAlreadyExistsError: Raised when the target path already
+            contains a repository or any non-empty directory.
+        :raises UnsupportedPathError: Raised when ``default_branch`` violates
+            repository ref naming rules.
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     info = backend.create_repo(metadata={"owner": "demo"})
+            ...     info.default_branch
+            'main'
         """
 
         default_branch = _validate_ref_name(default_branch)
@@ -246,6 +608,29 @@ class _RepositoryBackend(object):
     def repo_info(self, revision: Optional[str] = None) -> RepoInfo:
         """
         Return repository metadata for the selected revision.
+
+        The selected revision is only used to resolve the visible ``head`` in
+        the returned :class:`RepoInfo`; repository-wide settings still come from
+        ``repo.json``.
+
+        :param revision: Revision whose head should be resolved, defaults to the
+            configured default branch
+        :type revision: Optional[str], optional
+        :return: Current repository metadata view
+        :rtype: RepoInfo
+        :raises RepoNotFoundError: Raised when the configured root is not a
+            valid repository.
+        :raises RevisionNotFoundError: Raised when ``revision`` cannot be
+            resolved.
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     _ = backend.create_repo()
+            ...     backend.repo_info().default_branch
+            'main'
         """
 
         self._ensure_repo()
@@ -273,6 +658,50 @@ class _RepositoryBackend(object):
     ) -> CommitInfo:
         """
         Create a new commit on a branch revision.
+
+        The backend stages all new objects in a transaction directory, publishes
+        them atomically, and only then updates the branch ref and reflog.
+
+        :param revision: Branch name that will receive the new commit
+        :type revision: str
+        :param operations: Add, delete, or copy operations to apply
+        :type operations: Sequence[object]
+        :param parent_commit: Optional expected parent commit for optimistic
+            concurrency checks
+        :type parent_commit: Optional[str], optional
+        :param expected_head: Optional explicit expected branch head
+        :type expected_head: Optional[str], optional
+        :param commit_message: Commit message to store in commit metadata
+        :type commit_message: str, optional
+        :param metadata: Optional commit metadata persisted in the commit object
+        :type metadata: Optional[Dict[str, str]], optional
+        :return: Public metadata for the created commit
+        :rtype: CommitInfo
+        :raises ConflictError: Raised when no operations are supplied, an
+            unsupported operation is provided, or optimistic concurrency checks
+            fail.
+        :raises LockTimeoutError: Raised when another writer currently holds the
+            repository write lock.
+        :raises PathNotFoundError: Raised when delete or copy operations refer
+            to missing paths.
+        :raises RevisionNotFoundError: Raised when the target revision cannot be
+            resolved.
+        :raises UnsupportedPathError: Raised when revision names or repo paths
+            are invalid.
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     _ = backend.create_repo()
+            ...     commit = backend.create_commit(
+            ...         revision="main",
+            ...         operations=[CommitOperationAdd.from_bytes("demo.txt", b"hello")],
+            ...         commit_message="seed",
+            ...     )
+            ...     commit.revision
+            'main'
         """
 
         self._ensure_repo()
@@ -347,6 +776,39 @@ class _RepositoryBackend(object):
     ) -> List[PathInfo]:
         """
         Return public metadata for the requested paths.
+
+        This method accepts both file paths and logical directory paths. A
+        directory is reported when the requested prefix exists transitively in
+        the flattened snapshot even if there is no explicit tree entry exposed
+        through the public API.
+
+        :param paths: Repo-relative paths to inspect
+        :type paths: Sequence[str]
+        :param revision: Revision to resolve, defaults to
+            :data:`DEFAULT_BRANCH`
+        :type revision: str, optional
+        :param expand: Reserved compatibility flag for later phases
+        :type expand: bool, optional
+        :return: Path metadata in the same order as ``paths``
+        :rtype: List[PathInfo]
+        :raises PathNotFoundError: Raised when any requested path is absent.
+        :raises RevisionNotFoundError: Raised when ``revision`` cannot be
+            resolved.
+        :raises UnsupportedPathError: Raised when any supplied path is invalid.
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     _ = backend.create_repo()
+            ...     _ = backend.create_commit(
+            ...         revision="main",
+            ...         operations=[CommitOperationAdd.from_bytes("nested/demo.txt", b"hello")],
+            ...         commit_message="seed",
+            ...     )
+            ...     backend.get_paths_info(["nested", "nested/demo.txt"])[0].path_type
+            'directory'
         """
 
         del expand  # Reserved for a later phase.
@@ -378,6 +840,38 @@ class _RepositoryBackend(object):
     def list_repo_tree(self, path_in_repo: str = "", revision: str = DEFAULT_BRANCH) -> List[PathInfo]:
         """
         List direct children under a repository directory.
+
+        The returned list only contains the direct child names for the selected
+        directory, not a recursive traversal of the whole tree.
+
+        :param path_in_repo: Repo-relative directory path, or ``""`` for the
+            repository root
+        :type path_in_repo: str, optional
+        :param revision: Revision to inspect, defaults to
+            :data:`DEFAULT_BRANCH`
+        :type revision: str, optional
+        :return: Sorted metadata entries for direct children
+        :rtype: List[PathInfo]
+        :raises PathNotFoundError: Raised when the requested directory does not
+            exist.
+        :raises RevisionNotFoundError: Raised when ``revision`` cannot be
+            resolved.
+        :raises UnsupportedPathError: Raised when ``path_in_repo`` points to a
+            file or violates path rules.
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     _ = backend.create_repo()
+            ...     _ = backend.create_commit(
+            ...         revision="main",
+            ...         operations=[CommitOperationAdd.from_bytes("nested/demo.txt", b"hello")],
+            ...         commit_message="seed",
+            ...     )
+            ...     [item.path for item in backend.list_repo_tree("nested")]
+            ['nested/demo.txt']
         """
 
         snapshot = self._snapshot_for_revision(revision)
@@ -422,6 +916,31 @@ class _RepositoryBackend(object):
     def list_repo_files(self, revision: str = DEFAULT_BRANCH) -> List[str]:
         """
         List all file paths in a revision.
+
+        The result is a flattened, sorted list of repo-relative file paths and
+        intentionally omits directory placeholders.
+
+        :param revision: Revision to inspect, defaults to
+            :data:`DEFAULT_BRANCH`
+        :type revision: str, optional
+        :return: Sorted repo-relative file paths
+        :rtype: List[str]
+        :raises RevisionNotFoundError: Raised when ``revision`` cannot be
+            resolved.
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     _ = backend.create_repo()
+            ...     _ = backend.create_commit(
+            ...         revision="main",
+            ...         operations=[CommitOperationAdd.from_bytes("demo.txt", b"hello")],
+            ...         commit_message="seed",
+            ...     )
+            ...     backend.list_repo_files()
+            ['demo.txt']
         """
 
         snapshot = self._snapshot_for_revision(revision)
@@ -430,6 +949,36 @@ class _RepositoryBackend(object):
     def open_file(self, path_in_repo: str, revision: str = DEFAULT_BRANCH) -> io.BufferedReader:
         """
         Open a file from a revision as a read-only binary stream.
+
+        The returned stream is detached from repository storage and backed by an
+        in-memory buffer, so accidental writes through the stream cannot mutate
+        repository truth.
+
+        :param path_in_repo: Repo-relative file path to open
+        :type path_in_repo: str
+        :param revision: Revision to inspect, defaults to
+            :data:`DEFAULT_BRANCH`
+        :type revision: str, optional
+        :return: Read-only buffered binary stream
+        :rtype: io.BufferedReader
+        :raises PathNotFoundError: Raised when the requested file is absent.
+        :raises RevisionNotFoundError: Raised when ``revision`` cannot be
+            resolved.
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     _ = backend.create_repo()
+            ...     _ = backend.create_commit(
+            ...         revision="main",
+            ...         operations=[CommitOperationAdd.from_bytes("demo.txt", b"hello")],
+            ...         commit_message="seed",
+            ...     )
+            ...     with backend.open_file("demo.txt") as fileobj:
+            ...         fileobj.read()
+            b'hello'
         """
 
         data = self.read_bytes(path_in_repo, revision=revision)
@@ -438,6 +987,36 @@ class _RepositoryBackend(object):
     def read_bytes(self, path_in_repo: str, revision: str = DEFAULT_BRANCH) -> bytes:
         """
         Read a file from a revision into memory.
+
+        File bytes are verified against the stored blob checksum before being
+        returned so corruption in detached storage is surfaced immediately.
+
+        :param path_in_repo: Repo-relative file path to read
+        :type path_in_repo: str
+        :param revision: Revision to inspect, defaults to
+            :data:`DEFAULT_BRANCH`
+        :type revision: str, optional
+        :return: Full file content bytes
+        :rtype: bytes
+        :raises IntegrityError: Raised when persisted blob bytes do not match
+            recorded checksums.
+        :raises PathNotFoundError: Raised when the requested file is absent.
+        :raises RevisionNotFoundError: Raised when ``revision`` cannot be
+            resolved.
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     _ = backend.create_repo()
+            ...     _ = backend.create_commit(
+            ...         revision="main",
+            ...         operations=[CommitOperationAdd.from_bytes("demo.txt", b"hello")],
+            ...         commit_message="seed",
+            ...     )
+            ...     backend.read_bytes("demo.txt")
+            b'hello'
         """
 
         snapshot = self._snapshot_for_revision(revision)
@@ -465,6 +1044,42 @@ class _RepositoryBackend(object):
     ) -> str:
         """
         Materialize a detached user view for a file and return its path.
+
+        The detached path preserves the repo-relative filename suffix, including
+        parent directories, so callers can work with a normal-looking filesystem
+        path while repository truth remains immutable until explicit commit APIs
+        are used.
+
+        :param repo_id: Compatibility placeholder for Hugging Face style call
+            signatures
+        :type repo_id: str
+        :param filename: Repo-relative file path to materialize
+        :type filename: str
+        :param revision: Revision to inspect, defaults to the default branch
+        :type revision: Optional[str], optional
+        :param local_dir: Optional external target root for the detached view
+        :type local_dir: Optional[str], optional
+        :return: Filesystem path to a detached readable file view
+        :rtype: str
+        :raises PathNotFoundError: Raised when the requested file is absent.
+        :raises RevisionNotFoundError: Raised when ``revision`` cannot be
+            resolved.
+        :raises UnsupportedPathError: Raised when ``filename`` is invalid.
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     _ = backend.create_repo()
+            ...     _ = backend.create_commit(
+            ...         revision="main",
+            ...         operations=[CommitOperationAdd.from_bytes("nested/demo.txt", b"hello")],
+            ...         commit_message="seed",
+            ...     )
+            ...     path = backend.hf_hub_download("demo", "nested/demo.txt")
+            ...     path.endswith("nested/demo.txt")
+            True
         """
 
         del repo_id
@@ -508,6 +1123,36 @@ class _RepositoryBackend(object):
     def reset_ref(self, ref_name: str, to_revision: str) -> CommitInfo:
         """
         Reset a branch ref to a target commit.
+
+        This method performs a branch-head move under the repository write lock
+        and records the change in the reflog.
+
+        :param ref_name: Branch name to update
+        :type ref_name: str
+        :param to_revision: Revision or commit ID to resolve as the new head
+        :type to_revision: str
+        :return: Public commit metadata for the new branch head
+        :rtype: CommitInfo
+        :raises LockTimeoutError: Raised when another writer already holds the
+            repository lock.
+        :raises RevisionNotFoundError: Raised when the target revision cannot be
+            resolved.
+        :raises UnsupportedPathError: Raised when ``ref_name`` violates ref
+            naming rules.
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     _ = backend.create_repo()
+            ...     commit = backend.create_commit(
+            ...         revision="main",
+            ...         operations=[CommitOperationAdd.from_bytes("demo.txt", b"hello")],
+            ...         commit_message="seed",
+            ...     )
+            ...     backend.reset_ref("main", commit.commit_id).commit_id == commit.commit_id
+            True
         """
 
         self._ensure_repo()
@@ -529,6 +1174,24 @@ class _RepositoryBackend(object):
     def quick_verify(self) -> VerifyReport:
         """
         Perform a minimal repository consistency check.
+
+        The verification pass checks repository format compatibility, validates
+        commit closure for all visible refs, and reports stale detached views as
+        warnings instead of fatal errors.
+
+        :return: Verification summary for the current repository state
+        :rtype: VerifyReport
+        :raises RepoNotFoundError: Raised when the configured root is not a
+            valid repository.
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     _ = backend.create_repo()
+            ...     backend.quick_verify().ok
+            True
         """
 
         self._ensure_repo()
@@ -582,16 +1245,67 @@ class _RepositoryBackend(object):
 
     @property
     def _format_path(self) -> Path:
+        """
+        Return the repository ``FORMAT`` marker path.
+
+        :return: Absolute path to ``FORMAT``
+        :rtype: pathlib.Path
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend._format_path.name
+            'FORMAT'
+        """
+
         return self._repo_path / "FORMAT"
 
     @property
     def _repo_config_path(self) -> Path:
+        """
+        Return the repository configuration file path.
+
+        :return: Absolute path to ``repo.json``
+        :rtype: pathlib.Path
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend._repo_config_path.name
+            'repo.json'
+        """
+
         return self._repo_path / "repo.json"
 
     def _is_repo(self) -> bool:
+        """
+        Check whether the configured root already looks like a repository.
+
+        :return: Whether the root contains the minimum repository markers
+        :rtype: bool
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend._is_repo()
+            False
+        """
+
         return self._format_path.is_file() and self._repo_config_path.is_file()
 
     def _ensure_layout(self) -> None:
+        """
+        Create the required repository directory layout if missing.
+
+        :return: ``None``.
+        :rtype: None
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._ensure_layout()  # doctest: +SKIP
+        """
+
         for relative in [
             "refs/heads",
             "refs/tags",
@@ -616,32 +1330,113 @@ class _RepositoryBackend(object):
             (self._repo_path / relative).mkdir(parents=True, exist_ok=True)
 
     def _ensure_repo(self) -> None:
+        """
+        Validate the repository root and ensure cache/layout directories exist.
+
+        :return: ``None``.
+        :rtype: None
+        :raises RepoNotFoundError: Raised when the root does not contain a valid
+            repository marker set.
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._ensure_repo()  # doctest: +SKIP
+        """
+
         if not self._is_repo():
             raise RepoNotFoundError("repository not found")
         self._ensure_layout()
 
     def _repo_config(self) -> Dict[str, object]:
+        """
+        Load the repository configuration payload.
+
+        :return: Repository configuration mapping
+        :rtype: Dict[str, object]
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> sorted(backend._repo_config())  # doctest: +SKIP
+            ['default_branch', 'file_mode', 'format_version', 'large_file_threshold', 'metadata', 'object_hash']
+        """
+
         return dict(_read_json(self._repo_config_path))
 
     def _list_refs(self) -> List[str]:
+        """
+        List all visible branch and tag refs.
+
+        :return: Sorted list of full ref names
+        :rtype: List[str]
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._list_refs()  # doctest: +SKIP
+            []
+        """
+
         refs = []
         refs.extend("refs/heads/" + name for name in self._list_branch_names())
         refs.extend("refs/tags/" + name for name in self._list_tag_names())
         return sorted(refs)
 
     def _list_branch_names(self) -> List[str]:
+        """
+        List branch names beneath ``refs/heads``.
+
+        :return: Sorted branch names
+        :rtype: List[str]
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._list_branch_names()  # doctest: +SKIP
+            []
+        """
+
         heads_dir = self._repo_path / "refs" / "heads"
         if not heads_dir.exists():
             return []
         return self._list_ref_names_under(heads_dir)
 
     def _list_tag_names(self) -> List[str]:
+        """
+        List tag names beneath ``refs/tags``.
+
+        :return: Sorted tag names
+        :rtype: List[str]
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._list_tag_names()  # doctest: +SKIP
+            []
+        """
+
         tags_dir = self._repo_path / "refs" / "tags"
         if not tags_dir.exists():
             return []
         return self._list_ref_names_under(tags_dir)
 
     def _list_ref_names_under(self, root: Path) -> List[str]:
+        """
+        Recursively list file-backed ref names under a root directory.
+
+        :param root: Ref root directory
+        :type root: pathlib.Path
+        :return: Sorted relative ref names
+        :rtype: List[str]
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend._list_ref_names_under(Path("/tmp/demo-repo/refs/heads"))  # doctest: +SKIP
+            []
+        """
+
         names = []
         for path in sorted(root.rglob("*")):
             if not path.is_file():
@@ -650,20 +1445,97 @@ class _RepositoryBackend(object):
         return names
 
     def _ref_path(self, name: str) -> Path:
+        """
+        Build the branch ref path for a name.
+
+        :param name: Normalized branch name
+        :type name: str
+        :return: Absolute branch ref path
+        :rtype: pathlib.Path
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend._ref_path("main").as_posix().endswith("refs/heads/main")
+            True
+        """
+
         return self._repo_path / "refs" / "heads" / name
 
     def _tag_ref_path(self, name: str) -> Path:
+        """
+        Build the tag ref path for a name.
+
+        :param name: Normalized tag name
+        :type name: str
+        :return: Absolute tag ref path
+        :rtype: pathlib.Path
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend._tag_ref_path("v1").as_posix().endswith("refs/tags/v1")
+            True
+        """
+
         return self._repo_path / "refs" / "tags" / name
 
     def _reflog_path(self, name: str) -> Path:
+        """
+        Build the reflog path for a branch name.
+
+        :param name: Normalized branch name
+        :type name: str
+        :return: Absolute reflog path
+        :rtype: pathlib.Path
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend._reflog_path("main").name
+            'main.log'
+        """
+
         return self._repo_path / "logs" / "refs" / "heads" / (name + ".log")
 
     def _write_ref(self, name: str, commit_id: Optional[str]) -> None:
+        """
+        Persist a branch ref value.
+
+        :param name: Normalized branch name
+        :type name: str
+        :param commit_id: Commit object ID or ``None`` for an empty ref
+        :type commit_id: Optional[str]
+        :return: ``None``.
+        :rtype: None
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._write_ref("main", None)  # doctest: +SKIP
+        """
+
         path = self._ref_path(name)
         content = "" if commit_id is None else commit_id + "\n"
         _write_text_atomic(path, content)
 
     def _read_ref(self, name: str) -> Optional[str]:
+        """
+        Read a branch ref value.
+
+        :param name: Normalized branch name
+        :type name: str
+        :return: Commit object ID or ``None`` for an empty ref
+        :rtype: Optional[str]
+        :raises RevisionNotFoundError: Raised when the branch ref does not
+            exist.
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._read_ref("main")  # doctest: +SKIP
+        """
+
         path = self._ref_path(name)
         if not path.exists():
             raise RevisionNotFoundError("branch not found: %s" % name)
@@ -671,6 +1543,21 @@ class _RepositoryBackend(object):
         return content or None
 
     def _read_tag_ref(self, name: str) -> Optional[str]:
+        """
+        Read a tag ref value.
+
+        :param name: Normalized tag name
+        :type name: str
+        :return: Commit object ID or ``None`` for an empty ref
+        :rtype: Optional[str]
+        :raises RevisionNotFoundError: Raised when the tag ref does not exist.
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._read_tag_ref("v1")  # doctest: +SKIP
+        """
+
         path = self._tag_ref_path(name)
         if not path.exists():
             raise RevisionNotFoundError("tag not found: %s" % name)
@@ -678,6 +1565,24 @@ class _RepositoryBackend(object):
         return content or None
 
     def _resolve_revision(self, revision: str, allow_empty_ref: bool = False) -> Optional[str]:
+        """
+        Resolve a revision string to a commit object ID.
+
+        :param revision: Branch, tag, full ref, or commit object ID
+        :type revision: str
+        :param allow_empty_ref: Whether empty refs may resolve to ``None``
+        :type allow_empty_ref: bool
+        :return: Resolved commit ID or ``None`` for an allowed empty ref
+        :rtype: Optional[str]
+        :raises RevisionNotFoundError: Raised when the revision cannot be
+            resolved.
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._resolve_revision("main", allow_empty_ref=True)  # doctest: +SKIP
+        """
+
         if revision.startswith(OBJECT_HASH + ":"):
             self._read_object_payload("commits", revision)
             return revision
@@ -701,34 +1606,135 @@ class _RepositoryBackend(object):
         return head
 
     def _resolve_expected_head(self, parent_commit: Optional[str], expected_head: Optional[str]) -> Optional[str]:
+        """
+        Merge optimistic-concurrency head expectations.
+
+        :param parent_commit: Expected parent commit
+        :type parent_commit: Optional[str]
+        :param expected_head: Explicit expected head override
+        :type expected_head: Optional[str]
+        :return: Effective expected head
+        :rtype: Optional[str]
+        :raises ConflictError: Raised when both expectations are provided but
+            disagree.
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend._resolve_expected_head("a", None)
+            'a'
+        """
+
         if parent_commit is not None and expected_head is not None and parent_commit != expected_head:
             raise ConflictError("parent_commit and expected_head disagree")
         return expected_head if expected_head is not None else parent_commit
 
     def _object_json_path(self, object_type: str, object_id: str) -> Path:
+        """
+        Build the JSON object path for a stored object.
+
+        :param object_type: Stored object collection name
+        :type object_type: str
+        :param object_id: Object identifier
+        :type object_id: str
+        :return: Absolute object JSON path
+        :rtype: pathlib.Path
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend._object_json_path("trees", "sha256:" + "a" * 64).suffix
+            '.json'
+        """
+
         _, digest = _split_object_id(object_id)
         prefix = digest[:2]
         filename = digest[2:] + ".json"
         return self._repo_path / "objects" / object_type / OBJECT_HASH / prefix / filename
 
     def _blob_meta_path(self, object_id: str) -> Path:
+        """
+        Build the metadata path for a blob object.
+
+        :param object_id: Blob object identifier
+        :type object_id: str
+        :return: Absolute blob metadata path
+        :rtype: pathlib.Path
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend._blob_meta_path("sha256:" + "a" * 64).name.endswith(".meta.json")
+            True
+        """
+
         _, digest = _split_object_id(object_id)
         prefix = digest[:2]
         filename = digest[2:] + ".meta.json"
         return self._repo_path / "objects" / "blobs" / OBJECT_HASH / prefix / filename
 
     def _blob_data_path(self, object_id: str) -> Path:
+        """
+        Build the payload data path for a blob object.
+
+        :param object_id: Blob object identifier
+        :type object_id: str
+        :return: Absolute blob payload path
+        :rtype: pathlib.Path
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend._blob_data_path("sha256:" + "a" * 64).name.endswith(".data")
+            True
+        """
+
         _, digest = _split_object_id(object_id)
         prefix = digest[:2]
         filename = digest[2:] + ".data"
         return self._repo_path / "objects" / "blobs" / OBJECT_HASH / prefix / filename
 
     def _object_exists(self, object_type: str, object_id: str) -> bool:
+        """
+        Check whether a published object exists on disk.
+
+        :param object_type: Stored object collection name
+        :type object_type: str
+        :param object_id: Object identifier
+        :type object_id: str
+        :return: Whether the object exists
+        :rtype: bool
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend._object_exists("trees", "sha256:" + "a" * 64)
+            False
+        """
+
         if object_type == "blobs":
             return self._blob_meta_path(object_id).exists() and self._blob_data_path(object_id).exists()
         return self._object_json_path(object_type, object_id).exists()
 
     def _stage_json_object(self, txdir: Path, object_type: str, payload: object) -> str:
+        """
+        Stage a JSON-backed object into a transaction directory.
+
+        :param txdir: Transaction working directory
+        :type txdir: pathlib.Path
+        :param object_type: Stored object collection name
+        :type object_type: str
+        :param payload: Logical object payload
+        :type payload: object
+        :return: Staged object identifier
+        :rtype: str
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._stage_json_object(Path("/tmp/demo-repo/txn/demo"), "trees", {"entries": []})  # doctest: +SKIP
+        """
+
         object_id, container_bytes = _build_object_container(object_type[:-1], payload)
         path = self._stage_object_json_path(txdir, object_type, object_id)
         if not path.exists():
@@ -736,6 +1742,24 @@ class _RepositoryBackend(object):
         return object_id
 
     def _stage_blob_object(self, txdir: Path, payload: object, data: bytes) -> str:
+        """
+        Stage a blob metadata/data pair into a transaction directory.
+
+        :param txdir: Transaction working directory
+        :type txdir: pathlib.Path
+        :param payload: Blob metadata payload
+        :type payload: object
+        :param data: Blob content bytes
+        :type data: bytes
+        :return: Staged blob object identifier
+        :rtype: str
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._stage_blob_object(Path("/tmp/demo-repo/txn/demo"), {"payload_sha256": "sha256:" + "a" * 64}, b"demo")  # doctest: +SKIP
+        """
+
         object_id, container_bytes = _build_object_container("blob", payload)
         meta_path = self._stage_blob_meta_path(txdir, object_id)
         data_path = self._stage_blob_data_path(txdir, object_id)
@@ -746,24 +1770,95 @@ class _RepositoryBackend(object):
         return object_id
 
     def _stage_object_json_path(self, txdir: Path, object_type: str, object_id: str) -> Path:
+        """
+        Build the staged JSON object path for a transaction.
+
+        :param txdir: Transaction working directory
+        :type txdir: pathlib.Path
+        :param object_type: Stored object collection name
+        :type object_type: str
+        :param object_id: Object identifier
+        :type object_id: str
+        :return: Absolute staged JSON object path
+        :rtype: pathlib.Path
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend._stage_object_json_path(Path("/tmp/demo-repo/txn/demo"), "trees", "sha256:" + "a" * 64).suffix
+            '.json'
+        """
+
         _, digest = _split_object_id(object_id)
         prefix = digest[:2]
         filename = digest[2:] + ".json"
         return txdir / "objects" / object_type / OBJECT_HASH / prefix / filename
 
     def _stage_blob_meta_path(self, txdir: Path, object_id: str) -> Path:
+        """
+        Build the staged blob metadata path for a transaction.
+
+        :param txdir: Transaction working directory
+        :type txdir: pathlib.Path
+        :param object_id: Blob object identifier
+        :type object_id: str
+        :return: Absolute staged blob metadata path
+        :rtype: pathlib.Path
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend._stage_blob_meta_path(Path("/tmp/demo-repo/txn/demo"), "sha256:" + "a" * 64).name.endswith(".meta.json")
+            True
+        """
+
         _, digest = _split_object_id(object_id)
         prefix = digest[:2]
         filename = digest[2:] + ".meta.json"
         return txdir / "objects" / "blobs" / OBJECT_HASH / prefix / filename
 
     def _stage_blob_data_path(self, txdir: Path, object_id: str) -> Path:
+        """
+        Build the staged blob data path for a transaction.
+
+        :param txdir: Transaction working directory
+        :type txdir: pathlib.Path
+        :param object_id: Blob object identifier
+        :type object_id: str
+        :return: Absolute staged blob payload path
+        :rtype: pathlib.Path
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend._stage_blob_data_path(Path("/tmp/demo-repo/txn/demo"), "sha256:" + "a" * 64).name.endswith(".data")
+            True
+        """
+
         _, digest = _split_object_id(object_id)
         prefix = digest[:2]
         filename = digest[2:] + ".data"
         return txdir / "objects" / "blobs" / OBJECT_HASH / prefix / filename
 
     def _read_object_payload(self, object_type: str, object_id: str) -> Dict[str, object]:
+        """
+        Load the logical payload of a published object.
+
+        :param object_type: Stored object collection name
+        :type object_type: str
+        :param object_id: Object identifier
+        :type object_id: str
+        :return: Decoded logical payload
+        :rtype: Dict[str, object]
+        :raises RevisionNotFoundError: Raised when the object file is missing.
+        :raises IntegrityError: Raised when the stored container is malformed.
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._read_object_payload("trees", "sha256:" + "a" * 64)  # doctest: +SKIP
+        """
+
         if object_type == "blobs":
             path = self._blob_meta_path(object_id)
         else:
@@ -776,16 +1871,63 @@ class _RepositoryBackend(object):
         return dict(container["payload"])
 
     def _snapshot_for_revision(self, revision: str) -> Dict[str, str]:
+        """
+        Materialize a flat file snapshot for a revision.
+
+        :param revision: Revision to resolve
+        :type revision: str
+        :return: Mapping of repo-relative path to file object ID
+        :rtype: Dict[str, str]
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._snapshot_for_revision("main")  # doctest: +SKIP
+        """
+
         head = self._resolve_revision(revision)
         return self._snapshot_for_commit(head)
 
     def _snapshot_for_commit(self, commit_id: Optional[str]) -> Dict[str, str]:
+        """
+        Materialize a flat file snapshot for a commit.
+
+        :param commit_id: Commit object ID or ``None`` for an empty snapshot
+        :type commit_id: Optional[str]
+        :return: Mapping of repo-relative path to file object ID
+        :rtype: Dict[str, str]
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend._snapshot_for_commit(None)
+            {}
+        """
+
         if commit_id is None:
             return {}
         commit_payload = self._read_object_payload("commits", commit_id)
         return self._snapshot_for_tree(str(commit_payload["tree_id"]), prefix="")
 
     def _snapshot_for_tree(self, tree_id: str, prefix: str) -> Dict[str, str]:
+        """
+        Recursively flatten a tree object into a path map.
+
+        :param tree_id: Tree object identifier
+        :type tree_id: str
+        :param prefix: Current path prefix
+        :type prefix: str
+        :return: Mapping of repo-relative path to file object ID
+        :rtype: Dict[str, str]
+        :raises IntegrityError: Raised when the tree contains unknown entry
+            kinds.
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._snapshot_for_tree("sha256:" + "a" * 64, prefix="")  # doctest: +SKIP
+        """
+
         snapshot = {}
         tree_payload = self._read_object_payload("trees", tree_id)
         for entry in tree_payload.get("entries", []):
@@ -800,6 +1942,22 @@ class _RepositoryBackend(object):
         return snapshot
 
     def _path_info_for_file(self, path: str, file_object_id: str) -> PathInfo:
+        """
+        Build public path metadata for a file object.
+
+        :param path: Repo-relative file path
+        :type path: str
+        :param file_object_id: File object identifier
+        :type file_object_id: str
+        :return: Public file metadata
+        :rtype: PathInfo
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._path_info_for_file("demo.txt", "sha256:" + "a" * 64)  # doctest: +SKIP
+        """
+
         payload = self._read_object_payload("files", file_object_id)
         return PathInfo(
             path=path,
@@ -816,6 +1974,23 @@ class _RepositoryBackend(object):
         txdir: Path,
         operation: CommitOperationAdd,
     ) -> Tuple[str, str, Dict[str, object]]:
+        """
+        Stage the storage objects needed for an add operation.
+
+        :param txdir: Transaction working directory
+        :type txdir: pathlib.Path
+        :param operation: Public add operation
+        :type operation: CommitOperationAdd
+        :return: Tuple of blob ID, file ID, and file payload
+        :rtype: Tuple[str, str, Dict[str, object]]
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> operation = CommitOperationAdd.from_bytes("demo.txt", b"hello")
+            >>> backend._stage_add_operation(Path("/tmp/demo-repo/txn/demo"), operation)  # doctest: +SKIP
+        """
+
         normalized_path = _normalize_repo_path(operation.path_in_repo)
         data = operation.data
         file_sha256 = OBJECT_HASH + ":" + _sha256_hex(data)
@@ -844,6 +2019,26 @@ class _RepositoryBackend(object):
         return blob_object_id, file_object_id, file_payload
 
     def _apply_delete(self, snapshot: Dict[str, str], path_in_repo: str) -> None:
+        """
+        Apply a delete operation to a staged snapshot.
+
+        :param snapshot: Mutable snapshot map
+        :type snapshot: Dict[str, str]
+        :param path_in_repo: Repo-relative file or directory path
+        :type path_in_repo: str
+        :return: ``None``.
+        :rtype: None
+        :raises PathNotFoundError: Raised when the target path is absent.
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> snapshot = {"demo.txt": "sha256:" + "a" * 64}
+            >>> backend._apply_delete(snapshot, "demo.txt")
+            >>> snapshot
+            {}
+        """
+
         normalized_path = _normalize_repo_path(path_in_repo)
         removed = False
         if normalized_path in snapshot:
@@ -858,6 +2053,28 @@ class _RepositoryBackend(object):
             raise PathNotFoundError("path not found: %s" % normalized_path)
 
     def _apply_copy(self, snapshot: Dict[str, str], src_path_in_repo: str, dst_path_in_repo: str) -> None:
+        """
+        Apply a copy operation to a staged snapshot.
+
+        :param snapshot: Mutable snapshot map
+        :type snapshot: Dict[str, str]
+        :param src_path_in_repo: Source file or directory path
+        :type src_path_in_repo: str
+        :param dst_path_in_repo: Destination file or directory path
+        :type dst_path_in_repo: str
+        :return: ``None``.
+        :rtype: None
+        :raises PathNotFoundError: Raised when the source path is absent.
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> snapshot = {"demo.txt": "sha256:" + "a" * 64}
+            >>> backend._apply_copy(snapshot, "demo.txt", "copy.txt")
+            >>> sorted(snapshot)
+            ['copy.txt', 'demo.txt']
+        """
+
         src_path = _normalize_repo_path(src_path_in_repo)
         dst_path = _normalize_repo_path(dst_path_in_repo)
 
@@ -874,6 +2091,22 @@ class _RepositoryBackend(object):
             snapshot[dst_path + "/" + suffix] = object_id
 
     def _validate_snapshot(self, snapshot: Dict[str, str]) -> None:
+        """
+        Validate staged snapshot path invariants.
+
+        :param snapshot: Mutable snapshot map
+        :type snapshot: Dict[str, str]
+        :return: ``None``.
+        :rtype: None
+        :raises ConflictError: Raised when file/directory conflicts or
+            case-folding collisions are detected.
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend._validate_snapshot({"demo.txt": "sha256:" + "a" * 64})
+        """
+
         seen_per_dir = {}
         sorted_paths = sorted(snapshot)
         for path in sorted_paths:
@@ -892,6 +2125,22 @@ class _RepositoryBackend(object):
             seen_per_dir[key][folded] = parts[-1]
 
     def _stage_tree_objects(self, txdir: Path, snapshot: Dict[str, str]) -> str:
+        """
+        Stage tree objects for a flat snapshot.
+
+        :param txdir: Transaction working directory
+        :type txdir: pathlib.Path
+        :param snapshot: Flat snapshot map
+        :type snapshot: Dict[str, str]
+        :return: Root tree object identifier
+        :rtype: str
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._stage_tree_objects(Path("/tmp/demo-repo/txn/demo"), {"demo.txt": "sha256:" + "a" * 64})  # doctest: +SKIP
+        """
+
         nested = {}
         for path, file_object_id in snapshot.items():
             current = nested
@@ -903,6 +2152,22 @@ class _RepositoryBackend(object):
         return self._stage_tree_node(txdir, nested)
 
     def _stage_tree_node(self, txdir: Path, node: Dict[str, object]) -> str:
+        """
+        Recursively stage a nested tree node structure.
+
+        :param txdir: Transaction working directory
+        :type txdir: pathlib.Path
+        :param node: Nested directory structure
+        :type node: Dict[str, object]
+        :return: Tree object identifier
+        :rtype: str
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._stage_tree_node(Path("/tmp/demo-repo/txn/demo"), {"nested": {}, "demo.txt": "sha256:" + "a" * 64})  # doctest: +SKIP
+        """
+
         entries = []
         for name in sorted(node):
             value = node[name]
@@ -935,12 +2200,44 @@ class _RepositoryBackend(object):
         return self._stage_json_object(txdir, "trees", tree_payload)
 
     def _read_staged_or_published_file_payload(self, txdir: Path, object_id: str) -> Dict[str, object]:
+        """
+        Read a file payload from staged or already-published storage.
+
+        :param txdir: Transaction working directory
+        :type txdir: pathlib.Path
+        :param object_id: File object identifier
+        :type object_id: str
+        :return: File payload mapping
+        :rtype: Dict[str, object]
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._read_staged_or_published_file_payload(Path("/tmp/demo-repo/txn/demo"), "sha256:" + "a" * 64)  # doctest: +SKIP
+        """
+
         staged_path = self._stage_object_json_path(txdir, "files", object_id)
         if staged_path.exists():
             return dict(_read_json(staged_path)["payload"])
         return self._read_object_payload("files", object_id)
 
     def _publish_staged_objects(self, txdir: Path) -> None:
+        """
+        Publish staged transaction objects into the repository object store.
+
+        :param txdir: Transaction working directory
+        :type txdir: pathlib.Path
+        :return: ``None``.
+        :rtype: None
+        :raises IntegrityError: Raised when a staged object conflicts with an
+            existing published object.
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._publish_staged_objects(Path("/tmp/demo-repo/txn/demo"))  # doctest: +SKIP
+        """
+
         staged_root = txdir / "objects"
         if not staged_root.exists():
             return
@@ -958,6 +2255,22 @@ class _RepositoryBackend(object):
             os.replace(str(path), str(target))
 
     def _commit_info(self, commit_id: str, revision: str) -> CommitInfo:
+        """
+        Build public commit metadata for an existing commit.
+
+        :param commit_id: Commit object identifier
+        :type commit_id: str
+        :param revision: Revision name associated with the commit
+        :type revision: str
+        :return: Public commit metadata
+        :rtype: CommitInfo
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._commit_info("sha256:" + "a" * 64, "main")  # doctest: +SKIP
+        """
+
         commit_payload = self._read_object_payload("commits", commit_id)
         return CommitInfo(
             commit_id=commit_id,
@@ -968,6 +2281,22 @@ class _RepositoryBackend(object):
         )
 
     def _verify_commit_closure(self, commit_id: str) -> None:
+        """
+        Verify commit reachability and the transitive closure of parent links.
+
+        :param commit_id: Commit object identifier
+        :type commit_id: str
+        :return: ``None``.
+        :rtype: None
+        :raises IntegrityError: Raised when the commit closure cannot be read or
+            validated.
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._verify_commit_closure("sha256:" + "a" * 64)  # doctest: +SKIP
+        """
+
         visited = set()
         pending = [commit_id]
 
@@ -985,6 +2314,22 @@ class _RepositoryBackend(object):
                 raise IntegrityError("invalid commit closure at %s: %s" % (current_commit_id, err))
 
     def _verify_tree(self, tree_id: str) -> None:
+        """
+        Verify a tree object and all referenced descendants.
+
+        :param tree_id: Tree object identifier
+        :type tree_id: str
+        :return: ``None``.
+        :rtype: None
+        :raises IntegrityError: Raised when the tree or any descendant entry is
+            invalid.
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._verify_tree("sha256:" + "a" * 64)  # doctest: +SKIP
+        """
+
         try:
             tree_payload = self._read_object_payload("trees", tree_id)
             for entry in tree_payload.get("entries", []):
@@ -1000,6 +2345,22 @@ class _RepositoryBackend(object):
             raise IntegrityError("invalid tree %s: %s" % (tree_id, err))
 
     def _verify_file_object(self, file_object_id: str) -> None:
+        """
+        Verify a file object and its referenced blob content.
+
+        :param file_object_id: File object identifier
+        :type file_object_id: str
+        :return: ``None``.
+        :rtype: None
+        :raises IntegrityError: Raised when file metadata, blob metadata, or
+            blob content is inconsistent.
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._verify_file_object("sha256:" + "a" * 64)  # doctest: +SKIP
+        """
+
         try:
             payload = self._read_object_payload("files", file_object_id)
             blob_object_id = str(payload["content_object_id"])
@@ -1019,6 +2380,21 @@ class _RepositoryBackend(object):
             raise IntegrityError("invalid file object %s: %s" % (file_object_id, err))
 
     def _acquire_write_lock(self) -> _WriteLock:
+        """
+        Acquire the repository's single-writer lock.
+
+        :return: Lock handle that must be released by the caller
+        :rtype: _WriteLock
+        :raises LockTimeoutError: Raised when another writer already holds the
+            lock.
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> lock = backend._acquire_write_lock()  # doctest: +SKIP
+            >>> lock.release()  # doctest: +SKIP
+        """
+
         lock_dir = self._repo_path / "locks" / WRITE_LOCK_DIR
         owner_path = lock_dir / "owner.json"
         try:
@@ -1037,6 +2413,22 @@ class _RepositoryBackend(object):
         return _WriteLock(lock_dir=lock_dir, owner_path=owner_path)
 
     def _create_txdir(self, revision: str, expected_head: Optional[str]) -> Path:
+        """
+        Create a new transaction working directory.
+
+        :param revision: Target revision for the transaction
+        :type revision: str
+        :param expected_head: Expected branch head for optimistic concurrency
+        :type expected_head: Optional[str]
+        :return: Absolute transaction directory path
+        :rtype: pathlib.Path
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._create_txdir("main", None)  # doctest: +SKIP
+        """
+
         txid = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(4)
         txdir = self._repo_path / "txn" / txid
         txdir.mkdir(parents=True, exist_ok=False)
@@ -1053,13 +2445,55 @@ class _RepositoryBackend(object):
         return txdir
 
     def _write_tx_state(self, txdir: Path, state: str) -> None:
+        """
+        Persist the current transaction state marker.
+
+        :param txdir: Transaction working directory
+        :type txdir: pathlib.Path
+        :param state: Transaction state label
+        :type state: str
+        :return: ``None``.
+        :rtype: None
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._write_tx_state(Path("/tmp/demo-repo/txn/demo"), "PREPARING")  # doctest: +SKIP
+        """
+
         _write_json_atomic(txdir / "STATE.json", {"state": state, "updated_at": _utc_now()})
 
     def _cleanup_txdir(self, txdir: Path) -> None:
+        """
+        Remove a transaction directory if it still exists.
+
+        :param txdir: Transaction working directory
+        :type txdir: pathlib.Path
+        :return: ``None``.
+        :rtype: None
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._cleanup_txdir(Path("/tmp/demo-repo/txn/demo"))  # doctest: +SKIP
+        """
+
         if txdir.exists():
             shutil.rmtree(str(txdir))
 
     def _recover_transactions(self) -> None:
+        """
+        Remove abandoned transaction directories from previous interrupted work.
+
+        :return: ``None``.
+        :rtype: None
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._recover_transactions()  # doctest: +SKIP
+        """
+
         txn_root = self._repo_path / "txn"
         if not txn_root.exists():
             return
@@ -1075,6 +2509,26 @@ class _RepositoryBackend(object):
         new_head: Optional[str],
         message: str,
     ) -> None:
+        """
+        Append a reflog record for a branch update.
+
+        :param revision: Branch name
+        :type revision: str
+        :param old_head: Previous head commit
+        :type old_head: Optional[str]
+        :param new_head: New head commit
+        :type new_head: Optional[str]
+        :param message: Short reflog message
+        :type message: str
+        :return: ``None``.
+        :rtype: None
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._append_reflog("main", None, "sha256:" + "a" * 64, "seed")  # doctest: +SKIP
+        """
+
         path = self._reflog_path(revision)
         path.parent.mkdir(parents=True, exist_ok=True)
         record = {
@@ -1090,6 +2544,22 @@ class _RepositoryBackend(object):
             file_.write("\n")
 
     def _materialize_content_pool(self, file_payload: Dict[str, object], data: bytes) -> None:
+        """
+        Materialize content into the repository's deduplicated cache pool.
+
+        :param file_payload: Public file payload metadata
+        :type file_payload: Dict[str, object]
+        :param data: Logical file content
+        :type data: bytes
+        :return: ``None``.
+        :rtype: None
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._materialize_content_pool({"sha256": "sha256:" + "a" * 64, "oid": "b" * 40, "logical_size": 4}, b"demo")  # doctest: +SKIP
+        """
+
         content_key = str(file_payload["sha256"]).split(":", 1)[1]
         pool_path = self._repo_path / "cache" / "materialized" / OBJECT_HASH / content_key[:2] / (content_key[2:] + ".data")
         meta_path = self._repo_path / "cache" / "materialized" / "meta" / (content_key + ".json")
@@ -1111,6 +2581,24 @@ class _RepositoryBackend(object):
         )
 
     def _ensure_detached_view(self, target_path: Path, data: bytes, file_payload: Dict[str, object]) -> None:
+        """
+        Ensure a detached user-view path matches the requested file content.
+
+        :param target_path: User-visible target path
+        :type target_path: pathlib.Path
+        :param data: Logical file content
+        :type data: bytes
+        :param file_payload: Public file payload metadata
+        :type file_payload: Dict[str, object]
+        :return: ``None``.
+        :rtype: None
+
+        Example::
+
+            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._ensure_detached_view(Path("/tmp/demo-repo/cache/files/demo.txt"), b"demo", {"sha256": "sha256:" + "a" * 64})  # doctest: +SKIP
+        """
+
         expected_sha256 = str(file_payload["sha256"])
         target_path.parent.mkdir(parents=True, exist_ok=True)
         if target_path.exists():

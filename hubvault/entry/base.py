@@ -58,6 +58,12 @@ class ClickWarningException(ClickException):
 
     :param message: The error message.
     :type message: str
+
+    Example::
+
+        >>> err = ClickWarningException("warn")
+        >>> err.format_message()
+        'warn'
     """
 
     def show(self, file: Optional[IO] = None) -> None:
@@ -67,6 +73,13 @@ class ClickWarningException(ClickException):
         :param file: File to write the output to. This parameter is ignored and
                      output is always written to ``sys.stderr``.
         :type file: Optional[IO]
+        :return: ``None``.
+        :rtype: None
+
+        Example::
+
+            >>> err = ClickWarningException("warn")
+            >>> err.show()  # doctest: +SKIP
         """
         click.secho(self.format_message(), fg='yellow', file=sys.stderr)
 
@@ -77,6 +90,12 @@ class ClickErrorException(ClickException):
 
     :param message: The error message.
     :type message: str
+
+    Example::
+
+        >>> err = ClickErrorException("error")
+        >>> err.format_message()
+        'error'
     """
 
     def show(self, file: Optional[IO] = None) -> None:
@@ -86,6 +105,13 @@ class ClickErrorException(ClickException):
         :param file: File to write the output to. This parameter is ignored and
                      output is always written to ``sys.stderr``.
         :type file: Optional[IO]
+        :return: ``None``.
+        :rtype: None
+
+        Example::
+
+            >>> err = ClickErrorException("error")
+            >>> err.show()  # doctest: +SKIP
         """
         click.secho(self.format_message(), fg='red', file=sys.stderr)
 
@@ -144,6 +170,12 @@ class KeyboardInterrupted(ClickWarningException):
 
     :param msg: Custom message to display. Defaults to ``"Interrupted."``.
     :type msg: Optional[str]
+
+    Example::
+
+        >>> err = KeyboardInterrupted()
+        >>> err.exit_code
+        7
     """
     exit_code = 0x7
 
@@ -153,6 +185,14 @@ class KeyboardInterrupted(ClickWarningException):
 
         :param msg: Custom message to display. Defaults to ``"Interrupted."``.
         :type msg: Optional[str]
+        :return: ``None``.
+        :rtype: None
+
+        Example::
+
+            >>> err = KeyboardInterrupted()
+            >>> err.format_message()
+            'Interrupted.'
         """
         ClickWarningException.__init__(self, msg or 'Interrupted.')
 
@@ -186,8 +226,48 @@ def command_wrap() -> Callable[[Callable[P, R]], Callable[P, R]]:
     """
 
     def _decorator(func: Callable[P, R]) -> Callable[P, R]:
+        """
+        Wrap a single command callback with standardized error handling.
+
+        :param func: Original command callback
+        :type func: Callable[P, R]
+        :return: Wrapped callback
+        :rtype: Callable[P, R]
+
+        Example::
+
+            >>> import click
+            >>> wrapper = command_wrap()
+            >>> wrapped = wrapper(click.Command("demo", callback=lambda: None))
+            >>> callable(wrapped)
+            True
+        """
+
         @wraps(func)
         def _new_func(*args: P.args, **kwargs: P.kwargs) -> R:
+            """
+            Invoke the wrapped command callback.
+
+            :param args: Positional arguments forwarded to the wrapped callback
+            :type args: P.args
+            :param kwargs: Keyword arguments forwarded to the wrapped callback
+            :type kwargs: P.kwargs
+            :return: Callback return value
+            :rtype: R
+            :raises click.ClickException: Re-raised for expected Click errors.
+            :raises KeyboardInterrupted: Raised when a keyboard interrupt is
+                converted into the public CLI exception.
+
+            Example::
+
+                >>> import click
+                >>> @command_wrap()
+                ... def callback():
+                ...     return "ok"
+                >>> callback()
+                'ok'
+            """
+
             try:
                 return func(*args, **kwargs)
             except ClickException:

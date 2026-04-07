@@ -34,6 +34,12 @@ class RepoInfo:
     :type head: Optional[str]
     :param refs: Visible refs in the repository
     :type refs: List[str]
+
+    Example::
+
+        >>> info = RepoInfo("/tmp/repo", 1, "main", None)
+        >>> info.default_branch
+        'main'
     """
 
     repo_path: str
@@ -58,6 +64,12 @@ class CommitInfo:
     :type parents: List[str]
     :param message: Commit message
     :type message: str
+
+    Example::
+
+        >>> info = CommitInfo("sha256:c1", "main", "sha256:t1")
+        >>> info.revision
+        'main'
     """
 
     commit_id: str
@@ -87,6 +99,12 @@ class PathInfo:
     :type sha256: Optional[str]
     :param etag: Public ETag value for download-facing APIs
     :type etag: Optional[str]
+
+    Example::
+
+        >>> info = PathInfo("demo.txt", "file", 4, "oid", "blob", "sha256:abc", "etag")
+        >>> info.path
+        'demo.txt'
     """
 
     path: str
@@ -109,6 +127,12 @@ class BlobLfsInfo:
     :type sha256: str
     :param pointer_size: Size of the canonical pointer content
     :type pointer_size: int
+
+    Example::
+
+        >>> info = BlobLfsInfo(1024, "sha256:abc", 128)
+        >>> info.pointer_size
+        128
     """
 
     size: int
@@ -129,6 +153,12 @@ class VerifyReport:
     :type warnings: List[str]
     :param errors: Fatal verification errors
     :type errors: List[str]
+
+    Example::
+
+        >>> report = VerifyReport(True)
+        >>> report.ok
+        True
     """
 
     ok: bool

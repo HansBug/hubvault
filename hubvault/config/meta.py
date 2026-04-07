@@ -1,6 +1,24 @@
 """
-Overview:
-    Meta information for hubvault package.
+Metadata constants for the :mod:`hubvault` package.
+
+This module centralizes the small set of package metadata values that are
+shared by packaging logic and the command-line interface.
+
+The module contains:
+
+* :data:`__TITLE__` - Canonical package title
+* :data:`__VERSION__` - Package version string
+* :data:`__DESCRIPTION__` - Short package description
+* :data:`__AUTHOR__` - Comma-separated author list
+* :data:`__AUTHOR_EMAIL__` - Comma-separated author email list
+
+Example::
+
+    >>> from hubvault.config.meta import __TITLE__, __VERSION__
+    >>> __TITLE__
+    'hubvault'
+    >>> isinstance(__VERSION__, str)
+    True
 """
 
 #: Title of this project (should be `hubvault`).

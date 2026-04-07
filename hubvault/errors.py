@@ -17,64 +17,122 @@ The module contains:
 * :class:`VerificationError` - Raised when repository verification fails
 * :class:`LockTimeoutError` - Raised when a write lock cannot be acquired
 * :class:`UnsupportedPathError` - Raised when a repo path or ref name is invalid
+
+Example::
+
+    >>> from hubvault.errors import RepoNotFoundError
+    >>> err = RepoNotFoundError("missing")
+    >>> str(err)
+    'missing'
 """
 
 
 class HubVaultError(Exception):
     """
     Base exception for all :mod:`hubvault` errors.
+
+    Example::
+
+        >>> err = HubVaultError("boom")
+        >>> str(err)
+        'boom'
     """
 
 
 class RepoNotFoundError(HubVaultError):
     """
     Raised when a repository root does not contain a valid ``hubvault`` repo.
+
+    Example::
+
+        >>> str(RepoNotFoundError("missing"))
+        'missing'
     """
 
 
 class RepoAlreadyExistsError(HubVaultError):
     """
     Raised when repository creation targets an existing or non-empty location.
+
+    Example::
+
+        >>> str(RepoAlreadyExistsError("exists"))
+        'exists'
     """
 
 
 class RevisionNotFoundError(HubVaultError):
     """
     Raised when a branch, tag, or commit identifier cannot be resolved.
+
+    Example::
+
+        >>> str(RevisionNotFoundError("revision"))
+        'revision'
     """
 
 
 class PathNotFoundError(HubVaultError):
     """
     Raised when a requested logical repo path does not exist in a revision.
+
+    Example::
+
+        >>> str(PathNotFoundError("path"))
+        'path'
     """
 
 
 class ConflictError(HubVaultError):
     """
     Raised when optimistic concurrency checks fail during a write operation.
+
+    Example::
+
+        >>> str(ConflictError("conflict"))
+        'conflict'
     """
 
 
 class IntegrityError(HubVaultError):
     """
     Raised when persisted data does not match its recorded integrity metadata.
+
+    Example::
+
+        >>> str(IntegrityError("broken"))
+        'broken'
     """
 
 
 class VerificationError(HubVaultError):
     """
     Raised when a repository fails validation checks.
+
+    Example::
+
+        >>> str(VerificationError("verify"))
+        'verify'
     """
 
 
 class LockTimeoutError(HubVaultError):
     """
     Raised when a write lock cannot be acquired.
+
+    Example::
+
+        >>> str(LockTimeoutError("locked"))
+        'locked'
     """
 
 
 class UnsupportedPathError(HubVaultError):
     """
     Raised when a repo path or ref name violates repository constraints.
+
+    Example::
+
+        >>> str(UnsupportedPathError("bad path"))
+        'bad path'
     """

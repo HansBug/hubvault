@@ -15,6 +15,16 @@ The package contains:
 * :class:`CommitInfo` - Commit metadata model
 * :class:`PathInfo` - Public path metadata model
 * :class:`VerifyReport` - Verification result model
+
+Example::
+
+    >>> from hubvault import CommitOperationAdd, HubVaultApi
+    >>> api = HubVaultApi("/tmp/demo-repo")
+    >>> _ = api.create_repo(exist_ok=True)
+    >>> _ = api.create_commit(
+    ...     operations=[CommitOperationAdd.from_bytes("demo.txt", b"hello")],
+    ...     commit_message="seed",
+    ... )
 """
 
 from .api import HubVaultApi

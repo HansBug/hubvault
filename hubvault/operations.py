@@ -28,6 +28,12 @@ class CommitOperationAdd:
     :type data: bytes
     :param content_type: Optional content type hint
     :type content_type: Optional[str]
+
+    Example::
+
+        >>> op = CommitOperationAdd.from_bytes("demo.txt", b"hello")
+        >>> op.path_in_repo
+        'demo.txt'
     """
 
     path_in_repo: str
@@ -52,6 +58,12 @@ class CommitOperationAdd:
         :type content_type: Optional[str]
         :return: A new add operation
         :rtype: CommitOperationAdd
+
+        Example::
+
+            >>> op = CommitOperationAdd.from_bytes("demo.txt", b"hello")
+            >>> op.data
+            b'hello'
         """
 
         return cls(path_in_repo=path_in_repo, data=data, content_type=content_type)
@@ -77,6 +89,17 @@ class CommitOperationAdd:
         :type content_type: Optional[str]
         :return: A new add operation
         :rtype: CommitOperationAdd
+        :raises OSError: Raised when the source file cannot be opened or read.
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.NamedTemporaryFile(delete=False) as file_:
+            ...     _ = file_.write(b"hello")
+            ...     path = file_.name
+            >>> op = CommitOperationAdd.from_file("demo.txt", path)
+            >>> op.path_in_repo
+            'demo.txt'
         """
 
         with open(path, "rb") as file_:
@@ -101,6 +124,14 @@ class CommitOperationAdd:
         :type content_type: Optional[str]
         :return: A new add operation
         :rtype: CommitOperationAdd
+        :raises OSError: Raised when the file-like object cannot be read.
+
+        Example::
+
+            >>> import io
+            >>> op = CommitOperationAdd.from_fileobj("demo.txt", io.BytesIO(b"hello"))
+            >>> op.data
+            b'hello'
         """
 
         data = fileobj.read()
@@ -114,6 +145,12 @@ class CommitOperationDelete:
 
     :param path_in_repo: Repo-relative path to delete
     :type path_in_repo: str
+
+    Example::
+
+        >>> op = CommitOperationDelete("old/file.txt")
+        >>> op.path_in_repo
+        'old/file.txt'
     """
 
     path_in_repo: str
@@ -128,6 +165,12 @@ class CommitOperationCopy:
     :type src_path_in_repo: str
     :param path_in_repo: Destination repo-relative path
     :type path_in_repo: str
+
+    Example::
+
+        >>> op = CommitOperationCopy("src/file.txt", "dst/file.txt")
+        >>> op.path_in_repo
+        'dst/file.txt'
     """
 
     src_path_in_repo: str
