@@ -24,16 +24,29 @@ repo_root/
 
   objects/
     commits/
+      sha256/
     trees/
+      sha256/
     files/
+      sha256/
     blobs/
+      sha256/
 
   txn/
   locks/
   cache/
+    materialized/
+      sha256/
+      meta/
+    views/
+      files/
+      snapshots/
     files/
     snapshots/
   quarantine/
+    objects/
+    packs/
+    manifests/
 ```
 
 说明：
@@ -45,8 +58,34 @@ repo_root/
 - `objects/`：不可变 commit/tree/file/blob 对象
 - `txn/`：写事务暂存目录
 - `locks/`：写锁与 GC 锁目录
-- `cache/`：可丢弃缓存
-- `quarantine/`：待删对象隔离区
+- `cache/materialized/`：按内容去重的内部只读内容池
+- `cache/views/`：单文件/快照用户视图的元数据
+- `cache/files/`、`cache/snapshots/`：保留 repo 相对路径后缀的用户读取视图
+- `quarantine/`：待删对象与后续 pack/manifests 的隔离区
+
+### 1.1.1 当前 MVP 已实现的具体布局
+
+截至当前实现，`hubvault.repo` 已按如下目录和命名约束创建仓库骨架：
+
+```text
+repo_root/
+  FORMAT
+  repo.json
+  refs/{heads,tags}/...
+  logs/refs/{heads,tags}/...
+  objects/{commits,trees,files,blobs}/sha256/<prefix>/<digest>...
+  txn/<txid>/
+  locks/write.lock/
+  cache/materialized/sha256/<prefix>/<digest>.data
+  cache/materialized/meta/<content_key>.json
+  cache/views/files/<view_key>.json
+  cache/views/snapshots/
+  cache/files/<view_key>/<repo_relative_path>
+  cache/snapshots/
+  quarantine/{objects,packs,manifests}/
+```
+
+当前版本的 `hf_hub_download()` 默认使用 `cache/files/<view_key>/<repo_relative_path>` 作为返回路径根，从而保证用户拿到的最终文件路径保留原始 repo 相对路径后缀。
 
 ### 1.2 自包含与可搬迁约束
 

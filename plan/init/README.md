@@ -17,15 +17,17 @@
 - `hubvault.config.meta` 中的公开包元信息
 - `hubvault.entry` 下的 CLI 壳层与版本输出
 - `pytest` / `make unittest` / `make package` 等基础工程能力
+- 已落地的 Phase 0-1 MVP 公开仓库 API：`hubvault.api`、`hubvault.errors`、`hubvault.models`、`hubvault.operations`、`hubvault.repo`
+- 已落地的本地仓库目录布局、whole-file blob 提交/读取、`hf_hub_download()` 路径保真与只读/可重建视图语义
+- 已落地的 public-only 单元测试，覆盖新仓库 API 的核心行为与回归要求
 
 尚未落地的核心能力包括：
 
-- 面向仓库的公开 Python API
-- commit/tree/blob/chunk 等对象模型
-- 本地磁盘格式与事务协议实现
-- verify、gc、compact、merge 等一致性与维护能力
+- branch/tag 生命周期管理、`snapshot_download()`、历史查询等 Phase 2 可用性增强
+- chunk/pack/index 大文件引擎
+- full verify、gc、compact、merge 等长期维护能力
 
-因此，初始化方案必须显式围绕“当前仓库几乎没有存储内核实现”这一现实来规划，而不是假设系统已经具备 Git 或 Hub 级别能力。
+因此，这组初始化方案既要记录已经实现的 MVP 基线，也要继续约束后续 phase，避免把已经落地的格式和公开语义重新漂移回“抽象设想”。
 
 ## 2. 使用方式
 
@@ -64,7 +66,7 @@
 - 先打通 `create_repo -> create_commit -> list -> read -> reset -> quick_verify`
 - `hf_hub_download()` 与 `snapshot_download()` 返回的文件路径必须保留 repo 内相对路径后缀
 - 文件元数据要同时维护 HF 兼容的 `oid` / `blob_id` 与 `sha256`
-- 所有测试走公开 API、公开 CLI 或受版本控制的规划文档，不依赖 private / protected 实现细节
+- 所有单元测试走公开 API 或公开 CLI，不依赖 private / protected 实现细节，也不把规划文档本身当成单测对象
 
 更重的能力放到后续 phase：
 
@@ -81,3 +83,4 @@
 - 所有持久化仓库状态必须位于 repo root 内，且不得依赖绝对路径或仓库外 sidecar 数据。
 - 任何新增能力都必须配套公开表面的单元测试。
 - 每次改动完成后都要跑与改动面匹配的回归；结束前必须通过要求的完整回归集。
+- 当前 MVP 的最小验收基线是：`make unittest` 通过，且公开 API 文档生成 `make rst_auto` 可跑通。

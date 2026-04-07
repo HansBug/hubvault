@@ -30,6 +30,23 @@ from hubvault import (
 
 `hubvault.__init__` 应只做薄 re-export，不承载业务逻辑。
 
+### 2.1 当前已落地公开入口
+
+当前 MVP 已经对外暴露如下公开入口与模型：
+
+- `HubVaultApi`
+- `CommitOperationAdd`
+- `CommitOperationDelete`
+- `CommitOperationCopy`
+- `RepoInfo`
+- `CommitInfo`
+- `PathInfo`
+- `BlobLfsInfo`
+- `VerifyReport`
+- `HubVaultError` 及其公开子类
+
+这些符号当前已经由 `hubvault.__init__` 统一 re-export，测试也应优先从这里或其对应公开模块导入。
+
 ## 3. 公开数据模型
 
 建议优先定义以下公开 dataclass：
@@ -141,6 +158,12 @@ class CommitOperationAdd:
 - `hf_hub_download()`
 - `reset_ref()`
 - `quick_verify()`
+
+当前状态：
+
+- 上述方法都已经在 `HubVaultApi` 中落地并接入本地嵌入式仓库实现
+- `hf_hub_download()` 已保证默认返回路径和 `local_dir` 模式都保留 repo 相对路径后缀
+- `open_file()` 返回只读二进制流；下载类接口返回的是与 repo 真相隔离、可重建的用户视图路径
 
 MVP 的修改语义必须保持明确：
 

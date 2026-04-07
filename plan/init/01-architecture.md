@@ -18,9 +18,48 @@
 
 这意味着 `hubvault` 的本质是“嵌入式事务化对象仓库”，不是 git workspace 包装器。
 
-## 2. 推荐包结构
+## 2. 包结构
 
-建议在当前仓库基础上逐步扩展为：
+### 2.1 当前已落地结构
+
+Phase 0-1 MVP 目前已经落地如下公开模块：
+
+```text
+hubvault/
+  __init__.py
+  api.py
+  errors.py
+  models.py
+  operations.py
+  repo.py
+
+  config/
+    __init__.py
+    meta.py
+
+  entry/
+    __init__.py
+    base.py
+    cli.py
+    dispatch.py
+```
+
+含义：
+
+- `api.py`
+  公开 `HubVaultApi`，保持对外入口稳定且尽量贴近 HF 风格调用手感。
+- `errors.py`
+  公开异常模型，避免调用方依赖内部实现细节。
+- `models.py`
+  公开 `RepoInfo`、`CommitInfo`、`PathInfo`、`BlobLfsInfo`、`VerifyReport`。
+- `operations.py`
+  公开 `CommitOperationAdd/Delete/Copy`。
+- `repo.py`
+  当前 MVP 的嵌入式本地仓库后端，负责磁盘格式、事务、对象读写、下载视图和快速校验。
+
+### 2.2 后续推荐拆分结构
+
+在当前 MVP 稳定后，建议在当前仓库基础上逐步扩展为：
 
 ```text
 hubvault/
@@ -59,8 +98,8 @@ hubvault/
 
 分阶段实现建议：
 
-- Phase 0-1 先补 `api.py`、`errors.py`、`models.py`、`operations.py`、`repo.py`
-- Phase 1 再补 `services/repository.py`、`services/commit.py`、`storage/object_store.py`、`storage/blob_store.py`
+- Phase 0-1 已经落地 `api.py`、`errors.py`、`models.py`、`operations.py`、`repo.py`
+- Phase 2-3 再按需要拆分 `services/repository.py`、`services/commit.py`、`storage/object_store.py`、`storage/blob_store.py`
 - Phase 3 之后再引入 `chunk_store.py`、`pack_store.py`、`index_store.py`
 
 ## 3. 分层职责

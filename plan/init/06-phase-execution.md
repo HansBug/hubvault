@@ -4,6 +4,15 @@
 
 执行顺序遵循一个原则：先交付最小可用、可验证、可回归的本地仓库核心，再逐步扩充大文件、维护和性能能力。
 
+## 当前状态
+
+截至当前仓库实现状态：
+
+- Phase 0 的协议冻结、测试制度、repo 自包含/可搬迁约束、HF 风格路径与文件元数据语义已经落入 `plan/init/`、`AGENTS.md` 与公开源码接口。
+- Phase 1 的 MVP 公开模块 `hubvault.api`、`hubvault.errors`、`hubvault.models`、`hubvault.operations`、`hubvault.repo` 已经落地。
+- 当前 MVP 已支持 `create_repo -> create_commit -> list -> read -> hf_hub_download -> reset_ref -> quick_verify` 的闭环。
+- 当前回归基线应至少包括 `make unittest` 与 `make rst_auto`。
+
 优先级排序如下：
 
 1. 公开 API、对象模型、事务协议
