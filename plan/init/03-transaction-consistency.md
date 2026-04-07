@@ -30,7 +30,8 @@ locks/write.lock/
 - `hostname`
 - `started_at`
 - `heartbeat_at`
-- `repo_path`
+
+这些字段仅用于诊断与恢复，不得成为仓库可用性的前提；其中也不应记录必须参与正确性的绝对路径。
 
 如果锁已存在，则：
 
@@ -55,6 +56,11 @@ GC 启动前必须确认没有活跃写事务。
 2. 判断 `heartbeat_at` 是否过期
 3. 如平台支持，再判断进程是否仍存活
 4. 只有满足“锁已超时且持有者不存在或不可达”时，才允许接管
+
+仓库搬迁或归档恢复后的要求：
+
+- 关闭状态下搬迁 repo root 不应留下不可恢复的路径依赖
+- 如果归档中包含陈旧锁目录，打开仓库时应把它视为可恢复诊断状态，而不是永久阻塞条件
 
 ## 3. 事务状态机
 
@@ -156,6 +162,8 @@ def create_commit(self, revision, operations, parent_commit=None):
 - 对 `UPDATED_REF` 的事务补写 reflog
 - 对其余状态的事务执行回收
 
+这一恢复过程不应依赖旧路径上下文；只要 repo root 本身完整存在，就应能在新位置完成恢复。
+
 ## 7. ref 日志
 
 每次 branch/tag 变更都应记录 append-only reflog。
@@ -188,6 +196,7 @@ MVP 的 `quick_verify()` 重点检查：
 - commit/tree/file/blob 对象封装和 checksum 是否正常
 - `File -> Blob` 引用闭包是否完整
 - 残留事务是否可恢复或可安全清理
+- 仓库内没有要求访问 repo root 外持久化状态的格式残留
 
 ### 8.2 full verify
 

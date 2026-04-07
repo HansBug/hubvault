@@ -24,6 +24,7 @@
 * [ ] 冻结 `plan/init` 中的对象模型、目录布局、事务状态机和 API 命名。
 * [ ] 明确 `HubVaultApi`、`CommitOperation*`、`RepoInfo`、`CommitInfo`、`PathInfo`、`VerifyReport` 的公开字段。
 * [ ] 固化 `AGENTS.md` 中的测试制度、公开表面约束和回归要求。
+* [ ] 冻结“repo root 自包含且可整体搬迁/归档恢复”的格式红线，禁止把真相写到仓库外部。
 * [ ] 为 `plan/init` 与 `AGENTS.md` 增加结构性单元测试，防止后续回退到非执行式计划。
 
 ### Checklist
@@ -31,6 +32,7 @@
 * [ ] `plan/init` 文档与当前仓库骨架状态一致，没有假设已存在的实现。
 * [ ] 所有 Phase 都包含可执行范围、Todo 和 Checklist。
 * [ ] 新增测试只依赖公开文件和公开表面，不使用 private / protected 细节。
+* [ ] 自包含/可搬迁要求已经在范围、格式、API 和测试路线图中明确落地。
 * [ ] `make unittest` 通过。
 
 ## Phase 1. MVP 仓库核心
@@ -48,6 +50,7 @@
 * [ ] 实现 whole-file blob 存储、commit/tree/file/blob 对象写入和读取。
 * [ ] 实现 `create_commit()`、`list_repo_tree()`、`list_repo_files()`、`open_file()`、`read_bytes()`、`hf_hub_download()`。
 * [ ] 实现 `reset_ref()` 与最小 `quick_verify()`。
+* [ ] 保证所有持久化元数据不包含宿主绝对路径，且仓库移动后可以直接重新打开。
 * [ ] 为上述能力补齐只经由公开 API 的单元测试和必要的临时目录集成测试。
 
 ### Checklist
@@ -57,6 +60,7 @@
 * [ ] 可以列出目录树和文件清单。
 * [ ] 可以将分支回退到历史 commit。
 * [ ] `quick_verify()` 能在正常仓库上返回成功报告。
+* [ ] 仓库关闭后整体移动路径，再次打开仍能读取、回滚和校验。
 * [ ] `make unittest` 通过。
 
 ## Phase 2. 可用性增强
@@ -72,6 +76,7 @@
 * [ ] 实现 `upload_file()`、`upload_folder()`、`delete_file()`、`delete_folder()`。
 * [ ] 实现 `snapshot_download()`，返回只读快照缓存目录。
 * [ ] 增强 `quick_verify()` 输出，增加 refs、对象和事务残留诊断。
+* [ ] 增加仓库打包/解包恢复后的公开 API 回归用例。
 * [ ] 增加公开 API 的用例测试，覆盖 refs、文件删除、快照缓存和回滚。
 
 ### Checklist
@@ -80,6 +85,7 @@
 * [ ] 目录上传与删除行为不依赖内部 helper。
 * [ ] `snapshot_download()` 产出的目录内容与目标 revision 一致。
 * [ ] reflog 至少能支持审计与恢复诊断。
+* [ ] 仓库归档恢复后不需要任何外部 sidecar 状态即可继续工作。
 * [ ] `make unittest` 通过。
 
 ## Phase 3. 大文件引擎
@@ -102,6 +108,7 @@
 * [ ] `read_range()` 在大文件上可工作且不需要重组全量文件。
 * [ ] pack/manifest 更新遵守事务发布原则。
 * [ ] 旧的 whole-file blob 仓库仍可兼容读取。
+* [ ] chunk/pack 引入后仍不破坏仓库整体搬迁与归档恢复能力。
 * [ ] `make unittest` 通过。
 
 ## Phase 4. 一致性与维护能力
@@ -125,6 +132,7 @@
 * [ ] `full_verify()` 能定位损坏对象和范围。
 * [ ] GC 不会删除任何可达对象。
 * [ ] compact 只在新 pack 和新索引发布后才删除旧数据。
+* [ ] GC/compact 后仓库仍然保持自包含和可搬迁。
 * [ ] `make unittest` 通过。
 
 ## Phase 5. 性能、文档与发布

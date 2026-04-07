@@ -48,7 +48,24 @@ repo_root/
 - `cache/`：可丢弃缓存
 - `quarantine/`：待删对象隔离区
 
-### 1.2 Phase 3 扩展布局
+### 1.2 自包含与可搬迁约束
+
+repo root 必须是完整仓库的唯一持久化边界。
+
+强制规则：
+
+- 正式仓库状态只能存放在 repo root 内
+- 持久化元数据中不得写入宿主绝对路径
+- 不使用指向 repo root 之外的符号链接、sidecar 数据目录或外部数据库来承载仓库真相
+- 所有对象定位都应由对象 ID、逻辑路径和 repo 内固定布局推导出来
+
+结果要求：
+
+- 关闭仓库后，直接 `mv repo_root new_path/` 不影响可读性和正确性
+- 将 repo root 打包再解压到其他位置后，仓库仍可直接打开
+- 运行时可导出到仓库外的临时文件不属于仓库真相，删除后不能影响仓库恢复
+
+### 1.3 Phase 3 扩展布局
 
 大文件能力在 Phase 3 再引入：
 
@@ -147,6 +164,8 @@ MVP 新增 `Blob` 概念，表示一个 whole-file 内容对象：
 
 对应的 payload 可以直接存储在对象文件中，或以 sidecar 二进制文件保存；MVP 优先选择“对象元信息 JSON + payload 文件”方案，编码简单、调试友好。
 
+这里的 sidecar 仅指 repo root 内、与对象同属仓库布局的一部分，不是 repo 外的外置数据目录。
+
 ### 3.5 Chunk 记录
 
 Phase 3 之后，chunk 元信息通过索引维护：
@@ -183,6 +202,7 @@ Phase 3 之后，chunk 元信息通过索引维护：
 - `json.dumps(..., sort_keys=True, separators=(",", ":"), ensure_ascii=False)`
 - 先对 `payload` 做稳定编码并计算 `payload_sha256`
 - 再根据完整稳定编码计算对象 ID
+- 编码内容只能包含逻辑路径、对象 ID、版本信息和业务元数据，不得包含宿主绝对路径
 
 ### 4.2 代表性编码片段
 
@@ -208,6 +228,7 @@ def encode_payload(payload):
 - 小文件和普通文件统一走 whole-file blob
 - `Blob` 的 payload 存于 `objects/blobs/`
 - `File` 对象引用 `blob_id`
+- `CommitOperationAdd.from_file()` 的源文件绝对路径只用于读取输入字节，绝不写入仓库持久化元数据
 
 ### 5.2 Phase 3
 
@@ -227,6 +248,8 @@ def encode_payload(payload):
 ### 6.1 MVP
 
 MVP 不做 chunk 索引；blob 查找只依赖对象 ID 到对象文件路径的确定性映射。
+
+这意味着对象查找不需要任何 repo 外的数据库、注册表或路径映射。
 
 ### 6.2 Phase 3 设计
 
@@ -252,6 +275,7 @@ chunk 索引采用文件版 LSM：
 为兼容 Windows/macOS 默认大小写不敏感文件系统，需要增加 casefold 冲突检测：
 
 - 同一目录下如果两个逻辑名称在 `casefold()` 后相同，则拒绝提交
+- 所有持久化路径字段都必须是相对 repo root 的逻辑路径，不能是宿主绝对路径
 
 ### 7.1 代表性规范化片段
 
@@ -283,3 +307,4 @@ def normalize_repo_path(path_in_repo):
 - 缓存绝不参与 commit 的真实可达性判断
 - quick verify 可忽略缓存
 - GC 只把活跃快照缓存作为额外 root，而不是把缓存内容当正式对象
+- 缓存必须位于 repo root 内部，确保仓库整体搬迁或归档恢复后不需要重建外部路径约定

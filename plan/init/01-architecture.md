@@ -13,6 +13,7 @@
 - Phase 1 使用 whole-file blob 存储
 - Phase 3 再引入 chunk / pack / range read
 - 基于目录锁与事务暂存目录的原子提交协议
+- repo-root-contained 的持久化布局，不依赖外置数据库或路径映射
 - API-first 的本地仓库访问层，CLI 仅作薄包装
 
 这意味着 `hubvault` 的本质是“嵌入式事务化对象仓库”，不是 git workspace 包装器。
@@ -86,6 +87,7 @@ hubvault/
 - 执行 commit / reset / branch / tag
 - 维护 ref 与 reflog
 - 构造 `RepoInfo`、`CommitInfo`、`PathInfo`
+- 确保持久化记录只写逻辑路径、对象 ID 与相对布局，不写宿主绝对路径
 
 ### 3.3 存储层
 
@@ -144,6 +146,7 @@ hubvault/
 - `quick_verify()` 只校验 refs、对象和 blob 引用闭包
 - `snapshot_download()` 先构建只读缓存目录，不处理 chunk 级共享
 - `upload_large_folder()` 在 Phase 3 前可退化为多次 whole-file 提交
+- 所有缓存、事务和诊断状态都放在 repo root 下，保证仓库整体搬迁后仍然自洽
 
 这样可以先把一致性、对象关系、公开 API 和公开测试体系做稳。
 
@@ -197,6 +200,7 @@ class HubVaultApi:
 - `storage/` 不能依赖 `click` 或 CLI 模块
 - `entry/` 只能依赖公开 API，不应直接操作内部存储实现
 - `models.py` 只定义公开 dataclass / enum，不放业务逻辑
+- 任何持久化实现都不得要求仓库外的 sidecar 目录、外部索引库或绝对路径配置才能工作
 
 ## 8. 写路径与读路径
 

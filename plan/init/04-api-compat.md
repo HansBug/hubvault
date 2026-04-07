@@ -9,6 +9,7 @@ API 目标不是逐行复制 `huggingface_hub`，而是：
 - 去掉依赖远端 HTTP 平台的能力
 - 增加适合本地嵌入式仓库的 `verify`、`gc`、`compact`、`reset` 等能力
 - 确保单元测试可以只通过公开 API 完成，不需要触碰 private / protected 实现
+- 明确仓库是自包含 artifact，API 不能把仓库正确性建立在外部路径状态之上
 
 ## 2. 推荐公开入口
 
@@ -93,6 +94,11 @@ class VerifyReport:
 - `from_bytes(path_in_repo, data)`
 - `from_file(path_in_repo, path)`
 - `from_fileobj(path_in_repo, fileobj)`
+
+约束：
+
+- `from_file()` 只把外部文件当作导入源，不把其宿主路径写入仓库
+- `from_fileobj()` 只消费字节流，不把 file object 的来源路径作为持久化元数据
 
 代表性草图：
 
@@ -198,6 +204,8 @@ class HubVaultApi:
         ...
 ```
 
+`repo_path` 是运行时打开仓库的位置，不是仓库内部持久化协议的一部分。仓库被整体移动到新路径后，只需用新的 `repo_path` 重新打开即可。
+
 ## 7. 关键参数语义
 
 建议保留以下关键参数：
@@ -264,6 +272,7 @@ assert report.ok
 - `snapshot_download()` 返回的是本地只读快照缓存，不是工作区
 - `hf_hub_download()` 返回的是缓存文件或目标导出文件
 - `repo_id` 在本项目中只是逻辑名称；真正的存储根仍是本地路径
+- 仓库的全部正确性信息都保存在 repo root 内；导出文件、外部下载目标和调用时传入的源路径都不是仓库真相
 
 ## 10. 错误模型
 

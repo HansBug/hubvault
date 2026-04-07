@@ -55,6 +55,8 @@ Never commit `.env`, tokens, or PyPI credentials. GitHub Actions expects reposit
 
 This repository must support cross-platform environments (Windows, mainstream Linux distributions, and macOS), older system platforms (for example Windows 7), older Python versions (for example Python 3.7), and a broad Python version range (3.7-3.14), so always account for that compatibility envelope when writing code or introducing dependencies.
 
+For the local-path repository design itself, treat the repository root as a self-contained portable artifact. Persisted repository state must live under the repo root and must not depend on absolute host paths, external sidecar databases, or metadata stored elsewhere. A closed repo should remain valid after moving the directory, restoring it from an archive, or unpacking it at another location.
+
 ## Planning Document Rules
 
 Execution-oriented documents under `plan/` must reflect the current repository state, not an imagined future implementation state.
@@ -273,6 +275,7 @@ update docstrings when code changes.
 - Tests in `test/`; use `@pytest.mark.unittest`
 - Unit tests must not depend on local files ignored by version control (for example, gitignored files).
 - Test timeout: 300 seconds (configured in `pytest.ini`)
+- When storage/runtime implementation is added, include public-surface regression coverage for repository relocatability where relevant, such as moving a repo directory or reopening an archived-and-restored repo without losing correctness.
 
 ### Test File Organization
 

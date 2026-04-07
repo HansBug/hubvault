@@ -18,12 +18,12 @@ _EXPECTED_PLAN_DOCS = [
     "06-phase-execution.md",
 ]
 _DOC_MARKERS = {
-    "00-scope.md": ["当前仓库基线", "MVP 切分", "成功标准"],
+    "00-scope.md": ["当前仓库基线", "MVP 切分", "成功标准", "自包含"],
     "01-architecture.md": ["推荐包结构", "MVP 简化架构", "HubVaultApi"],
-    "02-storage-format.md": ["Phase 1 MVP 布局", "Blob 对象", "路径规范化"],
-    "03-transaction-consistency.md": ["事务状态机", "线性化点", "quick_verify()"],
+    "02-storage-format.md": ["Phase 1 MVP 布局", "Blob 对象", "路径规范化", "可搬迁"],
+    "03-transaction-consistency.md": ["事务状态机", "线性化点", "quick_verify()", "恢复"],
     "04-api-compat.md": ["HubVaultApi", "CommitOperationAdd", "VerifyReport"],
-    "05-gc-roadmap.md": ["GC Root 定义", "quick_verify()", "测试路线图"],
+    "05-gc-roadmap.md": ["GC Root 定义", "quick_verify()", "测试路线图", "归档"],
     "06-phase-execution.md": ["Phase 0", "Phase 1. MVP 仓库核心", "Checklist"],
 }
 _DOCS_WITH_PYTHON_SNIPPETS = [
@@ -89,5 +89,7 @@ class TestPlanInitDocs:
             "plan/",
             "make unittest",
             "regression",
+            "self-contained",
+            "absolute host paths",
         ]:
             assert marker in text

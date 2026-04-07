@@ -39,6 +39,8 @@ GC 只能从明确的 root 集合出发做可达性分析。
 - 活跃快照缓存引用
 - reflog 保留窗口内涉及的 commit
 
+这些 root 都必须能仅依赖 repo root 内的数据推导出来，不能要求查询仓库外状态源。
+
 ## 4. 回收流程
 
 推荐采用 `mark -> quarantine -> sweep -> compact` 的组合流程。
@@ -154,6 +156,8 @@ compact 必须遵循与普通提交相同的发布原则：
 - branch/tag/reflog
 - snapshot/cache 行为
 - verify / gc / compact 联动
+- 仓库关闭后整体移动目录、重新打开与继续读取/校验
+- 仓库归档后解压恢复并重新打开
 
 ### 9.3 故障注入测试
 
