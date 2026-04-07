@@ -1,0 +1,5 @@
+pyinstaller>=4.7
+setuptools
+hbutils
+cairosvg
+Pillow

@@ -1,0 +1,6 @@
+#!/usr/bin/env python3
+
+from hubvault.entry import hubvaultcli
+
+if __name__ == '__main__':
+    hubvaultcli()
