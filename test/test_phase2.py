@@ -114,11 +114,11 @@ class TestPhase2IntegratedLifecycle:
 
         staging_dir = tmp_path / "staging"
         staging_dir.mkdir()
-        (staging_dir / "manifest.json").write_text('{"candidate":"rc1"}\n', encoding="utf-8")
+        (staging_dir / "manifest.json").write_bytes(b'{"candidate":"rc1"}\n')
         (staging_dir / "model.bin").write_bytes(b"candidate-weights-v2")
-        (staging_dir / "debug.log").write_text("ignore me\n", encoding="utf-8")
+        (staging_dir / "debug.log").write_bytes(b"ignore me\n")
         (staging_dir / ".git").mkdir()
-        (staging_dir / ".git" / "ignored.txt").write_text("ignored\n", encoding="utf-8")
+        (staging_dir / ".git" / "ignored.txt").write_bytes(b"ignored\n")
 
         folder_commit = api.upload_folder(
             folder_path=staging_dir,

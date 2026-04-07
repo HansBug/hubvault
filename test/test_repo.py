@@ -784,16 +784,16 @@ class TestRepoSemantics:
 
         initial_source = tmp_path / "source-v1"
         initial_source.mkdir()
-        (initial_source / "keep.txt").write_text("keep-v1\n", encoding="utf-8")
-        (initial_source / "drop.txt").write_text("drop-v1\n", encoding="utf-8")
+        (initial_source / "keep.txt").write_bytes(b"keep-v1\n")
+        (initial_source / "drop.txt").write_bytes(b"drop-v1\n")
         api.upload_folder(folder_path=initial_source, path_in_repo="bundle")
 
         updated_source = tmp_path / "source-v2"
         updated_source.mkdir()
-        (updated_source / "keep.txt").write_text("keep-v2\n", encoding="utf-8")
-        (updated_source / "new.txt").write_text("new-v2\n", encoding="utf-8")
+        (updated_source / "keep.txt").write_bytes(b"keep-v2\n")
+        (updated_source / "new.txt").write_bytes(b"new-v2\n")
         (updated_source / ".git").mkdir()
-        (updated_source / ".git" / "ignored.txt").write_text("ignored\n", encoding="utf-8")
+        (updated_source / ".git" / "ignored.txt").write_bytes(b"ignored\n")
 
         api.upload_folder(
             folder_path=updated_source,
