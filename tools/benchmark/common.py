@@ -1,0 +1,503 @@
+"""Shared benchmark scenarios and metrics for Phase 9 work."""
+
+import tempfile
+from dataclasses import dataclass
+from hashlib import sha256
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Tuple
+
+from hubvault import CommitOperationAdd, HubVaultApi, RepoFile
+
+MIB = 1024 * 1024
+
+
+@dataclass(frozen=True)
+class Phase9BenchmarkConfig:
+    """Configuration for the benchmark scenarios."""
+
+    scale: str
+    small_file_count: int
+    small_file_size: int
+    large_file_size: int
+    duplicate_file_count: int
+    overlap_shared_size: int
+    overlap_unique_size: int
+    shifted_window_step: int
+    history_depth: int
+    chunk_threshold: int
+    range_start: int
+    range_length: int
+    rounds: int
+    warmup_rounds: int
+
+    @classmethod
+    def from_scale(cls, scale: str = "standard") -> "Phase9BenchmarkConfig":
+        """Build a benchmark configuration for a named scale."""
+
+        normalized = str(scale or "standard").strip().lower()
+        if normalized == "smoke":
+            return cls(
+                scale="smoke",
+                small_file_count=32,
+                small_file_size=4 * 1024,
+                large_file_size=6 * MIB,
+                duplicate_file_count=4,
+                overlap_shared_size=4 * MIB,
+                overlap_unique_size=1 * MIB,
+                shifted_window_step=512,
+                history_depth=8,
+                chunk_threshold=1 * MIB,
+                range_start=1 * MIB + 123,
+                range_length=256 * 1024,
+                rounds=3,
+                warmup_rounds=1,
+            )
+        if normalized == "stress":
+            return cls(
+                scale="stress",
+                small_file_count=256,
+                small_file_size=8 * 1024,
+                large_file_size=16 * MIB,
+                duplicate_file_count=10,
+                overlap_shared_size=12 * MIB,
+                overlap_unique_size=2 * MIB,
+                shifted_window_step=2 * 1024,
+                history_depth=48,
+                chunk_threshold=1 * MIB,
+                range_start=3 * MIB + 123,
+                range_length=2 * MIB,
+                rounds=5,
+                warmup_rounds=1,
+            )
+        return cls(
+            scale="standard",
+            small_file_count=128,
+            small_file_size=4 * 1024,
+            large_file_size=12 * MIB,
+            duplicate_file_count=6,
+            overlap_shared_size=8 * MIB,
+            overlap_unique_size=1 * MIB,
+            shifted_window_step=1024,
+            history_depth=24,
+            chunk_threshold=1 * MIB,
+            range_start=2 * MIB + 123,
+            range_length=1 * MIB,
+            rounds=4,
+            warmup_rounds=1,
+        )
+
+
+def to_mib(size_in_bytes: int) -> float:
+    """Convert bytes to MiB."""
+
+    return round(float(size_in_bytes) / float(MIB), 4)
+
+
+def safe_ratio(numerator: int, denominator: int) -> float:
+    """Return a rounded ratio or ``0.0`` when the denominator is empty."""
+
+    if int(denominator) <= 0:
+        return 0.0
+    return round(float(numerator) / float(denominator), 6)
+
+
+def deterministic_bytes(size: int, label: str) -> bytes:
+    """Generate deterministic medium-entropy bytes."""
+
+    size = int(size)
+    if size <= 0:
+        return b""
+
+    seed = label.encode("utf-8")
+    digest = sha256(seed).digest()
+    chunks = bytearray()
+    counter = 0
+    while len(chunks) < size:
+        digest = sha256(digest + seed + counter.to_bytes(8, byteorder="big", signed=False)).digest()
+        chunks.extend(digest)
+        counter += 1
+    return bytes(chunks[:size])
+
+
+def repeated_bytes(size: int, token: bytes) -> bytes:
+    """Generate low-entropy repeated bytes."""
+
+    size = int(size)
+    if size <= 0:
+        return b""
+    if not token:
+        token = b"\x00"
+    repeats, tail = divmod(size, len(token))
+    return (token * repeats) + token[:tail]
+
+
+def repo_total_size(repo_dir: Path) -> int:
+    """Return total bytes occupied by a repository root."""
+
+    total = 0
+    for path in repo_dir.rglob("*"):
+        if path.is_file():
+            total += path.stat().st_size
+    return total
+
+
+def file_count(root: Path) -> int:
+    """Count files below a path."""
+
+    return sum(1 for path in root.rglob("*") if path.is_file())
+
+
+def overview_section_map(api: HubVaultApi) -> Dict[str, object]:
+    """Return storage overview sections indexed by section name."""
+
+    overview = api.get_storage_overview()
+    return {section.name: section for section in overview.sections}
+
+
+def section_size(api: HubVaultApi, section_name: str) -> int:
+    """Return the current size of a named storage section."""
+
+    sections = overview_section_map(api)
+    try:
+        return int(sections[section_name].total_size)
+    except KeyError:
+        return 0
+
+
+def list_repo_file_infos(api: HubVaultApi) -> List[RepoFile]:
+    """Return public file info objects for the current revision."""
+
+    paths = list(api.list_repo_files())
+    if not paths:
+        return []
+    infos = api.get_paths_info(paths)
+    return [info for info in infos if isinstance(info, RepoFile)]
+
+
+def logical_live_bytes(api: HubVaultApi) -> int:
+    """Return total logical live bytes for the current revision."""
+
+    return sum(int(info.size) for info in list_repo_file_infos(api))
+
+
+def logical_live_large_bytes(api: HubVaultApi) -> int:
+    """Return total logical live bytes for chunked large files."""
+
+    return sum(int(info.size) for info in list_repo_file_infos(api) if info.lfs is not None)
+
+
+def generate_small_tree_entries(config: Phase9BenchmarkConfig) -> List[Tuple[str, bytes]]:
+    """Build a deterministic small-file tree payload set."""
+
+    entries = []
+    for index in range(int(config.small_file_count)):
+        group = index // 16
+        path = "dataset/group-{group:03d}/file-{index:04d}.bin".format(
+            group=group,
+            index=index,
+        )
+        payload = deterministic_bytes(int(config.small_file_size), "small-{index}".format(index=index))
+        entries.append((path, payload))
+    return entries
+
+
+def create_repo(api: HubVaultApi, large_file_threshold: int) -> None:
+    """Create a repository with a chosen chunk threshold."""
+
+    api.create_repo(large_file_threshold=int(large_file_threshold))
+
+
+def build_small_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tuple[HubVaultApi, List[str], int]:
+    """Create a repository populated with many small files."""
+
+    api = HubVaultApi(repo_dir)
+    create_repo(api, large_file_threshold=max(int(config.large_file_size) * 2, int(config.chunk_threshold) * 4))
+    entries = generate_small_tree_entries(config)
+    api.create_commit(
+        operations=[CommitOperationAdd(path, data) for path, data in entries],
+        commit_message="seed small tree",
+    )
+    return api, [path for path, _ in entries], sum(len(data) for _, data in entries)
+
+
+def build_large_repo(
+    repo_dir: Path,
+    config: Phase9BenchmarkConfig,
+    payload: Optional[bytes] = None,
+    path_in_repo: str = "artifacts/model.bin",
+) -> Tuple[HubVaultApi, bytes]:
+    """Create a repository with one chunked large file."""
+
+    api = HubVaultApi(repo_dir)
+    create_repo(api, large_file_threshold=int(config.chunk_threshold))
+    resolved_payload = payload or deterministic_bytes(int(config.large_file_size), "large-binary")
+    api.upload_file(
+        path_or_fileobj=resolved_payload,
+        path_in_repo=path_in_repo,
+        commit_message="seed large file",
+    )
+    return api, resolved_payload
+
+
+def build_exact_duplicate_live_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tuple[HubVaultApi, int, int]:
+    """Create a repository with many identical live large files."""
+
+    api = HubVaultApi(repo_dir)
+    create_repo(api, large_file_threshold=int(config.chunk_threshold))
+    payload = deterministic_bytes(int(config.large_file_size), "exact-duplicate")
+    operations = []
+    for index in range(int(config.duplicate_file_count)):
+        operations.append(
+            CommitOperationAdd(
+                "duplicates/exact-{index:02d}.bin".format(index=index),
+                payload,
+            )
+        )
+    api.create_commit(operations=operations, commit_message="seed exact duplicate live set")
+    logical_total = len(payload) * int(config.duplicate_file_count)
+    return api, logical_total, len(payload)
+
+
+def build_aligned_overlap_live_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tuple[HubVaultApi, int, int]:
+    """Create a repository whose large files share chunk-aligned common prefixes."""
+
+    api = HubVaultApi(repo_dir)
+    create_repo(api, large_file_threshold=int(config.chunk_threshold))
+    shared = deterministic_bytes(int(config.overlap_shared_size), "aligned-shared")
+    operations = []
+    for index in range(int(config.duplicate_file_count)):
+        unique_tail = deterministic_bytes(int(config.overlap_unique_size), "aligned-tail-{index}".format(index=index))
+        payload = shared + unique_tail
+        operations.append(
+            CommitOperationAdd(
+                "duplicates/aligned-{index:02d}.bin".format(index=index),
+                payload,
+            )
+        )
+    api.create_commit(operations=operations, commit_message="seed aligned overlap live set")
+    file_size = len(shared) + int(config.overlap_unique_size)
+    logical_total = file_size * int(config.duplicate_file_count)
+    logical_unique = len(shared) + (int(config.overlap_unique_size) * int(config.duplicate_file_count))
+    return api, logical_total, logical_unique
+
+
+def build_shifted_overlap_live_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tuple[HubVaultApi, int, int]:
+    """Create a repository whose large files are sliding windows over one base payload."""
+
+    api = HubVaultApi(repo_dir)
+    create_repo(api, large_file_threshold=int(config.chunk_threshold))
+    base = deterministic_bytes(
+        int(config.large_file_size) + (int(config.shifted_window_step) * (int(config.duplicate_file_count) - 1)),
+        "shifted-window-base",
+    )
+    operations = []
+    for index in range(int(config.duplicate_file_count)):
+        start = index * int(config.shifted_window_step)
+        payload = base[start:start + int(config.large_file_size)]
+        operations.append(
+            CommitOperationAdd(
+                "duplicates/shifted-{index:02d}.bin".format(index=index),
+                payload,
+            )
+        )
+    api.create_commit(operations=operations, commit_message="seed shifted overlap live set")
+    logical_total = int(config.large_file_size) * int(config.duplicate_file_count)
+    logical_unique = len(base)
+    return api, logical_total, logical_unique
+
+
+def build_historical_duplicate_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tuple[HubVaultApi, int, int]:
+    """Create a repository with repeated identical large-file commits on one path."""
+
+    api = HubVaultApi(repo_dir)
+    create_repo(api, large_file_threshold=int(config.chunk_threshold))
+    payload = deterministic_bytes(int(config.large_file_size), "historical-duplicate")
+    for index in range(int(config.history_depth)):
+        api.upload_file(
+            path_or_fileobj=payload,
+            path_in_repo="history/model.bin",
+            commit_message="history duplicate {index:03d}".format(index=index),
+        )
+    return api, len(payload), len(payload)
+
+
+def build_maintenance_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tuple[HubVaultApi, int]:
+    """Create a repository suited for verify and GC benchmarks."""
+
+    api = HubVaultApi(repo_dir)
+    create_repo(api, large_file_threshold=int(config.chunk_threshold))
+    shared = deterministic_bytes(int(config.overlap_shared_size), "maintenance-shared")
+    for index in range(int(config.history_depth)):
+        payload = shared + deterministic_bytes(int(config.overlap_unique_size), "maintenance-tail-{index}".format(index=index))
+        api.upload_file(
+            path_or_fileobj=payload,
+            path_in_repo="models/model.bin",
+            commit_message="maintenance version {index:03d}".format(index=index),
+        )
+    _ = api.hf_hub_download("models/model.bin")
+    _ = api.snapshot_download()
+    return api, logical_live_bytes(api)
+
+
+def read_all_small_files(api: HubVaultApi, paths: Sequence[str]) -> int:
+    """Read all small files and return the processed byte count."""
+
+    total = 0
+    for path in paths:
+        total += len(api.read_bytes(path))
+    return total
+
+
+def snapshot_file_manifest(snapshot_root: Path) -> List[str]:
+    """Return a normalized file manifest for a detached snapshot."""
+
+    return sorted(
+        str(path.relative_to(snapshot_root)).replace("\\", "/")
+        for path in snapshot_root.rglob("*")
+        if path.is_file()
+    )
+
+
+def collect_space_profile(
+    api: HubVaultApi,
+    logical_live_total: int,
+    logical_unique_estimate: Optional[int],
+) -> Dict[str, object]:
+    """Collect repository space metrics before and after GC."""
+
+    before = api.get_storage_overview()
+    dry_gc = api.gc(dry_run=True, prune_cache=False)
+    quick_ok = api.quick_verify().ok
+    actual_gc = api.gc(dry_run=False, prune_cache=False)
+    after = api.get_storage_overview()
+    full_ok = api.full_verify().ok
+
+    before_sections = {section.name: section for section in before.sections}
+    after_sections = {section.name: section for section in after.sections}
+    before_pack = int(before_sections["chunks.packs"].total_size)
+    after_pack = int(after_sections["chunks.packs"].total_size)
+    before_index = int(before_sections["chunks.index"].total_size)
+    after_index = int(after_sections["chunks.index"].total_size)
+    unique_estimate = int(logical_unique_estimate) if logical_unique_estimate is not None else 0
+
+    metrics = {
+        "logical_live_bytes": int(logical_live_total),
+        "logical_unique_estimate_bytes": unique_estimate,
+        "chunk_pack_bytes_before_gc": before_pack,
+        "chunk_pack_bytes_after_gc": after_pack,
+        "chunk_index_bytes_before_gc": before_index,
+        "chunk_index_bytes_after_gc": after_index,
+        "total_repo_bytes_before_gc": int(before.total_size),
+        "total_repo_bytes_after_gc": int(after.total_size),
+        "reclaimable_gc_bytes_before_gc": int(before.reclaimable_gc_size),
+        "gc_reclaimed_size": int(actual_gc.reclaimed_size),
+        "gc_reclaimed_chunk_size": int(actual_gc.reclaimed_chunk_size),
+        "gc_dry_run_reclaimed_size": int(dry_gc.reclaimed_size),
+        "quick_verify_ok_after_setup": bool(quick_ok),
+        "full_verify_ok_after_gc": bool(full_ok),
+        "physical_over_logical_before_gc": safe_ratio(before_pack, int(logical_live_total)),
+        "physical_over_logical_after_gc": safe_ratio(after_pack, int(logical_live_total)),
+        "logical_over_physical_after_gc": safe_ratio(int(logical_live_total), after_pack),
+        "dedup_gain_after_gc": safe_ratio(before_pack, after_pack),
+        "space_reduction_after_gc": safe_ratio(before_pack - after_pack, before_pack),
+    }
+    if unique_estimate > 0:
+        metrics.update(
+            {
+                "physical_over_unique_before_gc": safe_ratio(before_pack, unique_estimate),
+                "physical_over_unique_after_gc": safe_ratio(after_pack, unique_estimate),
+                "unique_over_physical_after_gc": safe_ratio(unique_estimate, after_pack),
+            }
+        )
+    return metrics
+
+
+def benchmark_workspace(parent: Path, prefix: str) -> tempfile.TemporaryDirectory:
+    """Return a temporary workspace rooted below ``parent``."""
+
+    parent.mkdir(parents=True, exist_ok=True)
+    return tempfile.TemporaryDirectory(prefix=prefix, dir=str(parent))
+
+
+def run_small_batch_commit_case(workspace_root: Path, config: Phase9BenchmarkConfig) -> Dict[str, object]:
+    """Execute one end-to-end small batch commit scenario."""
+
+    with benchmark_workspace(workspace_root, "phase9-small-write-") as tmpdir:
+        api, paths, total_bytes = build_small_repo(Path(tmpdir) / "repo", config)
+        overview = api.get_storage_overview()
+        return {
+            "processed_bytes": int(total_bytes),
+            "live_file_count": len(paths),
+            "repo_total_bytes": int(overview.total_size),
+            "reachable_bytes": int(overview.reachable_size),
+            "blob_bytes": int(section_size(api, "objects.blobs.data")),
+            "cache_bytes": int(overview.reclaimable_cache_size),
+        }
+
+
+def run_large_upload_case(workspace_root: Path, config: Phase9BenchmarkConfig) -> Dict[str, object]:
+    """Execute one end-to-end large upload scenario."""
+
+    with benchmark_workspace(workspace_root, "phase9-large-write-") as tmpdir:
+        api, payload = build_large_repo(Path(tmpdir) / "repo", config)
+        overview = api.get_storage_overview()
+        return {
+            "processed_bytes": len(payload),
+            "repo_total_bytes": int(overview.total_size),
+            "chunk_pack_bytes": int(section_size(api, "chunks.packs")),
+            "chunk_index_bytes": int(section_size(api, "chunks.index")),
+            "large_live_bytes": int(logical_live_large_bytes(api)),
+        }
+
+
+def infer_space_conclusions(results: Dict[str, Dict[str, object]]) -> List[str]:
+    """Build human-readable conclusions from benchmark results."""
+
+    conclusions = []
+
+    large_range = results["large_read_range"]["metrics"]
+    large_upload = results["large_upload"]["metrics"]
+    exact = results["exact_duplicate_live_space"]["metrics"]
+    aligned = results["aligned_overlap_live_space"]["metrics"]
+    shifted = results["shifted_overlap_live_space"]["metrics"]
+    historical = results["historical_duplicate_space"]["metrics"]
+
+    conclusions.append(
+        "大文件上传中位吞吐约 {value:.2f} MiB/s，范围读取中位吞吐约 {range_value:.2f} MiB/s。".format(
+            value=float(results["large_upload"].get("throughput_mib_per_sec", 0.0)),
+            range_value=float(results["large_read_range"].get("throughput_mib_per_sec", 0.0)),
+        )
+    )
+    conclusions.append(
+        "完全重复的大文件在写入后立即占用仍接近线性膨胀，`gc()` 后 `chunks.packs` 体积下降到原来的 {ratio:.2%}，说明当前物理复用主要依赖后续压实而不是写时复用。".format(
+            ratio=float(exact["physical_over_logical_after_gc"]),
+        )
+    )
+    conclusions.append(
+        "按 chunk 边界对齐的部分重复文件，`gc()` 后能够把公共 chunk 压缩到接近唯一数据体积，`dedup_gain_after_gc` 约为 {gain:.2f}x。".format(
+            gain=float(aligned["dedup_gain_after_gc"]),
+        )
+    )
+    conclusions.append(
+        "错位重复文件的复用明显变差，`gc()` 后相对唯一字节体积的放大仍约为 {ratio:.2f}x，说明固定大小 chunk 对错位相似内容不够友好。".format(
+            ratio=float(shifted.get("physical_over_unique_after_gc", 0.0)),
+        )
+    )
+    conclusions.append(
+        "同一路径反复写入完全相同的大文件时，提交阶段的 pack 占用仍会持续增长，但 `gc()` 可把这类重复 pack 压回到接近单份数据体积，当前风险在于压实前的短期空间膨胀而不是最终不可回收。"
+    )
+    conclusions.append(
+        "如果目标是降低重复大文件的即时空间膨胀，优先级最高的问题是写时 chunk/pack 复用；如果目标是提高错位相似内容复用，后续才值得评估内容定义分块方案。"
+    )
+    conclusions.append(
+        "当前实现对时间性能和长期 GC 后空间占用是可接受的，但对“写后立刻”的重复大文件空间放大仍然偏保守，尤其在大量重复提交但未及时 GC 的场景下需要重点关注。"
+    )
+
+    if float(results["large_read_range"].get("throughput_mib_per_sec", 0.0)) < float(
+        results["large_upload"].get("throughput_mib_per_sec", 0.0)
+    ):
+        conclusions.append(
+            "本次基线里范围读取没有明显快过写入路径，后续应重点 profiling `IndexStore.lookup()` 与逐 chunk 校验链路。"
+        )
+
+    return conclusions

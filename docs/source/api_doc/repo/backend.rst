@@ -48,6 +48,24 @@ PUBLIC\_GIT\_AUTHOR\_EMAIL
 .. autodata:: PUBLIC_GIT_AUTHOR_EMAIL
 
 
+FAILPOINT\_ENV
+-----------------------------------------------------
+
+.. autodata:: FAILPOINT_ENV
+
+
+FAIL\_ACTION\_ENV
+-----------------------------------------------------
+
+.. autodata:: FAIL_ACTION_ENV
+
+
+FAILPOINT\_EXIT\_CODE
+-----------------------------------------------------
+
+.. autodata:: FAILPOINT_EXIT_CODE
+
+
 RepositoryBackend
 -----------------------------------------------------
 

@@ -1,6 +1,6 @@
-.PHONY: help docs docs_en docs_zh pdocs rst_auto test unittest build test_cli package clean
+.PHONY: help docs docs_en docs_zh pdocs rst_auto test unittest benchmark benchmark_phase9 benchmark_compare build test_cli package clean
 
-PYTHON := $(shell which python)
+PYTHON := $(shell [ -x ./venv/bin/python ] && printf '%s' ./venv/bin/python || which python)
 SPHINXBUILD ?= $(shell which sphinx-build)
 SPHINXMULTIVERSION ?= $(shell which sphinx-multiversion)
 
@@ -27,6 +27,13 @@ RST_NONM_FILES      := $(foreach file,${PYTHON_NONM_FILES},$(patsubst %/__init__
 
 COV_TYPES     ?= xml term-missing
 RESOURCE_ARGS := $(shell $(PYTHON) -m tools.resources 2>/dev/null)
+BENCHMARK_DIR ?= ${BUILD_DIR}/benchmark
+BENCHMARK_JSON ?= ${BENCHMARK_DIR}/pytest-benchmark.json
+BENCHMARK_FILTER ?=
+BENCHMARK_SCALE ?= standard
+BENCHMARK_PHASE9_JSON ?= ${BENCHMARK_DIR}/phase9-summary.json
+BENCHMARK_BASELINE ?=
+BENCHMARK_CANDIDATE ?=
 
 help:
 	@echo "hubvault Build System"
@@ -42,6 +49,16 @@ help:
 	@echo "  make unittest     - Run unit tests with pytest and coverage"
 	@echo "                      Options: RANGE_DIR=<dir> COV_TYPES='xml term-missing'"
 	@echo "                               MIN_COVERAGE=<percent> WORKERS=<n>"
+	@echo "  make benchmark    - Run pytest benchmark suite into build/benchmark/"
+	@echo "                      Options: BENCHMARK_SCALE=<smoke|standard|stress>"
+	@echo "                               BENCHMARK_FILTER='<pytest -k expr>' BENCHMARK_JSON=<path>"
+	@echo "  make benchmark_phase9"
+	@echo "                    - Run the curated Phase 9 benchmark runner and emit a JSON summary"
+	@echo "                      Options: BENCHMARK_SCALE=<smoke|standard|stress>"
+	@echo "                               BENCHMARK_PHASE9_JSON=<path>"
+	@echo "  make benchmark_compare"
+	@echo "                    - Compare two pytest-benchmark JSON files"
+	@echo "                      Options: BENCHMARK_BASELINE=<path> BENCHMARK_CANDIDATE=<path>"
 	@echo "  make test_cli     - Smoke test the built CLI executable"
 	@echo ""
 	@echo "Documentation:"
@@ -84,6 +101,26 @@ unittest:
 		--cov="${RANGE_SRC_DIR}" \
 		$(if ${MIN_COVERAGE},--cov-fail-under=${MIN_COVERAGE},) \
 		$(if ${WORKERS},-n ${WORKERS},)
+
+benchmark:
+	@mkdir -p ${BENCHMARK_DIR}
+	HUBVAULT_BENCHMARK_SCALE=${BENCHMARK_SCALE} \
+		${PYTHON} -m pytest "${TEST_DIR}/benchmark" \
+		-sv -m benchmark --benchmark-only \
+		--benchmark-json="${BENCHMARK_JSON}" \
+		$(if ${BENCHMARK_FILTER},-k "${BENCHMARK_FILTER}",)
+
+benchmark_phase9:
+	@mkdir -p ${BENCHMARK_DIR}
+	HUBVAULT_BENCHMARK_SCALE=${BENCHMARK_SCALE} \
+		${PYTHON} -m tools.benchmark.run_phase9 \
+		--scale ${BENCHMARK_SCALE} \
+		--output "${BENCHMARK_PHASE9_JSON}"
+
+benchmark_compare:
+	@test -n "${BENCHMARK_BASELINE}" || (echo "Missing BENCHMARK_BASELINE=<path>" && exit 1)
+	@test -n "${BENCHMARK_CANDIDATE}" || (echo "Missing BENCHMARK_CANDIDATE=<path>" && exit 1)
+	${PYTHON} -m tools.benchmark.compare "${BENCHMARK_BASELINE}" "${BENCHMARK_CANDIDATE}"
 
 docs:
 	@if [ -f "${DOC_DIR}/Makefile" ]; then \

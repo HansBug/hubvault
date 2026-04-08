@@ -409,24 +409,293 @@
 
 ### Status
 
-已完成。
+已完成首轮 benchmark harness、基线跑数与初步结论，后续还需要继续补历史/merge/CLI/阈值扫描等扩展场景，以及 profiling、CI 集成和可选优化实验。
+
+### Technical Focus
+
+Phase 9 不会把“写几个 benchmark case”当成性能工作完成，而是分成四个连续层次：
+
+1. 先建立可重复、可解释、可导出的 benchmark 基线。
+2. 再用 profiling 与分项指标定位热点，而不是靠直觉改代码。
+3. 再只在“不改变公开语义和磁盘协议”的前提下做安全优化实验。
+4. 最后把稳定 benchmark 纳入长期回归，让后续改动有客观退化信号。
+
+这一阶段的核心原则固定如下：
+
+- benchmark 一律只通过公开 API / 公开 CLI 驱动，不依赖 private / protected 实现细节，也不通过 monkeypatch 内部函数来“测假数据”
+- 正式性能结论优先看同机同配置下的相对对比，不用跨机器绝对毫秒数做结论
+- 任何性能优化都不能改变当前事务语义、原子语义、锁语义、`oid` / `sha256` / 路径保真等公开可观测行为
+- 在没有基线和热点证据前，不引入带协议风险或兼容成本的“先上再说”型依赖
+
+### 当前已落地基线
+
+当前仓库已经落地下面这组 benchmark 代码与入口：
+
+- `test/benchmark/test_phase9_small.py`
+  已覆盖小文件批量提交、批量读取、冷快照导出。
+- `test/benchmark/test_phase9_large.py`
+  已覆盖 chunked 大文件上传、范围读取、完全重复 live set、chunk 对齐重叠 live set、错位重叠 live set。
+- `test/benchmark/test_phase9_maintenance.py`
+  已覆盖历史重复大文件的空间回收，以及 maintenance-heavy 仓库上的 `full_verify()`。
+- `test/benchmark/conftest.py`
+  已提供 scale 驱动的公共 benchmark fixture。
+- `tools/benchmark/run_phase9.py`
+  已提供独立于 `pytest-benchmark` 终端输出的 JSON 汇总 runner，便于直接产出结论。
+- `tools/benchmark/compare.py`
+  已提供两个 benchmark JSON 结果的摘要比较工具。
+- `Makefile`
+  已新增 `benchmark`、`benchmark_phase9`、`benchmark_compare` 入口，并优先使用仓库内 `./venv/bin/python`。
+
+当前这套 harness 只通过公开 API 驱动，没有回退到 private / protected 细节。
+
+### 当前数据集形状
+
+首轮已落地的数据集并不是完整终版，但已经足够回答当前最关心的吞吐与空间问题：
+
+`small-tree`
+    128 个 4 KiB 小文件，按多目录分组；用于小文件提交、读取和快照导出。
+
+`large-single`
+    单个 12 MiB chunked 大文件；用于上传与 `read_range()` 基线。
+
+`exact-duplicate-live`
+    6 个完全相同的 12 MiB live 大文件；用于测“写后立刻”空间膨胀与 `gc()` 后的物理复用效果。
+
+`aligned-overlap-live`
+    6 个共享 8 MiB 对齐前缀、各自再带 1 MiB 独有尾部的大文件；用于测固定 chunk 在“边界对齐重叠”场景下的复用程度。
+
+`shifted-overlap-live`
+    6 个来自同一 base payload、但每个文件窗口按 1 KiB 偏移的大文件；用于测固定 chunk 对错位相似内容的复用退化。
+
+`historical-duplicate`
+    同一路径连续写入 24 个完全相同的大文件 revision；用于测历史累积写入下的短期空间膨胀和 `gc()` 回收效果。
+
+`maintenance-heavy`
+    多代大文件、带下载/快照视图痕迹的仓库；用于测 `full_verify()` 基线。
+
+数据生成器已经修正为“全长确定性字节流”，不再把大文件做成固定 1 MiB 周期重复，避免把文件内自重复误判成跨文件 chunk 复用。
+
+### 基线场景矩阵
+
+Phase 9 当前把 benchmark 分成三层：
+
+`micro / hotpath`
+    用来测单个公开调用的纯热点，例如单文件 `upload_file()`、`read_bytes()`、`hf_hub_download()`、`read_range()`、`list_repo_commits()`。
+
+`workflow / end-to-end`
+    用来测真实用户路径，例如“初始化 -> 多次提交 -> 下载 -> 快照 -> 校验”这类完整生命周期，而不是只看某一个函数调用。
+
+`maintenance / heavy`
+    用来测重维护操作，例如 `full_verify()`、`gc()`、`squash_history()`，以及深历史、大文件、宽树形仓库上的最坏路径。
+
+当前已落地或已明确排期的公开 benchmark 场景包括：
+
+- 小文件路径：已覆盖批量 `create_commit()`、`read_bytes()`、`snapshot_download()`；后续补 `list_repo_files()`、`list_repo_tree()` 与 `hf_hub_download()` warm path。
+- 历史路径：已覆盖历史重复写入导致的空间画像；后续补 `list_repo_commits()`、`list_repo_refs()`、`list_repo_reflog()`、`merge()` fast-forward / merge commit。
+- 下载路径：已覆盖冷 `snapshot_download()`；后续补 `hf_hub_download()` 与 warm 视图重用场景。
+- 大文件路径：已覆盖 chunked `upload_file()`、`read_range()`、exact/aligned/shifted overlap；后续补阈值扫描与 whole-file vs chunked 边界。
+- 维护路径：已覆盖 `full_verify()` 与 `gc()` 空间治理画像；后续补 `quick_verify()`、`get_storage_overview()` 独立热路径与 `squash_history()`。
+- CLI 路径：尚未落地，后续补至少一组 `hubvault` / `hv` 端到端 benchmark，确认 CLI dispatch 开销不会让典型脚本路径明显失真。
+
+### 基线数据集设计
+
+为了避免“这次碰巧快/慢”的偶然性，Phase 9 会使用固定、可复现的数据集形状，而不是手工随便造几个文件。
+
+当前规划中的终版数据集族如下，其中首轮已落地的项会继续沿用：
+
+`flat-small`
+    128 个 4 KiB 小文件，单层目录；用于测小文件批量提交、列树和快照导出。
+
+`nested-small`
+    32 个目录，每个目录 32 个 4 KiB 小文件；用于测深树遍历、`snapshot_download()` 与 `list_repo_tree()`。
+
+`mixed-model`
+    模拟真实模型仓库，包含 README、config、tokenizer、若干 JSON/TXT 小文件，以及 1-2 个 32-128 MiB 大文件；用于测最接近日常使用的真实路径。
+
+`history-deep`
+    固定 128 / 512 / 1024 个 commit 深度，持续修改有限路径；用于测 `list_repo_commits()`、`reflog`、merge-base 解析与 `squash_history()`。
+
+`threshold-sweep`
+    针对 `large_file_threshold` 的边界扫描集，至少包含 `threshold - 1`、`threshold`、`threshold + 1` 以及 4x / 16x 阈值的大文件；用于确定 whole-file 与 chunked 的分界收益。
+
+`maintenance-heavy`
+    多代大文件、多轮下载缓存、多分支历史并存的仓库；用于测 `full_verify()`、`gc()`、`squash_history()` 与空间画像。
+
+数据内容本身也会固定成三类，避免只测一种“容易命中缓存/压缩”的样本：
+
+- 低熵重复字节数据：模拟部分 checkpoint 或 pad-heavy 文件
+- 中熵伪随机数据：用固定 seed 生成，模拟更难压缩、更接近真实二进制权重的内容
+- 混合文本 + 二进制数据：模拟 HF 风格仓库的常见组合
+
+### Benchmark 方法学
+
+性能基线不会直接沿用 `make unittest`，而是使用独立的 benchmark 运行路径，避免 coverage、xdist、频繁 fixture 重建把结果污染掉。
+
+当前已经采用或明确固定的 benchmark 技术路线如下：
+
+- 主计时框架使用 `pytest-benchmark`
+  当前 `requirements-test.txt` 已包含它，`pytest.ini` 也已经声明了 `benchmark` marker，首轮基线已经基于它跑通。
+- 对高耗时、IO 型场景优先使用 `benchmark.pedantic(...)`
+  当前 benchmark 测试已经统一采用固定 rounds / iterations 的口径，避免 auto-calibration 把大操作拆成难解释的碎片样本。
+- 通过 `--benchmark-json build/benchmark/<name>.json` 导出原始结果
+  当前 `pytest-benchmark` 基线结果已经输出到 `build/benchmark/pytest-benchmark-smoke.json`，汇总 runner 则输出到 `build/benchmark/phase9-*.json`。
+- 用 runner 额外记录 wall-clock、operation-level seconds、throughput 与空间指标
+  当前 `tools/benchmark/run_phase9.py` 已同时保留“整场景耗时”和“真实操作耗时”，避免把 repo 初始化成本误算成纯读取/纯写入吞吐。
+- 用真实文件系统扫描补充 repo 磁盘占用、可回收空间变化等结果
+  对 `gc()`、重复大文件和 overlap 场景，当前已经记录 `chunk_pack_bytes_before_gc/after_gc`、`dedup_gain_after_gc`、`physical_over_*` 等指标。
+- `tracemalloc` 与 Python heap peak
+  目前尚未接入，后续作为第二轮 profiling/扩展项补齐。
+
+初版 benchmark 的主要输出指标固定如下：
+
+- latency：以 median 为主，必要时补 IQR / stddev；不拿单次最小值做结论
+- throughput：对上传、下载、范围读取按 MiB/s 计算
+- repo size delta：操作前后仓库总大小变化
+- cache amplification：下载/快照后 `cache/` 占用变化
+- Python heap peak：通过 `tracemalloc` 记录峰值
+- operation shape：输入规模、文件数、commit 深度、large-file 阈值、是否 cold/warm
+
+其中 cold / warm 的定义会明确区分：
+
+- `cold`：新建 repo 或新开进程，且不复用先前的 detached 视图输出
+- `warm`：同一 repo 在一次预热调用后重复执行，允许复用已存在的 managed cache 与磁盘元数据
+
+需要特别说明的是：Phase 9 不会尝试在 CI 中“清空操作系统 page cache”来伪造绝对冷启动，因为那既不跨平台，也不稳定。我们只要求同一 runner、同一轮 benchmark 内部的比较可解释。
+
+### 当前 benchmark 代码组织
+
+为了让 benchmark 可维护，Phase 9 当前已经引入下面这组结构：
+
+- `test/benchmark/test_phase9_small.py`
+  小文件、历史列表、下载与快照的公开 API benchmark
+- `test/benchmark/test_phase9_large.py`
+  大文件、chunk 边界、`read_range()` 和 whole-file vs chunked 对比
+- `test/benchmark/test_phase9_maintenance.py`
+  `verify()`、`gc()`、`squash_history()`、空间画像 benchmark
+- `test/benchmark/conftest.py`
+  只放公共 benchmark fixture、确定性数据集生成器和结果辅助函数
+- `tools/benchmark/compare.py`
+  比较两个 `pytest-benchmark` JSON，输出性能变化摘要、重点退化项和建议关注点
+- `.github/workflows/benchmark.yml`
+  尚未落地，后续会补成手动触发或定时触发的 benchmark workflow，单独上传 JSON 和汇总报告，不与普通单元测试工作流混跑
+
+### 当前执行记录与结论
+
+本轮基线使用仓库内 `./venv/bin/python` 执行，已实际跑过以下命令：
+
+- `./venv/bin/python -m tools.benchmark.run_phase9 --scale smoke --output build/benchmark/phase9-smoke-summary.json`
+- `./venv/bin/python -m tools.benchmark.run_phase9 --scale standard --output build/benchmark/phase9-standard-summary.json`
+- `HUBVAULT_BENCHMARK_SCALE=smoke ./venv/bin/python -m pytest test/benchmark -sv -m benchmark --benchmark-only --benchmark-json=build/benchmark/pytest-benchmark-smoke.json`
+
+更详细的数据集、指标拆分和分析结论已单独写入 `plan/init/07-phase9-benchmark-baseline.md`，避免把执行计划文档本身塞成原始结果转储。
+
+截至当前，`standard` 基线的代表性结果如下：
+
+- 大文件上传：12 MiB `upload_file()` 实测操作耗时约 `0.214s`，吞吐约 `56.08 MiB/s`
+- 大文件范围读取：1 MiB `read_range()` 实测操作耗时约 `0.0246s`，吞吐约 `40.70 MiB/s`
+- 小文件批量读取：128 个 4 KiB 文件总计 512 KiB，实测读取耗时约 `0.495s`，吞吐约 `1.01 MiB/s`
+- 冷快照导出：512 KiB 小文件树 `snapshot_download()` 实测操作耗时约 `1.37s`，吞吐约 `0.36 MiB/s`
+- `full_verify()`：maintenance-heavy 仓库约 9 MiB live 数据，实测校验耗时约 `3.56s`，吞吐约 `2.53 MiB/s`
+
+空间与 chunk 复用方面，当前已得到的结论已经比较明确：
+
+- 完全重复 live 大文件：6 个 12 MiB 文件在写后立刻的 `chunks.packs` 约为 `75.50 MiB`，`gc()` 后降到 `12.58 MiB`，`dedup_gain_after_gc = 6.0x`
+- 对齐重叠 live 大文件：6 个文件共享 8 MiB 前缀时，`chunks.packs` 从 `56.62 MiB` 降到 `14.68 MiB`，`dedup_gain_after_gc = 3.86x`
+- 错位重叠 live 大文件：同一 base payload 的滑窗错位场景下，`chunks.packs` 从 `75.50 MiB` 到 `75.50 MiB` 几乎不变，`dedup_gain_after_gc ≈ 1.0x`，相对唯一数据体积仍放大约 `6.0x`
+- 历史重复写入：同一路径连续 24 个相同 revision 时，`chunks.packs` 从 `301.99 MiB` 降到 `12.58 MiB`，`dedup_gain_after_gc = 24.0x`
+
+据此，当前 Phase 9 已经可以下结论：
+
+- 当前实现的时间性能在单机本地路径场景下是可接受的，尤其大文件上传与范围读取已经进入几十 MiB/s 量级
+- 当前实现的长期空间利用率主要取决于 `gc()` 之后的压实结果，而不是写入当下；也就是说，当前并没有写时 pack/chunk 物理复用
+- 对 exact duplicate 和 chunk 边界对齐的 overlap，`gc()` 之后的空间表现是健康的，能接近唯一数据体积
+- 对错位相似内容，固定大小 chunk 的复用几乎失效，这是当前最明确的空间短板
+- 如果后续要继续优化，优先级第一应是“写时复用/短期空间膨胀控制”，优先级第二才是“是否值得引入内容定义分块来改善错位重叠复用”
+
+### CI 与回归策略
+
+Phase 9 不会一开始就把性能 benchmark 当成 PR 强制门禁，否则噪声会比信号大。
+
+计划中的执行策略如下：
+
+- 默认 `make unittest` 仍只承担 correctness 回归，不掺 benchmark
+- 新增单独 benchmark 命令，例如：
+  `pytest test/benchmark -sv -m benchmark --benchmark-only --benchmark-json=build/benchmark/local.json`
+- 在 CI 中先提供手动触发或定时跑的 benchmark workflow，使用固定 Python 版本和尽量固定的 runner
+- 首轮只记录基线和变化趋势，不用绝对耗时直接 fail CI
+- 等积累到足够稳定的结果后，再考虑对少数高稳定场景加“相对退化阈值”告警，例如同 runner 下回退超过 15%-20% 才标红
+
+跨平台策略也会分层：
+
+- Linux x86_64 作为第一组“权威数值基线”环境，因为最容易稳定复现
+- Windows / macOS 先保留 benchmark smoke 子集，主要验证 harness 可运行且不会出现数量级异常回退
+- 当跨平台波动模式足够清楚后，再决定是否分别维护平台级基线
+
+### 热点分析与优化优先级
+
+Phase 9 的优化顺序不会是“先上可选依赖”，而是先做零协议风险的热点整理。
+
+优先考虑的无协议变更优化包括：
+
+- 减少同一公开调用内重复的 ref 解析、commit/tree 反序列化与目录扫描
+- 把哈希计算与文件复制/写入串成单遍流式处理，避免重复读文件
+- 对 `snapshot_download()`、`hf_hub_download()`、`verify()`、`gc()` 合并不必要的 `stat()` / `glob()` 扫描
+- 对 `read_range()` 评估更合适的 buffered IO / `mmap` 路径，但不能破坏 Windows / Python 3.7 兼容性
+- 对历史遍历与 merge-base 解析增加调用级缓存，而不是进程级全局状态，避免语义漂移
+
+只有在 benchmark 明确证明热点存在后，才评估以下可选技术：
+
+- `blake3`
+  只允许作为内部临时加速工具，例如快速预哈希、去重前置筛查或 chunk 规划辅助；绝不替代公开 `sha256`、`oid` 或任何 HF/Git 对齐字段
+- `zstandard`
+  只作为未来可选压缩实验候选；只有在证明确实是 IO/空间双瓶颈，并且格式影响、兼容策略和 fallback 都完全明确后，才考虑进入实现阶段
+- `fastcdc` 或同类内容定义分块算法
+  只在现有 chunk 方案被 benchmark 证明在大文件写入或空间利用上已成为主要瓶颈时再评估；默认不会为了“高级一点”而先替换
+
+明确不在 Phase 9 做的事情包括：
+
+- 修改公开 `oid` / `blob_id` / `sha256` 语义
+- 为了更快而去掉事务、锁、原子发布或 rollback-only 恢复
+- 让可选原生依赖变成安装和正确性的前置条件
+- 为了迎合 benchmark 结果而牺牲 repo 可搬迁、自包含和 detached view 语义
+
+### Benchmark 建立顺序
+
+这一阶段的实施顺序已经固定为：
+
+1. 先把数据集生成器与 benchmark harness 放到 `test/benchmark/`，并确保只通过公开 API/CLI 驱动。
+2. 先跑 baseline-only，不改任何实现，生成第一版 JSON 基线与汇总报告。
+3. 根据报告挑出 2-3 个最明显热点，再用 `cProfile` 等手段做定向分析。
+4. 优先尝试零协议风险优化，并在每轮优化后重跑同一批 benchmark。
+5. 只有在零协议风险优化仍无法解决主要瓶颈时，才进入可选依赖实验分支。
 
 ### Todo
 
-* [ ] 建立公开场景性能基线，覆盖小文件提交/读取、chunked 大文件提交/范围读取、快照导出、历史遍历、校验、GC 与历史压缩。
-* [ ] 在不改变磁盘协议和公开语义的前提下，识别热点并评估 hash、压缩、chunk 规划与索引查找等优化点。
-* [ ] 评估可选依赖 `blake3`、`zstd`、`fastcdc` 等的收益与兼容成本，确保没有它们时仍保持完全正确。
-* [ ] 为性能回归增加固定输入规模和结果记录，避免“感觉更快”式优化。
+* [x] 在 `test/benchmark/` 下建立只通过公开 API 驱动的 benchmark harness，并按小文件、大文件、维护路径拆分文件。
+* [x] 建立首轮固定数据集生成器，覆盖当前已落地的 `small-tree`、`large-single`、`exact-duplicate-live`、`aligned-overlap-live`、`shifted-overlap-live`、`historical-duplicate`、`maintenance-heavy`。
+* [ ] 继续把数据集扩展到 `nested-small`、`mixed-model`、`history-deep`、`threshold-sweep` 等终版规划形状。
+* [x] 用 `pytest-benchmark` + JSON 导出建立 baseline-only 首轮结果，覆盖小文件提交/读取、chunked 大文件提交/范围读取、快照导出、校验以及重复/重叠大文件空间画像。
+* [ ] 把 baseline 扩展到历史遍历、merge、`hf_hub_download()` warm path、`squash_history()` 与 CLI 端到端路径。
+* [x] 为结果对比补 `tools/benchmark/compare.py` 一类的汇总工具，避免 benchmark 结果只停留在原始 JSON。
+* [x] 为 benchmark 结果补 wall-clock、operation-level throughput 与 repo/chunk space 画像等首轮辅助指标。
+* [ ] 继续补 cache amplification、Python heap peak 与更细粒度的目录/文件数变化。
+* [ ] 明确并固化 cold / warm benchmark 语义，避免不同测试随意混用缓存状态。
+* [ ] 在不改变磁盘协议和公开语义的前提下，先定位 ref 解析、对象反序列化、目录扫描、哈希流水线、范围读取等热点，再决定是否优化。
+* [ ] 将优化优先级固定为“零协议风险优化优先，可选依赖实验靠后”，避免在没有证据前引入 `blake3` / `zstd` / `fastcdc`。
+* [ ] 为 Phase 3 大文件引擎建立阈值扫描基线，明确“何时 whole-file 更优、何时 chunked 更优”的交界点。
+* [ ] 建立手动触发或定时触发的 benchmark workflow，先记录趋势，再决定是否加入性能回归门禁。
 * [ ] 明确区分默认路径与可选加速路径，确保 Python 3.7-3.14 与三平台兼容红线不被突破。
-* [ ] 针对 Phase 3 大文件引擎增加“何时 chunk、何时 whole-file 更优”的基线分析，避免不必要的 chunk 化。
 
 ### Checklist
 
-* [ ] 性能优化前后公开 API 行为、存储格式和事务语义保持不变。
-* [ ] 至少一组可重复 benchmark 能展示当前瓶颈与优化收益。
-* [ ] 可选原生加速是纯增益项，不成为正确性与可安装性的前置条件。
-* [ ] 小文件路径不会因为追求大文件性能而出现明显回退。
-* [ ] `make unittest` 与性能基线回归通过。
+* [x] 首轮性能基线已经建立，后续任何优化前后都必须保持公开 API 行为、存储格式和事务语义不变。
+* [x] 至少一组同机可重复 benchmark 已经展示出当前瓶颈、收益空间和退化风险。
+* [x] benchmark 结果已经包含时间以外的关键辅助指标，而不是只有一个“总耗时”数字。
+* [ ] cold / warm、whole-file / chunked、small / large、correctness / benchmark 这几组概念边界都被清楚区分。
+* [ ] 可选原生加速是纯增益项，不成为正确性、安装和跨平台支持的前置条件。
+* [x] 当前基线已经能说明小文件路径与大文件路径是两类不同瓶颈，后续优化不能只盯大文件吞吐。
+* [ ] benchmark harness 本身能在 Linux、Windows、macOS 上至少运行 smoke 子集。
+* [ ] `make unittest` 与独立 benchmark 基线回归都通过。
 
 ## Phase 10. 文档、README 与教程
 
@@ -436,7 +705,7 @@
 
 ### Status
 
-未开始。
+已完成。
 
 ### README 组织计划
 
