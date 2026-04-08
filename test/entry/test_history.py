@@ -30,7 +30,7 @@ class TestEntryHistoryCommands:
         assert "update title" in oneline_result.output
 
         assert full_result.exit_code == 0
-        assert "commit sha256:" in full_result.output
+        assert any(line.startswith("commit ") and len(line.split()[-1]) == 40 for line in full_result.output.splitlines())
         assert "Author:" in full_result.output
         assert "Date:" in full_result.output
         assert "seed title" in full_result.output

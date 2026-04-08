@@ -95,6 +95,9 @@ WINDOWS_RESERVED_NAMES = {
 REF_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 DRIVE_PATTERN = re.compile(r"^[A-Za-z]:")
 GC_ANALYSIS_PACK_ID = "gc-0000000000000000-00000000"
+GIT_OID_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+PUBLIC_GIT_AUTHOR_NAME = "HubVault"
+PUBLIC_GIT_AUTHOR_EMAIL = "hubvault@local"
 
 
 def _utc_now() -> str:
@@ -288,6 +291,105 @@ def _git_blob_oid(data: bytes) -> str:
 
     header = "blob %d\0" % len(data)
     return sha1(header.encode("utf-8") + data).hexdigest()
+
+
+def _git_tree_sort_key(name: str, is_tree: bool) -> bytes:
+    """
+    Build the Git tree sort key for one entry name.
+
+    Git compares tree entries by raw path bytes, with directory names sorted as
+    if they had a trailing slash.
+
+    :param name: Entry name relative to the current tree
+    :type name: str
+    :param is_tree: Whether the entry is a tree/directory
+    :type is_tree: bool
+    :return: Raw Git sort key bytes
+    :rtype: bytes
+    """
+
+    key = str(name).encode("utf-8")
+    if is_tree:
+        return key + b"/"
+    return key
+
+
+def _git_tree_oid(entries: Sequence[Dict[str, object]]) -> str:
+    """
+    Compute a Git-compatible tree object ID from public entry metadata.
+
+    Each entry must provide ``name``, ``entry_type``, ``mode``, and
+    Git-compatible ``git_oid`` fields.
+
+    :param entries: Tree entry payloads
+    :type entries: Sequence[Dict[str, object]]
+    :return: Git tree SHA-1 digest
+    :rtype: str
+    :raises IntegrityError: Raised when any entry has an invalid public Git OID.
+    """
+
+    ordered_entries = []
+    for entry in entries:
+        entry_type = str(entry["entry_type"])
+        name = str(entry["name"])
+        git_oid = str(entry["git_oid"])
+        if not GIT_OID_PATTERN.fullmatch(git_oid):
+            raise IntegrityError("invalid git tree entry oid")
+        mode = str(entry["mode"])
+        if entry_type == "tree" and mode.startswith("0"):
+            mode = mode[1:]
+        ordered_entries.append((name, entry_type == "tree", mode, git_oid))
+
+    ordered_entries.sort(key=lambda item: _git_tree_sort_key(item[0], item[1]))
+    body = b"".join(
+        mode.encode("ascii") + b" " + name.encode("utf-8") + b"\0" + bytes.fromhex(git_oid)
+        for name, is_tree, mode, git_oid in ordered_entries
+    )
+    header = "tree %d\0" % len(body)
+    return sha1(header.encode("utf-8") + body).hexdigest()
+
+
+def _git_commit_oid(tree_oid: str, parent_oids: Sequence[str], message: str, created_at: str) -> str:
+    """
+    Compute a Git-compatible commit object ID from public commit metadata.
+
+    :param tree_oid: Git-compatible tree OID for the commit snapshot
+    :type tree_oid: str
+    :param parent_oids: Parent commit OIDs in stored order
+    :type parent_oids: Sequence[str]
+    :param message: Stored commit message text
+    :type message: str
+    :param created_at: Stored UTC timestamp string
+    :type created_at: str
+    :return: Git commit SHA-1 digest
+    :rtype: str
+    :raises IntegrityError: Raised when the tree or parent OIDs are invalid.
+    """
+
+    if not GIT_OID_PATTERN.fullmatch(str(tree_oid)):
+        raise IntegrityError("invalid git tree oid")
+    normalized_parents = []
+    for parent_oid in parent_oids:
+        parent_text = str(parent_oid)
+        if not GIT_OID_PATTERN.fullmatch(parent_text):
+            raise IntegrityError("invalid git parent oid")
+        normalized_parents.append(parent_text)
+
+    timestamp = int(_parse_utc_timestamp(created_at).timestamp())
+    signature = "%s <%s> %d +0000" % (
+        PUBLIC_GIT_AUTHOR_NAME,
+        PUBLIC_GIT_AUTHOR_EMAIL,
+        timestamp,
+    )
+    raw_message = str(message)
+    if not raw_message.endswith("\n"):
+        raw_message += "\n"
+    body_lines = ["tree " + str(tree_oid)]
+    body_lines.extend("parent " + parent_oid for parent_oid in normalized_parents)
+    body_lines.extend(["author " + signature, "committer " + signature, "", raw_message])
+    body = "\n".join(body_lines).encode("utf-8")
+    header = "commit %d\0" % len(body)
+    return sha1(header.encode("utf-8") + body).hexdigest()
 
 
 def _add_wildcard_to_directories(pattern: str) -> str:
@@ -825,6 +927,195 @@ class RepositoryBackend(object):
         with lock.write_lock():
             yield
 
+    def _read_staged_or_published_object_payload(self, txdir: Optional[Path], object_type: str, object_id: str) -> Dict[str, object]:
+        """
+        Read a JSON-backed object payload from staged or published storage.
+
+        :param txdir: Optional transaction directory to consult first
+        :type txdir: Optional[pathlib.Path]
+        :param object_type: Stored object collection name
+        :type object_type: str
+        :param object_id: Object identifier
+        :type object_id: str
+        :return: Decoded logical payload
+        :rtype: Dict[str, object]
+        :raises IntegrityError: Raised when a staged object container is malformed.
+        """
+
+        if txdir is not None:
+            staged_path = self._stage_object_json_path(txdir, object_type, object_id)
+            if staged_path.exists():
+                container = _read_json(staged_path)
+                if not isinstance(container, dict) or "payload" not in container:
+                    raise IntegrityError("invalid object container")
+                return dict(container["payload"])
+        return self._read_object_payload(object_type, object_id)
+
+    def _public_tree_oid(
+        self,
+        tree_id: str,
+        txdir: Optional[Path] = None,
+        cache: Optional[Dict[str, str]] = None,
+        active: Optional[set] = None,
+    ) -> str:
+        """
+        Resolve the public Git-compatible tree OID for an internal tree object.
+
+        :param tree_id: Internal tree object identifier
+        :type tree_id: str
+        :param txdir: Optional transaction directory to consult first
+        :type txdir: Optional[pathlib.Path], optional
+        :param cache: Optional memoization cache keyed by internal tree ID
+        :type cache: Optional[Dict[str, str]], optional
+        :param active: Optional recursion guard set
+        :type active: Optional[set], optional
+        :return: Git-compatible public tree OID
+        :rtype: str
+        :raises IntegrityError: Raised when the tree payload is malformed.
+        """
+
+        if cache is None:
+            cache = {}
+        if active is None:
+            active = set()
+        cached = cache.get(tree_id)
+        if cached is not None:
+            return cached
+        if tree_id in active:
+            raise IntegrityError("tree cycle detected while computing public tree oid")
+
+        active.add(tree_id)
+        try:
+            tree_payload = self._read_staged_or_published_object_payload(txdir, "trees", tree_id)
+            stored_git_oid = tree_payload.get("git_oid")
+            if stored_git_oid is not None:
+                stored_git_oid = str(stored_git_oid)
+                if not GIT_OID_PATTERN.fullmatch(stored_git_oid):
+                    raise IntegrityError("invalid stored git tree oid")
+                cache[tree_id] = stored_git_oid
+                return stored_git_oid
+
+            public_entries = []
+            for entry in tree_payload.get("entries", []):
+                entry_type = str(entry["entry_type"])
+                object_id = str(entry["object_id"])
+                if entry_type == "file":
+                    file_payload = self._read_staged_or_published_object_payload(txdir, "files", object_id)
+                    entry_git_oid = str(file_payload["oid"])
+                elif entry_type == "tree":
+                    entry_git_oid = self._public_tree_oid(object_id, txdir=txdir, cache=cache, active=active)
+                else:
+                    raise IntegrityError("unknown tree entry type")
+                public_entries.append(
+                    {
+                        "name": str(entry["name"]),
+                        "entry_type": entry_type,
+                        "mode": str(entry["mode"]),
+                        "git_oid": entry_git_oid,
+                    }
+                )
+
+            public_tree_oid = _git_tree_oid(public_entries)
+            cache[tree_id] = public_tree_oid
+            return public_tree_oid
+        except IntegrityError:
+            raise
+        except (KeyError, TypeError, ValueError, RevisionNotFoundError) as err:
+            raise IntegrityError("invalid tree %s: %s" % (tree_id, err))
+        finally:
+            active.discard(tree_id)
+
+    def _public_commit_oid(
+        self,
+        commit_id: str,
+        txdir: Optional[Path] = None,
+        commit_cache: Optional[Dict[str, str]] = None,
+        tree_cache: Optional[Dict[str, str]] = None,
+        active: Optional[set] = None,
+    ) -> str:
+        """
+        Resolve the public Git-compatible commit OID for an internal commit object.
+
+        :param commit_id: Internal commit object identifier
+        :type commit_id: str
+        :param txdir: Optional transaction directory to consult first
+        :type txdir: Optional[pathlib.Path], optional
+        :param commit_cache: Optional memoization cache keyed by internal commit ID
+        :type commit_cache: Optional[Dict[str, str]], optional
+        :param tree_cache: Optional memoization cache keyed by internal tree ID
+        :type tree_cache: Optional[Dict[str, str]], optional
+        :param active: Optional recursion guard set
+        :type active: Optional[set], optional
+        :return: Git-compatible public commit OID
+        :rtype: str
+        :raises IntegrityError: Raised when the commit payload is malformed.
+        """
+
+        if commit_cache is None:
+            commit_cache = {}
+        if tree_cache is None:
+            tree_cache = {}
+        if active is None:
+            active = set()
+        cached = commit_cache.get(commit_id)
+        if cached is not None:
+            return cached
+        if commit_id in active:
+            raise IntegrityError("commit cycle detected while computing public commit oid")
+
+        active.add(commit_id)
+        try:
+            commit_payload = self._read_staged_or_published_object_payload(txdir, "commits", commit_id)
+            stored_git_oid = commit_payload.get("git_oid")
+            if stored_git_oid is not None:
+                stored_git_oid = str(stored_git_oid)
+                if not GIT_OID_PATTERN.fullmatch(stored_git_oid):
+                    raise IntegrityError("invalid stored git commit oid")
+                commit_cache[commit_id] = stored_git_oid
+                return stored_git_oid
+
+            tree_oid = self._public_tree_oid(str(commit_payload["tree_id"]), txdir=txdir, cache=tree_cache)
+            parent_oids = [
+                self._public_commit_oid(
+                    str(parent_id),
+                    txdir=txdir,
+                    commit_cache=commit_cache,
+                    tree_cache=tree_cache,
+                    active=active,
+                )
+                for parent_id in commit_payload.get("parents", [])
+            ]
+            public_commit_oid = _git_commit_oid(
+                tree_oid=tree_oid,
+                parent_oids=parent_oids,
+                message=str(commit_payload.get("message", "")),
+                created_at=str(commit_payload["created_at"]),
+            )
+            commit_cache[commit_id] = public_commit_oid
+            return public_commit_oid
+        except IntegrityError:
+            raise
+        except (KeyError, TypeError, ValueError, RevisionNotFoundError) as err:
+            raise IntegrityError("invalid commit %s: %s" % (commit_id, err))
+        finally:
+            active.discard(commit_id)
+
+    def _public_commit_oid_or_none(self, commit_id: Optional[str], txdir: Optional[Path] = None) -> Optional[str]:
+        """
+        Resolve an optional internal commit ID to its public Git OID.
+
+        :param commit_id: Internal commit object identifier, or ``None``
+        :type commit_id: Optional[str]
+        :param txdir: Optional transaction directory to consult first
+        :type txdir: Optional[pathlib.Path], optional
+        :return: Public Git OID, or ``None``
+        :rtype: Optional[str]
+        """
+
+        if commit_id is None:
+            return None
+        return self._public_commit_oid(commit_id, txdir=txdir)
+
     def create_repo(
         self,
         default_branch: str = DEFAULT_BRANCH,
@@ -927,18 +1218,25 @@ class RepositoryBackend(object):
         txdir = self._create_txdir(branch_name, current_head)
         try:
             tree_id = self._stage_tree_objects(txdir, {})
+            created_at = _utc_now()
             commit_payload = {
                 "format_version": FORMAT_VERSION,
                 "tree_id": tree_id,
                 "parents": [],
                 "author": "",
                 "committer": "",
-                "created_at": _utc_now(),
+                "created_at": created_at,
                 "message": "Initial commit",
                 "title": "Initial commit",
                 "description": "",
                 "metadata": {},
             }
+            commit_payload["git_oid"] = _git_commit_oid(
+                tree_oid=self._public_tree_oid(tree_id, txdir=txdir),
+                parent_oids=[],
+                message=str(commit_payload["message"]),
+                created_at=created_at,
+            )
             commit_id = self._stage_json_object(txdir, "commits", commit_payload)
             self._stage_chunk_manifest(txdir)
             self._write_tx_state(txdir, "STAGED")
@@ -1005,7 +1303,7 @@ class RepositoryBackend(object):
             repo_path=str(self._repo_path),
             format_version=int(config["format_version"]),
             default_branch=str(config["default_branch"]),
-            head=head,
+            head=self._public_commit_oid_or_none(head),
             refs=self._list_refs(),
         )
 
@@ -1088,8 +1386,10 @@ class RepositoryBackend(object):
             current_head = self._read_ref(branch_name)
             txdir = self._create_txdir(branch_name, current_head)
             try:
-                if parent_commit is not None and parent_commit != current_head:
-                    raise ConflictError("expected head does not match current branch head")
+                if parent_commit is not None:
+                    expected_parent_commit = self._resolve_revision(parent_commit)
+                    if expected_parent_commit != current_head:
+                        raise ConflictError("expected head does not match current branch head")
 
                 snapshot = self._snapshot_for_commit(current_head)
                 staged_snapshot = dict(snapshot)
@@ -1118,18 +1418,27 @@ class RepositoryBackend(object):
 
                 self._validate_snapshot(staged_snapshot)
                 tree_id = self._stage_tree_objects(txdir, staged_snapshot)
+                created_at = _utc_now()
                 commit_payload = {
                     "format_version": FORMAT_VERSION,
                     "tree_id": tree_id,
                     "parents": [current_head] if current_head else [],
                     "author": "",
                     "committer": "",
-                    "created_at": _utc_now(),
+                    "created_at": created_at,
                     "message": full_commit_message,
                     "title": stored_title,
                     "description": stored_description,
                     "metadata": {},
                 }
+                commit_payload["git_oid"] = _git_commit_oid(
+                    tree_oid=self._public_tree_oid(tree_id, txdir=txdir),
+                    parent_oids=[
+                        self._public_commit_oid(current_head),
+                    ] if current_head else [],
+                    message=full_commit_message,
+                    created_at=created_at,
+                )
                 commit_id = self._stage_json_object(txdir, "commits", commit_payload)
                 self._stage_chunk_manifest(txdir)
 
@@ -1154,7 +1463,7 @@ class RepositoryBackend(object):
                     commit_url=self._commit_url(commit_id),
                     commit_message=stored_title,
                     commit_description=stored_description,
-                    oid=commit_id,
+                    oid=self._public_commit_oid(commit_id),
                 )
             finally:
                 self._cleanup_txdir(txdir)
@@ -1226,8 +1535,10 @@ class RepositoryBackend(object):
                 target_revision or str(repo_config["default_branch"])
             )
             target_head = self._read_ref(target_branch_name)
-            if parent_commit is not None and parent_commit != target_head:
-                raise ConflictError("expected head does not match current branch head")
+            if parent_commit is not None:
+                expected_parent_commit = self._resolve_revision(parent_commit)
+                if expected_parent_commit != target_head:
+                    raise ConflictError("expected head does not match current branch head")
 
             source_head = self._resolve_revision(source_revision, allow_empty_ref=True)
 
@@ -1237,9 +1548,9 @@ class RepositoryBackend(object):
                     target_revision=target_branch_name,
                     source_revision=source_revision,
                     base_commit=None,
-                    target_head_before=target_head,
+                    target_head_before=self._public_commit_oid_or_none(target_head),
                     source_head=None,
-                    head_after=target_head,
+                    head_after=self._public_commit_oid_or_none(target_head),
                     commit=self._commit_info(target_head, target_branch_name) if target_head is not None else None,
                     conflicts=[],
                     fast_forward=False,
@@ -1264,8 +1575,8 @@ class RepositoryBackend(object):
                     source_revision=source_revision,
                     base_commit=None,
                     target_head_before=None,
-                    source_head=source_head,
-                    head_after=source_head,
+                    source_head=self._public_commit_oid_or_none(source_head),
+                    head_after=self._public_commit_oid_or_none(source_head),
                     commit=self._commit_info(source_head, target_branch_name),
                     conflicts=[],
                     fast_forward=True,
@@ -1277,10 +1588,10 @@ class RepositoryBackend(object):
                     status="already-up-to-date",
                     target_revision=target_branch_name,
                     source_revision=source_revision,
-                    base_commit=target_head,
-                    target_head_before=target_head,
-                    source_head=source_head,
-                    head_after=target_head,
+                    base_commit=self._public_commit_oid_or_none(target_head),
+                    target_head_before=self._public_commit_oid_or_none(target_head),
+                    source_head=self._public_commit_oid_or_none(source_head),
+                    head_after=self._public_commit_oid_or_none(target_head),
                     commit=self._commit_info(target_head, target_branch_name),
                     conflicts=[],
                     fast_forward=False,
@@ -1292,10 +1603,10 @@ class RepositoryBackend(object):
                     status="already-up-to-date",
                     target_revision=target_branch_name,
                     source_revision=source_revision,
-                    base_commit=source_head,
-                    target_head_before=target_head,
-                    source_head=source_head,
-                    head_after=target_head,
+                    base_commit=self._public_commit_oid_or_none(source_head),
+                    target_head_before=self._public_commit_oid_or_none(target_head),
+                    source_head=self._public_commit_oid_or_none(source_head),
+                    head_after=self._public_commit_oid_or_none(target_head),
                     commit=self._commit_info(target_head, target_branch_name),
                     conflicts=[],
                     fast_forward=False,
@@ -1318,10 +1629,10 @@ class RepositoryBackend(object):
                     status="fast-forward",
                     target_revision=target_branch_name,
                     source_revision=source_revision,
-                    base_commit=target_head,
-                    target_head_before=target_head,
-                    source_head=source_head,
-                    head_after=source_head,
+                    base_commit=self._public_commit_oid_or_none(target_head),
+                    target_head_before=self._public_commit_oid_or_none(target_head),
+                    source_head=self._public_commit_oid_or_none(source_head),
+                    head_after=self._public_commit_oid_or_none(source_head),
                     commit=self._commit_info(source_head, target_branch_name),
                     conflicts=[],
                     fast_forward=True,
@@ -1342,10 +1653,10 @@ class RepositoryBackend(object):
                     status="conflict",
                     target_revision=target_branch_name,
                     source_revision=source_revision,
-                    base_commit=base_commit,
-                    target_head_before=target_head,
-                    source_head=source_head,
-                    head_after=target_head,
+                    base_commit=self._public_commit_oid_or_none(base_commit),
+                    target_head_before=self._public_commit_oid_or_none(target_head),
+                    source_head=self._public_commit_oid_or_none(source_head),
+                    head_after=self._public_commit_oid_or_none(target_head),
                     commit=None,
                     conflicts=conflicts,
                     fast_forward=False,
@@ -1370,13 +1681,14 @@ class RepositoryBackend(object):
             try:
                 self._validate_snapshot(merged_snapshot)
                 tree_id = self._stage_tree_objects(txdir, merged_snapshot)
+                created_at = _utc_now()
                 commit_payload = {
                     "format_version": FORMAT_VERSION,
                     "tree_id": tree_id,
                     "parents": [target_head, source_head],
                     "author": "",
                     "committer": "",
-                    "created_at": _utc_now(),
+                    "created_at": created_at,
                     "message": full_commit_message,
                     "title": stored_title,
                     "description": stored_description,
@@ -1388,6 +1700,15 @@ class RepositoryBackend(object):
                         }
                     },
                 }
+                commit_payload["git_oid"] = _git_commit_oid(
+                    tree_oid=self._public_tree_oid(tree_id, txdir=txdir),
+                    parent_oids=[
+                        self._public_commit_oid(target_head),
+                        self._public_commit_oid(source_head),
+                    ],
+                    message=full_commit_message,
+                    created_at=created_at,
+                )
                 commit_id = self._stage_json_object(txdir, "commits", commit_payload)
                 self._stage_chunk_manifest(txdir)
                 self._write_tx_state(txdir, "STAGED")
@@ -1407,15 +1728,15 @@ class RepositoryBackend(object):
                 status="merged",
                 target_revision=target_branch_name,
                 source_revision=source_revision,
-                base_commit=base_commit,
-                target_head_before=target_head,
-                source_head=source_head,
-                head_after=commit_id,
+                base_commit=self._public_commit_oid_or_none(base_commit),
+                target_head_before=self._public_commit_oid_or_none(target_head),
+                source_head=self._public_commit_oid_or_none(source_head),
+                head_after=self._public_commit_oid_or_none(commit_id),
                 commit=CommitInfo(
                     commit_url=self._commit_url(commit_id),
                     commit_message=stored_title,
                     commit_description=stored_description,
-                    oid=commit_id,
+                    oid=self._public_commit_oid(commit_id),
                 ),
                 conflicts=[],
                 fast_forward=False,
@@ -1672,7 +1993,7 @@ class RepositoryBackend(object):
                 GitRefInfo(
                     name=name,
                     ref="refs/heads/" + name,
-                    target_commit=self._read_ref(name),
+                    target_commit=self._public_commit_oid_or_none(self._read_ref(name)),
                 )
                 for name in self._list_branch_names()
             ]
@@ -1680,7 +2001,7 @@ class RepositoryBackend(object):
                 GitRefInfo(
                     name=name,
                     ref="refs/tags/" + name,
-                    target_commit=self._read_tag_ref(name),
+                    target_commit=self._public_commit_oid_or_none(self._read_tag_ref(name)),
                 )
                 for name in self._list_tag_names()
             ]
@@ -2029,8 +2350,8 @@ class RepositoryBackend(object):
                     ReflogEntry(
                         timestamp=_parse_utc_timestamp(str(payload["timestamp"])),
                         ref_name=str(payload["ref_name"]),
-                        old_head=payload.get("old_head"),
-                        new_head=payload.get("new_head"),
+                        old_head=self._public_commit_oid_or_none(payload.get("old_head")),
+                        new_head=self._public_commit_oid_or_none(payload.get("new_head")),
                         message=str(payload.get("message", "")),
                         checksum=str(payload["checksum"]),
                     )
@@ -2378,7 +2699,8 @@ class RepositoryBackend(object):
                 return str(target_path)
 
             resolved_head = self._resolve_revision(resolved_revision)
-            view_key = _sha256_hex(((resolved_head or "") + ":" + normalized_path).encode("utf-8"))
+            public_head = self._public_commit_oid_or_none(resolved_head)
+            view_key = _sha256_hex((((public_head or "") + ":" + normalized_path).encode("utf-8")))
             view_root = self._repo_path / "cache" / "files" / view_key
             target_path = view_root / normalized_path
             self._ensure_detached_view(target_path, data, file_payload)
@@ -2447,6 +2769,7 @@ class RepositoryBackend(object):
 
         with self._read_locked():
             resolved_head = self._resolve_revision(selected_revision, allow_empty_ref=True)
+            public_head = self._public_commit_oid_or_none(resolved_head)
             snapshot = self._snapshot_for_commit(resolved_head)
             selected_paths = _filter_repo_paths(
                 sorted(snapshot),
@@ -2459,8 +2782,7 @@ class RepositoryBackend(object):
             view_key = _sha256_hex(
                 _stable_json_bytes(
                     {
-                        "revision": selected_revision,
-                        "commit_id": resolved_head,
+                        "commit_id": public_head,
                         "allow_patterns": normalized_allow,
                         "ignore_patterns": normalized_ignore,
                     }
@@ -2520,7 +2842,7 @@ class RepositoryBackend(object):
             metadata = {
                 "view_key": view_key,
                 "revision": selected_revision,
-                "commit_id": resolved_head,
+                "commit_id": public_head,
                 "allow_patterns": normalized_allow,
                 "ignore_patterns": normalized_ignore,
                 "target_path": target_metadata_path,
@@ -3206,6 +3528,15 @@ class RepositoryBackend(object):
                         old_payload["parents"] = []
                     else:
                         old_payload["parents"] = [previous_new_commit_id]
+                    old_payload["git_oid"] = _git_commit_oid(
+                        tree_oid=self._public_tree_oid(str(old_payload["tree_id"]), txdir=txdir),
+                        parent_oids=[
+                            self._public_commit_oid(str(parent_id), txdir=txdir)
+                            for parent_id in old_payload.get("parents", [])
+                        ],
+                        message=str(old_payload.get("message", "")),
+                        created_at=str(old_payload["created_at"]),
+                    )
                     previous_new_commit_id = self._stage_json_object(txdir, "commits", old_payload)
 
                 new_head = previous_new_commit_id
@@ -3232,15 +3563,18 @@ class RepositoryBackend(object):
                 lineage_set=set(lineage),
                 excluded_ref_name=full_ref_name,
             )
+            public_old_head = self._public_commit_oid(old_head)
+            public_new_head = self._public_commit_oid(new_head)
+            public_root_commit_before = self._public_commit_oid(root_commit_before)
             gc_report = None
             if run_gc:
                 gc_report = self._gc_unlocked(dry_run=False, prune_cache=prune_cache)
 
             return SquashReport(
                 ref_name=full_ref_name,
-                old_head=old_head,
-                new_head=new_head,
-                root_commit_before=root_commit_before,
+                old_head=public_old_head,
+                new_head=public_new_head,
+                root_commit_before=public_root_commit_before,
                 rewritten_commit_count=len(rewrite_lineage),
                 dropped_ancestor_count=dropped_ancestor_count,
                 blocking_refs=blocking_refs,
@@ -3795,7 +4129,7 @@ class RepositoryBackend(object):
         """Resolve a merge target to an existing branch name."""
 
         text = str(revision)
-        if text.startswith(OBJECT_HASH + ":") or text.startswith("refs/tags/"):
+        if text.startswith(OBJECT_HASH + ":") or text.startswith("refs/tags/") or GIT_OID_PATTERN.fullmatch(text):
             raise UnsupportedPathError("merge target must be a branch ref")
         if text.startswith("refs/heads/"):
             branch_name = _validate_ref_name(text.split("/", 2)[-1])
@@ -4708,6 +5042,10 @@ class RepositoryBackend(object):
             elif tag_path.exists():
                 head = self._read_tag_ref(revision)
             else:
+                if GIT_OID_PATTERN.fullmatch(str(revision)):
+                    for commit_id in self._iter_object_ids_unlocked("commits"):
+                        if self._public_commit_oid(commit_id) == revision:
+                            return commit_id
                 raise RevisionNotFoundError("revision not found: %s" % revision)
 
         if head is None and not allow_empty_ref:
@@ -5080,7 +5418,7 @@ class RepositoryBackend(object):
             True
         """
 
-        return self._repo_url() + "#commit=" + commit_id
+        return self._repo_url() + "#commit=" + self._public_commit_oid(commit_id)
 
     def _blob_url(self, revision: str, path_in_repo: str) -> str:
         """
@@ -5186,7 +5524,7 @@ class RepositoryBackend(object):
         head_commit_id = self._resolve_revision(revision)
         commit_payload = self._read_object_payload("commits", head_commit_id)
         tree_id = self._tree_id_for_directory(str(commit_payload["tree_id"]), path)
-        return RepoFolder(path=path, tree_id=tree_id, last_commit=None)
+        return RepoFolder(path=path, tree_id=self._public_tree_oid(tree_id), last_commit=None)
 
     def _tree_id_for_directory(self, root_tree_id: str, path_in_repo: str) -> str:
         """
@@ -5257,7 +5595,7 @@ class RepositoryBackend(object):
                 items.append(self._repo_file_info(full_path, str(entry["object_id"])))
             elif entry["entry_type"] == "tree":
                 child_tree_id = str(entry["object_id"])
-                items.append(RepoFolder(path=full_path, tree_id=child_tree_id, last_commit=None))
+                items.append(RepoFolder(path=full_path, tree_id=self._public_tree_oid(child_tree_id), last_commit=None))
                 if recursive:
                     items.extend(self._list_tree_entries(child_tree_id, full_path, recursive=True))
             else:
@@ -5643,6 +5981,21 @@ class RepositoryBackend(object):
             "format_version": FORMAT_VERSION,
             "entries": entries,
         }
+        tree_payload["git_oid"] = _git_tree_oid(
+            [
+                {
+                    "name": str(entry["name"]),
+                    "entry_type": str(entry["entry_type"]),
+                    "mode": str(entry["mode"]),
+                    "git_oid": (
+                        self._public_tree_oid(str(entry["object_id"]), txdir=txdir)
+                        if str(entry["entry_type"]) == "tree"
+                        else str(self._read_staged_or_published_file_payload(txdir, str(entry["object_id"]))["oid"])
+                    ),
+                }
+                for entry in entries
+            ]
+        )
         return self._stage_json_object(txdir, "trees", tree_payload)
 
     def _read_staged_or_published_file_payload(self, txdir: Path, object_id: str) -> Dict[str, object]:
@@ -5767,7 +6120,7 @@ class RepositoryBackend(object):
             commit_url=self._commit_url(commit_id),
             commit_message=title,
             commit_description=description,
-            oid=commit_id,
+            oid=self._public_commit_oid(commit_id),
         )
 
     def _git_commit_info(self, commit_id: str, formatted: bool = False) -> GitCommitInfo:
@@ -5805,7 +6158,7 @@ class RepositoryBackend(object):
             formatted_message = html_escape(message).replace("\n", "<br />\n")
 
         return GitCommitInfo(
-            commit_id=commit_id,
+            commit_id=self._public_commit_oid(commit_id),
             authors=[],
             created_at=created_at,
             title=title,

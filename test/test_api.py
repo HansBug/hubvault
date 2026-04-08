@@ -36,6 +36,10 @@ def _sha256_value(data):
     return sha256(data).hexdigest()
 
 
+def _is_git_oid(value):
+    return isinstance(value, str) and len(value) == 40 and all(ch in "0123456789abcdef" for ch in value)
+
+
 @pytest.mark.unittest
 class TestApi:
     def test_create_repo_commit_and_read_methods(self, tmp_path):
@@ -72,7 +76,7 @@ class TestApi:
 
         info = api.repo_info()
         assert info.head == commit.oid
-        assert commit.oid.startswith("sha256:")
+        assert _is_git_oid(commit.oid)
         assert commit.commit_message == "add api assets"
         assert commit.commit_description == ""
         assert commit.repo_url.startswith("file:")
@@ -95,7 +99,7 @@ class TestApi:
         root_items = {item.path: item for item in api.list_repo_tree()}
         assert sorted(root_items) == ["artifacts", "configs", "models"]
         assert isinstance(root_items["models"], RepoFolder)
-        assert root_items["models"].tree_id.startswith("sha256:")
+        assert _is_git_oid(root_items["models"].tree_id)
 
         nested_items = api.list_repo_tree("models/core")
         assert len(nested_items) == 1
@@ -149,6 +153,7 @@ class TestApi:
         repo_dir = tmp_path / "repo"
         api = HubVaultApi(repo_dir)
         api.create_repo()
+        initial_head = api.repo_info().head
         assert [item.title for item in api.list_repo_commits()] == ["Initial commit"]
         first_commit = api.create_commit(
             operations=[CommitOperationAdd("data/file.txt", b"v1")],
@@ -168,7 +173,7 @@ class TestApi:
         with pytest.raises(ConflictError):
             api.create_commit(
                 operations=[CommitOperationAdd("data/file.txt", b"v2")],
-                parent_commit="sha256:not-the-head",
+                parent_commit=initial_head,
                 commit_message="stale parent",
             )
 

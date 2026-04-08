@@ -36,7 +36,7 @@ def short_oid(oid: Optional[str], length: int = 7) -> str:
 
     Example::
 
-        >>> short_oid("sha256:abcdef123456")
+        >>> short_oid("abcdef1234567890abcdef1234567890abcdef12")
         'abcdef1'
     """
 
@@ -146,7 +146,7 @@ def format_log_output(commits: Sequence[GitCommitInfo], oneline: bool = False) -
 
     Example::
 
-        >>> commit = GitCommitInfo("sha256:abcdef1", [], datetime(2024, 1, 1), "seed", "", None, None)
+        >>> commit = GitCommitInfo("abcdef1234567890abcdef1234567890abcdef12", [], datetime(2024, 1, 1), "seed", "", None, None)
         >>> format_log_output([commit], oneline=True)
         'abcdef1 seed'
     """

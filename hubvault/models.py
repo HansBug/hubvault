@@ -43,15 +43,15 @@ class RepoInfo:
     :type format_version: int
     :param default_branch: Name of the default branch
     :type default_branch: str
-    :param head: Resolved head commit ID for the selected revision, or ``None``
-        only for malformed or recovery-era empty refs
+    :param head: Resolved Git-compatible head commit OID for the selected
+        revision, or ``None`` only for malformed or recovery-era empty refs
     :type head: Optional[str]
     :param refs: Visible refs in the repository
     :type refs: List[str]
 
     Example::
 
-        >>> info = RepoInfo("/tmp/repo", 1, "main", "sha256:c1")
+        >>> info = RepoInfo("/tmp/repo", 1, "main", "1111111111111111111111111111111111111111")
         >>> info.default_branch
         'main'
     """
@@ -80,7 +80,7 @@ class CommitInfo(str):
     :type commit_message: str
     :param commit_description: Commit description/body aligned with HF naming
     :type commit_description: str
-    :param oid: Commit object ID aligned with HF naming
+    :param oid: Git-compatible commit OID aligned with HF naming
     :type oid: str
     :param pr_url: Pull-request URL placeholder. Always ``None`` for the local
         repository flow.
@@ -101,13 +101,13 @@ class CommitInfo(str):
     Example::
 
         >>> info = CommitInfo(
-        ...     commit_url="file:///tmp/repo#commit=sha256:c1",
+        ...     commit_url="file:///tmp/repo#commit=1111111111111111111111111111111111111111",
         ...     commit_message="seed",
         ...     commit_description="body",
-        ...     oid="sha256:c1",
+        ...     oid="1111111111111111111111111111111111111111",
         ... )
         >>> info.oid
-        'sha256:c1'
+        '1111111111111111111111111111111111111111'
     """
 
     commit_url: str
@@ -209,14 +209,16 @@ class MergeResult:
     :type target_revision: str
     :param source_revision: Source revision requested by the caller
     :type source_revision: str
-    :param base_commit: Resolved merge base commit, or ``None`` when no common
-        ancestor exists
+    :param base_commit: Resolved Git-compatible merge base commit OID, or
+        ``None`` when no common ancestor exists
     :type base_commit: Optional[str]
-    :param target_head_before: Target branch head before the merge attempt
+    :param target_head_before: Git-compatible target branch head OID before the
+        merge attempt
     :type target_head_before: Optional[str]
-    :param source_head: Resolved source commit
+    :param source_head: Resolved Git-compatible source commit OID
     :type source_head: Optional[str]
-    :param head_after: Target branch head after the merge attempt
+    :param head_after: Git-compatible target branch head OID after the merge
+        attempt
     :type head_after: Optional[str]
     :param commit: Commit metadata for the resulting head when the merge did
         not conflict, or ``None`` for conflict results
@@ -231,19 +233,19 @@ class MergeResult:
     Example::
 
         >>> commit = CommitInfo(
-        ...     commit_url="file:///tmp/repo#commit=sha256:c1",
+        ...     commit_url="file:///tmp/repo#commit=1111111111111111111111111111111111111111",
         ...     commit_message="seed",
         ...     commit_description="",
-        ...     oid="sha256:c1",
+        ...     oid="1111111111111111111111111111111111111111",
         ... )
         >>> result = MergeResult(
         ...     status="fast-forward",
         ...     target_revision="main",
         ...     source_revision="feature",
-        ...     base_commit="sha256:b0",
-        ...     target_head_before="sha256:b0",
-        ...     source_head="sha256:c1",
-        ...     head_after="sha256:c1",
+        ...     base_commit="0000000000000000000000000000000000000000",
+        ...     target_head_before="0000000000000000000000000000000000000000",
+        ...     source_head="1111111111111111111111111111111111111111",
+        ...     head_after="1111111111111111111111111111111111111111",
         ...     commit=commit,
         ...     conflicts=[],
         ...     fast_forward=True,
@@ -275,7 +277,7 @@ class GitCommitInfo:
     ``huggingface_hub.hf_api.GitCommitInfo`` while staying grounded in the
     local repository semantics of :mod:`hubvault`.
 
-    :param commit_id: Commit object ID
+    :param commit_id: Git-compatible commit OID
     :type commit_id: str
     :param authors: Authors associated with the commit
     :type authors: List[str]
@@ -295,7 +297,7 @@ class GitCommitInfo:
     Example::
 
         >>> info = GitCommitInfo(
-        ...     commit_id="sha256:c1",
+        ...     commit_id="1111111111111111111111111111111111111111",
         ...     authors=[],
         ...     created_at=datetime(2024, 1, 1, 0, 0, 0),
         ...     title="seed",
@@ -331,13 +333,13 @@ class GitRefInfo:
     :type name: str
     :param ref: Full ref name such as ``refs/heads/main``
     :type ref: str
-    :param target_commit: Target commit ID, or ``None`` for a malformed or
-        legacy empty local ref
+    :param target_commit: Git-compatible target commit OID, or ``None`` for a
+        malformed or legacy empty local ref
     :type target_commit: Optional[str]
 
     Example::
 
-        >>> info = GitRefInfo("main", "refs/heads/main", "sha256:c1")
+        >>> info = GitRefInfo("main", "refs/heads/main", "1111111111111111111111111111111111111111")
         >>> info.ref
         'refs/heads/main'
     """
@@ -399,7 +401,14 @@ class ReflogEntry:
 
     Example::
 
-        >>> entry = ReflogEntry(datetime(2024, 1, 1), "refs/heads/main", None, "sha256:c1", "seed", "sha256:x")
+        >>> entry = ReflogEntry(
+        ...     datetime(2024, 1, 1),
+        ...     "refs/heads/main",
+        ...     None,
+        ...     "1111111111111111111111111111111111111111",
+        ...     "seed",
+        ...     "sha256:x",
+        ... )
         >>> entry.message
         'seed'
     """
@@ -417,7 +426,7 @@ class LastCommitInfo:
     """
     Describe last-commit metadata for a repo path.
 
-    :param oid: Commit object ID
+    :param oid: Git-compatible commit OID
     :type oid: str
     :param title: Commit title
     :type title: str
@@ -539,7 +548,7 @@ class RepoFolder:
 
     :param path: Repo-relative folder path
     :type path: str
-    :param tree_id: Tree object ID
+    :param tree_id: Git-compatible tree OID
     :type tree_id: str
     :param last_commit: Last-commit metadata, if available
     :type last_commit: Optional[LastCommitInfo]
@@ -782,13 +791,13 @@ class SquashReport:
 
     :param ref_name: Full ref name updated by the squash operation
     :type ref_name: str
-    :param old_head: Previous ref target before the rewrite
+    :param old_head: Previous Git-compatible ref target before the rewrite
     :type old_head: str
-    :param new_head: New ref target after the rewrite
+    :param new_head: New Git-compatible ref target after the rewrite
     :type new_head: str
-    :param root_commit_before: Commit selected as the oldest preserved commit
-        before rewriting, or the previous head when the whole branch history
-        was collapsed into one new root commit
+    :param root_commit_before: Git-compatible commit OID selected as the oldest
+        preserved commit before rewriting, or the previous head when the whole
+        branch history was collapsed into one new root commit
     :type root_commit_before: str
     :param rewritten_commit_count: Number of commits rewritten onto the new
         synthetic history chain
@@ -807,16 +816,16 @@ class SquashReport:
 
         >>> report = SquashReport(
         ...     ref_name="refs/heads/main",
-        ...     old_head="sha256:old",
-        ...     new_head="sha256:new",
-        ...     root_commit_before="sha256:root",
+        ...     old_head="1111111111111111111111111111111111111111",
+        ...     new_head="2222222222222222222222222222222222222222",
+        ...     root_commit_before="0000000000000000000000000000000000000000",
         ...     rewritten_commit_count=2,
         ...     dropped_ancestor_count=3,
         ...     blocking_refs=[],
         ...     gc_report=None,
         ... )
         >>> report.new_head
-        'sha256:new'
+        '2222222222222222222222222222222222222222'
     """
 
     ref_name: str

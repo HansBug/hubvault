@@ -41,14 +41,14 @@ class TestModels:
 
     def test_public_models_align_with_hf_style_fields(self):
         commit = CommitInfo(
-            commit_url="file:///tmp/repo#commit=sha256:c1",
+            commit_url="file:///tmp/repo#commit=" + ("1" * 40),
             commit_message="hello",
             commit_description="world",
-            oid="sha256:c1",
+            oid="1" * 40,
         )
         lfs = BlobLfsInfo(size=1024, sha256="def", pointer_size=128)
         last_commit = LastCommitInfo(
-            oid="sha256:c1",
+            oid="1" * 40,
             title="seed",
             date=datetime(2024, 1, 1, tzinfo=timezone.utc),
         )
@@ -75,7 +75,7 @@ class TestModels:
             last_commit=last_commit,
         )
         git_commit = GitCommitInfo(
-            commit_id="sha256:c2",
+            commit_id="2" * 40,
             authors=["tester"],
             created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
             title="seed",
@@ -107,7 +107,7 @@ class TestModels:
             timestamp=datetime(2024, 1, 2, tzinfo=timezone.utc),
             ref_name="refs/heads/main",
             old_head=None,
-            new_head="sha256:c1",
+            new_head="1" * 40,
             message="seed",
             checksum="sha256:deadbeef",
         )
@@ -144,9 +144,9 @@ class TestModels:
         )
         squash_report = SquashReport(
             ref_name="refs/heads/main",
-            old_head="sha256:c1",
-            new_head="sha256:c2",
-            root_commit_before="sha256:c1",
+            old_head="1" * 40,
+            new_head="2" * 40,
+            root_commit_before="1" * 40,
             rewritten_commit_count=1,
             dropped_ancestor_count=2,
             blocking_refs=["refs/tags/v1"],
@@ -156,17 +156,17 @@ class TestModels:
             status="merged",
             target_revision="main",
             source_revision="feature",
-            base_commit="sha256:b0",
-            target_head_before="sha256:t0",
-            source_head="sha256:s0",
-            head_after="sha256:m1",
+            base_commit="0" * 40,
+            target_head_before="3" * 40,
+            source_head="4" * 40,
+            head_after="5" * 40,
             commit=commit,
             conflicts=[merge_conflict],
             fast_forward=False,
             created_commit=True,
         )
 
-        assert commit.oid == "sha256:c1"
+        assert commit.oid == ("1" * 40)
         assert commit.commit_message == "hello"
         assert commit.commit_description == "world"
         assert commit.repo_url == "file:///tmp/repo"

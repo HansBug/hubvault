@@ -52,7 +52,7 @@ class TestEntryFormatters:
 
     def test_public_formatter_helpers_cover_empty_and_failure_shapes(self):
         commit = GitCommitInfo(
-            commit_id="sha256:abcdef123456",
+            commit_id="abcdef1234567890abcdef1234567890abcdef12",
             authors=[],
             created_at=datetime(2024, 1, 1, 0, 0, 0),
             title="seed",
@@ -64,10 +64,10 @@ class TestEntryFormatters:
             status="already-up-to-date",
             target_revision="main",
             source_revision="feature",
-            base_commit="sha256:base",
-            target_head_before="sha256:head",
-            source_head="sha256:head",
-            head_after="sha256:head",
+            base_commit="0" * 40,
+            target_head_before="1" * 40,
+            source_head="1" * 40,
+            head_after="1" * 40,
             commit=None,
             conflicts=[],
             fast_forward=False,

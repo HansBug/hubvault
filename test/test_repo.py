@@ -81,6 +81,15 @@ def _repo_root():
     return Path(__file__).resolve().parents[1]
 
 
+def _is_git_oid(value):
+    return isinstance(value, str) and len(value) == 40 and all(ch in "0123456789abcdef" for ch in value)
+
+
+def _internal_ref_value(path):
+    content = Path(path).read_text(encoding="utf-8").strip()
+    return content or None
+
+
 @pytest.mark.unittest
 class TestRepoSemantics:
     def test_repo_rejects_non_empty_target_and_invalid_public_paths(self, tmp_path):
@@ -207,7 +216,7 @@ class TestRepoSemantics:
             commit_message="copy and prune",
         )
 
-        assert second_commit.oid.startswith("sha256:")
+        assert _is_git_oid(second_commit.oid)
         assert api.list_repo_files() == [
             "mirror/a.txt",
             "mirror/sub/b.txt",
@@ -252,7 +261,7 @@ class TestRepoSemantics:
         tag_empty_path.write_text("", encoding="utf-8")
 
         tag_good_path = tmp_path / "repo" / "refs" / "tags" / "v-good"
-        tag_good_path.write_text(commit.oid + "\n", encoding="utf-8")
+        tag_good_path.write_text(_internal_ref_value(tmp_path / "repo" / "refs" / "heads" / "main") + "\n", encoding="utf-8")
 
         tag_broken_path = tmp_path / "repo" / "refs" / "tags" / "v-broken"
         tag_broken_path.write_text("sha256:" + ("0" * 64) + "\n", encoding="utf-8")
@@ -287,7 +296,7 @@ class TestRepoSemantics:
         assert api.list_repo_commits()[0].title == "subject line"
         assert api.list_repo_commits()[0].message == "body line"
 
-        commit_object_path = _object_json_path(repo_dir, "commits", second_commit.oid)
+        commit_object_path = _head_commit_path(repo_dir)
         commit_payload = _read_json(commit_object_path)
         del commit_payload["payload"]["title"]
         del commit_payload["payload"]["description"]
@@ -363,6 +372,10 @@ class TestRepoSemantics:
         )
         api.reset_ref("main", to_revision=first_commit.oid)
 
+        first_internal_head = _internal_ref_value(tmp_path / "repo" / "refs" / "heads" / "main")
+        api.reset_ref("main", to_revision=second_commit.oid)
+        second_internal_head = _internal_ref_value(tmp_path / "repo" / "refs" / "heads" / "main")
+        api.reset_ref("main", to_revision=first_commit.oid)
         txdir = tmp_path / "repo" / "txn" / "interrupted"
         txdir.mkdir(parents=True)
         _write_json(
@@ -370,8 +383,8 @@ class TestRepoSemantics:
             {
                 "ref_kind": "branch",
                 "ref_name": "main",
-                "old_head": first_commit.oid,
-                "new_head": second_commit.oid,
+                "old_head": first_internal_head,
+                "new_head": second_internal_head,
                 "message": "interrupted advance",
                 "ref_existed_before": True,
                 "updated_at": "2026-04-07T00:00:00Z",
@@ -384,7 +397,7 @@ class TestRepoSemantics:
                 "updated_at": "2026-04-07T00:00:00Z",
             },
         )
-        (tmp_path / "repo" / "refs" / "heads" / "main").write_text(second_commit.oid + "\n", encoding="utf-8")
+        (tmp_path / "repo" / "refs" / "heads" / "main").write_text(second_internal_head + "\n", encoding="utf-8")
 
         info = api.repo_info()
         assert info.head == first_commit.oid
@@ -695,7 +708,7 @@ class TestRepoSemantics:
             parent_commit=baseline.oid,
             commit_message="copy single file",
         )
-        assert copied.oid.startswith("sha256:")
+        assert _is_git_oid(copied.oid)
         assert api.read_bytes("data/copied.txt") == b"v1"
 
         deleted = api.create_commit(
@@ -703,7 +716,7 @@ class TestRepoSemantics:
             parent_commit=copied.oid,
             commit_message="delete single file",
         )
-        assert deleted.oid.startswith("sha256:")
+        assert _is_git_oid(deleted.oid)
         with pytest.raises(EntryNotFoundError):
             api.read_bytes("data/copied.txt")
 

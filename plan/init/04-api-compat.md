@@ -107,6 +107,12 @@ from hubvault import (
 
 这些字段保留的原因是本地仓库明确把文件身份、下载 ETag 和逻辑内容哈希作为公开契约的一部分，且用户已经要求必须能直接拿到。
 
+对齐补充结论：
+
+- `RepoFolder.tree_id` 现在公开返回 40 位 git tree SHA-1 hex，而不是内部 `sha256:<hex>` 对象 ID
+- 普通文件 `RepoFile.blob_id` / `RepoFile.oid` 返回 git blob OID；大文件则返回 canonical LFS pointer 的 git blob OID
+- `RepoFile.sha256` 与 `RepoFile.lfs.sha256` 一律返回裸 64 位 hex，与 HF 公开字段风格一致
+
 ### 4.2 Commit 列表模型
 
 `GitCommitInfo` 已对齐 HF 公开字段：
@@ -121,6 +127,7 @@ from hubvault import (
 
 当前行为约束：
 
+- `commit_id` 现在公开返回 40 位 git commit SHA-1 hex
 - `formatted=False` 时，两个 `formatted_*` 字段为 `None`
 - `formatted=True` 时，按 HF 风格填入 HTML 转义后的内容
 - 当存储的 commit 文本包含空行正文时，会自动拆成 title/body，与 Git/HF 列表语义一致
@@ -142,6 +149,7 @@ from hubvault import (
 
 额外对齐点：
 
+- `CommitInfo.oid` 现在公开返回 40 位 git commit SHA-1 hex
 - `CommitInfo` 保持 HF 风格的 `str` 兼容外观
 - `repo_url`、`pr_revision`、`pr_num` 作为计算/派生字段保留
 - 本地内部的 revision/tree/parents/message 不再暴露到公开 `CommitInfo`
@@ -164,10 +172,12 @@ from hubvault import (
 对齐结论：
 
 - `GitRefInfo` / `GitRefs` 直接按 HF 公开字段命名实现
+- `GitRefInfo.target_commit`、`RepoInfo.head`、`ReflogEntry.old_head/new_head`、`MergeResult` 里的 commit 引用字段现在统一公开为 40 位 git commit SHA-1 hex
 - `GitRefs.pull_requests` 与 HF 一致，默认 `None`，仅在 `include_pull_requests=True` 时返回 `[]`
 - 本地必要偏差只有一处：
   `create_repo()` 现在会自动生成空树 `Initial commit`，因此正常仓库的 branch head 不再为空；但为了兼容恢复场景、历史遗留空 ref 或手工损坏仓库的诊断，`GitRefInfo.target_commit` 仍保持 `Optional[str]`
 - `ReflogEntry` 没有直接 HF 对标，属于本地审计/恢复模型
+- refs / reflog / 对象存储在磁盘上仍继续使用内部 `sha256:<hex>` 对象 ID；这是实现细节，不再直接泄露到公开表面
 
 ### 4.5 Merge 模型
 
@@ -432,6 +442,7 @@ class HubVaultApi:
 - 保留 `revision`、`formatted` 这两个真实有意义的参数
 - 丢弃 `repo_id`、`repo_type`、`token` 这类远端/传输参数
 - 当前已经不再把历史遍历限制在 first-parent 线性链，而是按稳定的 parent-first 顺序遍历可达 commit DAG，使 merge commit 与第二父链路可见
+- 当 `revision` 传入公开 40 位 git commit OID 时，`hubvault` 会把它解析回对应的内部 commit 对象并继续工作
 
 #### `merge`
 
@@ -506,6 +517,7 @@ class HubVaultApi:
 
 - 不保留 `cache_dir`、`local_files_only`、`force_download`、`local_dir_use_symlinks`、`tqdm_class` 等远端/缓存策略参数
 - 为避免把用户读取视图变成 repo 内部可写别名，`local_dir` 不允许指向 repo root 内部
+- 默认缓存目录布局仍是 repo 内 `cache/files/<view_key>/...` 与 `cache/snapshots/<view_key>/...`，而不是 HF 的全局缓存目录；这是本地自包含仓库设计的必要偏差
 
 #### `full_verify`
 
@@ -621,6 +633,8 @@ class HubVaultApi:
 
 当前文件公开语义固定如下：
 
+- `RepoInfo.head` / `CommitInfo.oid` / `GitCommitInfo.commit_id` / `GitRefInfo.target_commit`：Git 风格 commit OID
+- `RepoFolder.tree_id`：Git 风格 tree OID
 - `blob_id`：Git 风格 blob OID
 - `oid`：当前公开 alias，同样指向 Git 风格 blob OID
 - `sha256`：逻辑文件内容的裸 64 位 hex 摘要
@@ -629,8 +643,24 @@ class HubVaultApi:
 
 注意：
 
+- commit/tree/blob 这些公开 OID 的格式需要尽可能与 Git / HF 主流行为一致，因此统一使用裸 40 位 hex
 - `sha256` 不带 `sha256:` 前缀，这是为了与 HF 公开字段风格保持一致
 - repo 内部对象 ID 仍然允许使用带算法前缀的对象命名，不与公开字段混淆
+
+## 8.1 Phase 7 对拍结论
+
+当前已经通过真实 baseline 确认以下对齐结论：
+
+- 小文件历史的公开 commit OID、tree OID、blob OID 可以与真实 `git` 计算结果逐项对齐
+- 大文件公开 `blob_id` / `oid` 与 canonical Git-LFS pointer 的 git blob OID 对齐，`sha256` 保持裸 64 位 hex
+- `list_repo_commits()`、`list_repo_refs()`、`repo_info()`、`list_repo_reflog()`、`merge()`、`squash_history()` 里的公开 commit 引用字段都不再泄露内部 `sha256:<hex>`
+- `hf_hub_download()` / `snapshot_download()` 仍保持 repo 相对路径后缀保真，并且 `snapshot_download()` 对外记录公开 commit OID
+
+当前保留的最小必要偏差：
+
+- repo 内部对象存储、refs 真相和 reflog 真相继续使用内部 `sha256:<hex>` 对象 ID；这是为了保持自包含对象仓库的实现稳定性
+- 默认缓存布局仍是 repo 内部的自包含缓存，而不是 HF 全局缓存
+- 当前没有作者身份配置 API，因此公开 commit OID 使用固定的本地身份约定生成；`GitCommitInfo.authors` 仍保持空列表
 
 ## 9. 当前阶段的明确延后项
 

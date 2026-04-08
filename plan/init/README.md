@@ -28,10 +28,10 @@
 - 已落地的 Phase 4 `full_verify()` / `get_storage_overview()` / `gc()` / `squash_history()` 能力，以及对应的 `test/test_phase4.py` 全周期维护回归
 - 已落地的 Phase 5 `merge()`、结构化 `MergeConflict` / `MergeResult`、merge DAG 历史遍历，以及对应的 `test/test_phase5.py` 全周期 merge 集成回归
 - 已落地的 Phase 6 Git-like 本地 CLI，以及对应的 `test/entry/test_*.py` 命令回归与 `test/test_phase6.py` 全周期 CLI 集成回归
+- 已落地的 Phase 7 对拍基线：公开 commit/tree/blob/hash 语义与真实 `git` / Git-LFS pointer 行为对齐，并提供可选的 `huggingface_hub` live smoke test
 
 尚未落地的核心能力包括：
 
-- 基于真实 `git` / `git-lfs` / `huggingface_hub` 的行为对拍
 - 面向极端场景的异常测试与故障注入验证
 - 更进一步的性能基线与可选优化
 - 文档、README、教程与最终交付收尾
@@ -76,11 +76,11 @@
 - 在 Phase 2 补齐 `list_repo_refs -> create/delete branch/tag -> upload/delete helpers -> snapshot_download -> list_repo_reflog`
 - `hf_hub_download()` 与 `snapshot_download()` 返回的文件路径必须保留 repo 内相对路径后缀
 - 文件元数据要同时维护 HF 兼容的 `oid` / `blob_id` 与 `sha256`，其中公开 `sha256` 使用和 HF 一样的裸 64 位 hex
+- 公开 commit/tree/blob ID 在有真实用户价值的地方优先与 Git / HF 对齐，内部对象 ID 则继续保持仓库自有格式
 - 所有单元测试走公开 API 或公开 CLI，不依赖 private / protected 实现细节，也不把规划文档本身当成单测对象
 
 更重的能力放到后续 phase：
 
-- `git` / `git-lfs` / `huggingface_hub` 对拍
 - 异常测试与故障注入
 - 原生加速与性能基线
 - 文档、README 与教程收尾

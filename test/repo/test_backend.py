@@ -85,6 +85,11 @@ def _mutate_first_index_record(repo_dir, mutator):
     )
 
 
+def _internal_ref_value(path):
+    content = Path(path).read_text(encoding="utf-8").strip()
+    return content or None
+
+
 @pytest.mark.unittest
 class TestRepoBackendPackage:
     def test_repo_backend_split_preserves_public_api_behavior(self, tmp_path):
@@ -344,9 +349,10 @@ class TestRepoBackendPackage:
         head_commit = api.upload_file(path_or_fileobj=b"payload-v1", path_in_repo="bundle/file.bin")
 
         repo_dir = tmp_path / "repo"
+        internal_head = _internal_ref_value(repo_dir / "refs" / "heads" / "main")
         ref_path = repo_dir.joinpath(*ref_path_parts)
         ref_path.parent.mkdir(parents=True, exist_ok=True)
-        ref_path.write_text(head_commit.oid + "\n", encoding="utf-8")
+        ref_path.write_text(internal_head + "\n", encoding="utf-8")
 
         txdir = repo_dir / "txn" / ("recover-" + ref_kind)
         txdir.mkdir(parents=True)
@@ -356,7 +362,7 @@ class TestRepoBackendPackage:
                 "ref_kind": ref_kind,
                 "ref_name": ref_name,
                 "old_head": None,
-                "new_head": head_commit.oid,
+                "new_head": internal_head,
                 "message": "create %s" % ref_kind,
                 "ref_existed_before": False,
             },
@@ -440,6 +446,10 @@ class TestRepoBackendPackage:
 
         repo_dir = tmp_path / "repo"
         api.reset_ref("main", to_revision=first_commit.oid)
+        first_internal_head = _internal_ref_value(repo_dir / "refs" / "heads" / "main")
+        api.reset_ref("main", to_revision=second_commit.oid)
+        second_internal_head = _internal_ref_value(repo_dir / "refs" / "heads" / "main")
+        api.reset_ref("main", to_revision=first_commit.oid)
 
         txdir = repo_dir / "txn" / "broken-state"
         txdir.mkdir(parents=True)
@@ -448,14 +458,14 @@ class TestRepoBackendPackage:
             {
                 "ref_kind": "branch",
                 "ref_name": "main",
-                "old_head": first_commit.oid,
-                "new_head": second_commit.oid,
+                "old_head": first_internal_head,
+                "new_head": second_internal_head,
                 "message": "advance with broken state",
                 "ref_existed_before": True,
             },
         )
         (txdir / "STATE.json").write_text(state_text, encoding="utf-8")
-        (repo_dir / "refs" / "heads" / "main").write_text(second_commit.oid + "\n", encoding="utf-8")
+        (repo_dir / "refs" / "heads" / "main").write_text(second_internal_head + "\n", encoding="utf-8")
 
         assert api.repo_info().head == first_commit.oid
         assert api.read_bytes("bundle/file.bin") == b"v1"
@@ -644,7 +654,9 @@ class TestRepoBackendPackage:
         second = api.upload_file(path_or_fileobj=b"v2", path_in_repo="bundle/file.bin")
 
         repo_dir = tmp_path / "repo"
-        (repo_dir / "refs" / "tags" / "release").write_text(second.oid + "\n", encoding="utf-8")
+        first_tag_internal = _internal_ref_value(repo_dir / "refs" / "tags" / "release")
+        second_internal_head = _internal_ref_value(repo_dir / "refs" / "heads" / "main")
+        (repo_dir / "refs" / "tags" / "release").write_text(second_internal_head + "\n", encoding="utf-8")
         txdir = repo_dir / "txn" / "tag-rollback"
         txdir.mkdir(parents=True)
         _write_json(
@@ -652,15 +664,15 @@ class TestRepoBackendPackage:
             {
                 "ref_kind": "tag",
                 "ref_name": "release",
-                "old_head": first.oid,
-                "new_head": second.oid,
+                "old_head": first_tag_internal,
+                "new_head": second_internal_head,
                 "message": "retag release",
                 "ref_existed_before": True,
             },
         )
 
         assert api.read_bytes("bundle/file.bin") == b"v2"
-        assert (repo_dir / "refs" / "tags" / "release").read_text(encoding="utf-8").strip() == first.oid
+        assert (repo_dir / "refs" / "tags" / "release").read_text(encoding="utf-8").strip() == first_tag_internal
         assert not txdir.exists()
 
     def test_backend_public_pattern_filters_and_blank_reflog_lines_work(self, tmp_path):

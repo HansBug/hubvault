@@ -28,6 +28,10 @@ def _sha256_value(data):
     return sha256(data).hexdigest()
 
 
+def _is_git_oid(value):
+    return isinstance(value, str) and len(value) == 40 and all(ch in "0123456789abcdef" for ch in value)
+
+
 def _assert_file_metadata(path_infos, expected_payloads):
     by_path = {item.path: item for item in path_infos}
 
@@ -115,7 +119,7 @@ class TestPhase1IntegratedLifecycle:
         assert first_commit.commit_message == "seed phase1 assets"
         assert first_commit.commit_description == ""
         assert first_commit.repo_url.startswith("file:")
-        assert first_commit.oid.startswith("sha256:")
+        assert _is_git_oid(first_commit.oid)
         assert api.list_repo_files() == sorted(first_commit_files)
         first_history = api.list_repo_commits()
         assert [item.commit_id for item in first_history] == [first_commit.oid, created.head]
@@ -152,7 +156,7 @@ class TestPhase1IntegratedLifecycle:
         )
         assert [type(item).__name__ for item in mixed_path_infos] == ["RepoFolder", "RepoFile", "RepoFile"]
         assert isinstance(mixed_path_infos[0], RepoFolder)
-        assert mixed_path_infos[0].tree_id.startswith("sha256:")
+        assert _is_git_oid(mixed_path_infos[0].tree_id)
         assert mixed_path_infos[1].size == len(weights_v1)
         assert mixed_path_infos[1].oid == _git_blob_oid(weights_v1)
         assert mixed_path_infos[1].blob_id == _git_blob_oid(weights_v1)
@@ -214,7 +218,7 @@ class TestPhase1IntegratedLifecycle:
             commit_message="publish v1 and advance checkpoint",
         )
         assert second_commit.commit_message == "publish v1 and advance checkpoint"
-        assert second_commit.oid.startswith("sha256:")
+        assert _is_git_oid(second_commit.oid)
 
         third_commit = api.create_commit(
             operations=[CommitOperationAdd("manifests/latest.json", manifest_v2)],
@@ -222,7 +226,7 @@ class TestPhase1IntegratedLifecycle:
             parent_commit=second_commit.oid,
         )
         assert third_commit.commit_message == "record latest manifest"
-        assert third_commit.oid.startswith("sha256:")
+        assert _is_git_oid(third_commit.oid)
         assert api.repo_info().head == third_commit.oid
 
         full_history = api.list_repo_commits()

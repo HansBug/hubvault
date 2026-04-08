@@ -30,6 +30,24 @@ GC\_ANALYSIS\_PACK\_ID
 .. autodata:: GC_ANALYSIS_PACK_ID
 
 
+GIT\_OID\_PATTERN
+-----------------------------------------------------
+
+.. autodata:: GIT_OID_PATTERN
+
+
+PUBLIC\_GIT\_AUTHOR\_NAME
+-----------------------------------------------------
+
+.. autodata:: PUBLIC_GIT_AUTHOR_NAME
+
+
+PUBLIC\_GIT\_AUTHOR\_EMAIL
+-----------------------------------------------------
+
+.. autodata:: PUBLIC_GIT_AUTHOR_EMAIL
+
+
 RepositoryBackend
 -----------------------------------------------------
 

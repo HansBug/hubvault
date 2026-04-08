@@ -20,4 +20,11 @@
 
 API-first embedded versioned storage for local ML artifacts.
 
+Current public ID semantics follow Git / Hugging Face where that alignment has
+real user value: commit, tree, and blob identifiers are exposed as Git-style
+40-hex OIDs, public file `sha256` values stay bare 64-hex digests, and
+downloaded file paths preserve the original repo-relative suffix. Internal
+storage objects remain self-contained under the repo root and continue to use
+HubVault's own `sha256:<hex>` object addressing internally.
+
 This repository is still a work in progress, and the API/CLI surface may change before the first stable release.

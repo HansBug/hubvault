@@ -489,12 +489,16 @@ MVP 新增 `Blob` 概念，表示一个 whole-file 内容对象：
 为了避免与 Hugging Face 兼容层的 `blob_id` 语义冲突，必须明确区分：
 
 - 内部对象 ID：`objects/*` 下对象的仓库内部标识
+- 公开 commit `oid` / `commit_id` / `target_commit` / `head`：对外暴露的 Git 风格 commit OID
+- 公开目录 `tree_id`：对外暴露的 Git 风格 tree OID
 - 公开文件 `oid`：对外暴露的 HF 兼容文件 OID
 - 公开文件 `sha256`：文件逻辑内容的 SHA-256，格式为裸 64 位 hex
 - 内部 `logical_hash` / `payload_sha256` / object ID：继续使用 `sha256:<hex>` 显式算法前缀
 
 对齐规则建议如下：
 
+- commit / ref / reflog / merge 结果中的公开 commit ID：统一使用 40 位 git commit SHA-1 hex
+- 目录公开 `tree_id`：统一使用 40 位 git tree SHA-1 hex
 - 普通文件：`oid` 使用 git blob OID 语义，`sha256` 为文件内容 SHA-256
 - 大文件 / LFS 兼容模式：`oid` 使用 canonical LFS pointer 的 git blob OID，`sha256` 为真实文件内容 SHA-256
 - `etag` 采用 HF 风格：普通文件用 `oid`，LFS 兼容模式用 `sha256`

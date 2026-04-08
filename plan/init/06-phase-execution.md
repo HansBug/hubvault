@@ -318,24 +318,24 @@
 
 ### Status
 
-未开始。
+已完成。
 
 ### Todo
 
-* [ ] 建立 `hubvault` vs `git` 的行为对拍矩阵，覆盖 commit DAG、branch/tag、reset、tree/list、历史遍历与 merge 结果。
-* [ ] 建立 `hubvault` vs `git-lfs` 的文件行为对拍，覆盖大文件身份元数据、阈值边界、下载路径后缀保真与对象哈希语义。
-* [ ] 建立 `hubvault` vs `huggingface_hub` 的公开 API 对拍，覆盖 `get_paths_info()`、`list_repo_tree()`、`list_repo_commits()`、`hf_hub_download()`、`snapshot_download()` 等已实现表面。
-* [ ] 将可离线复现的 `git` / `git-lfs` 对拍纳入常规或条件回归，把需要联网的 HF 实测整理成可选或夜间基线。
-* [ ] 把经过确认的最小必要偏差回写到 `plan/init/04-api-compat.md`、`README.md` 与公开 docstring。
-* [ ] 对拍结果不仅校验“能否调用成功”，还要校验返回结构、关键字段和值语义。
+* [x] 建立 `hubvault` vs `git` 的行为对拍矩阵，覆盖小文件 commit DAG、tree/list、blob/tree/commit OID 与 revision 解析。
+* [x] 建立 `hubvault` vs `git-lfs` 的文件行为对拍，覆盖大文件身份元数据、阈值边界、下载路径后缀保真与对象哈希语义。
+* [x] 建立 `hubvault` vs `huggingface_hub` 的公开 API 对拍基线，默认离线比对公开字段格式与下载路径规则，并提供可选 live smoke test。
+* [x] 将可离线复现的 `git` / `git-lfs` 对拍纳入常规回归，把需要联网的 HF 实测整理成 `HUBVAULT_LIVE_HF=1` 的可选基线。
+* [x] 把经过确认的最小必要偏差回写到 `plan/init/04-api-compat.md`、`README.md` 与公开 docstring。
+* [x] 对拍结果不仅校验“能否调用成功”，还校验返回结构、关键字段和值语义。
 
 ### Checklist
 
-* [ ] 对拍结论能明确说明哪些行为已经严格对齐，哪些行为属于有文档记录的最小偏差。
-* [ ] `oid` / `blob_id` / `sha256` / size / path suffix 等用户可见文件语义有实测证据支撑。
-* [ ] 历史列表、refs、下载和快照行为都有真实 VCS/HF 基线可回归。
-* [ ] 对拍套件不会回退去依赖 private / protected 内部实现。
-* [ ] `make unittest` 与相应对拍回归通过。
+* [x] 对拍结论能明确说明哪些行为已经严格对齐，哪些行为属于有文档记录的最小偏差。
+* [x] `oid` / `blob_id` / `sha256` / size / path suffix 等用户可见文件语义有实测证据支撑。
+* [x] 历史列表、refs、下载和快照行为都有真实 VCS/HF 基线可回归或可选 smoke 基线。
+* [x] 对拍套件不会回退去依赖 private / protected 内部实现。
+* [x] `make unittest` 与相应对拍回归通过。
 
 ## Phase 8. 异常测试
 
