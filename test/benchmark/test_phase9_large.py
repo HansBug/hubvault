@@ -6,6 +6,10 @@ from tools.benchmark.common import (
     build_large_repo,
     build_shifted_overlap_live_repo,
     collect_space_profile,
+    next_round_repo_dir,
+    run_hf_hub_download_cold_case,
+    run_hf_hub_download_warm_case,
+    run_threshold_sweep_case,
     section_size,
 )
 
@@ -14,7 +18,7 @@ from tools.benchmark.common import (
 class TestPhase9LargeBenchmarks:
     def test_phase9_benchmark_large_upload_end_to_end(self, benchmark, tmp_path, phase9_config):
         def run_once():
-            repo_dir = tmp_path / "large-upload" / ("round-%08d" % len(list((tmp_path / "large-upload").glob("*"))))
+            repo_dir = next_round_repo_dir(tmp_path, "large-upload")
             api, payload = build_large_repo(repo_dir, phase9_config)
             return {
                 "processed_bytes": len(payload),
@@ -60,7 +64,7 @@ class TestPhase9LargeBenchmarks:
 
     def test_phase9_benchmark_exact_duplicate_large_live_space(self, benchmark, tmp_path, phase9_config):
         def run_once():
-            repo_dir = tmp_path / "exact-duplicates" / ("round-%08d" % len(list((tmp_path / "exact-duplicates").glob("*"))))
+            repo_dir = next_round_repo_dir(tmp_path, "exact-duplicates")
             api, logical_live_total, logical_unique = build_exact_duplicate_live_repo(repo_dir, phase9_config)
             return collect_space_profile(api, logical_live_total, logical_unique)
 
@@ -76,7 +80,7 @@ class TestPhase9LargeBenchmarks:
 
     def test_phase9_benchmark_aligned_overlap_large_live_space(self, benchmark, tmp_path, phase9_config):
         def run_once():
-            repo_dir = tmp_path / "aligned-overlap" / ("round-%08d" % len(list((tmp_path / "aligned-overlap").glob("*"))))
+            repo_dir = next_round_repo_dir(tmp_path, "aligned-overlap")
             api, logical_live_total, logical_unique = build_aligned_overlap_live_repo(repo_dir, phase9_config)
             return collect_space_profile(api, logical_live_total, logical_unique)
 
@@ -92,7 +96,7 @@ class TestPhase9LargeBenchmarks:
 
     def test_phase9_benchmark_shifted_overlap_large_live_space(self, benchmark, tmp_path, phase9_config):
         def run_once():
-            repo_dir = tmp_path / "shifted-overlap" / ("round-%08d" % len(list((tmp_path / "shifted-overlap").glob("*"))))
+            repo_dir = next_round_repo_dir(tmp_path, "shifted-overlap")
             api, logical_live_total, logical_unique = build_shifted_overlap_live_repo(repo_dir, phase9_config)
             return collect_space_profile(api, logical_live_total, logical_unique)
 
@@ -101,6 +105,39 @@ class TestPhase9LargeBenchmarks:
         benchmark.extra_info["scenario"] = "shifted_overlap_large_live_space"
         benchmark.pedantic(
             run_once,
+            rounds=phase9_config.rounds,
+            warmup_rounds=phase9_config.warmup_rounds,
+            iterations=1,
+        )
+
+    def test_phase9_benchmark_hf_hub_download_cold_large_file(self, benchmark, tmp_path, phase9_config):
+        reference = run_hf_hub_download_cold_case(tmp_path, phase9_config)
+        benchmark.extra_info.update(reference)
+        benchmark.extra_info["scenario"] = "hf_hub_download_cold_large_file"
+        benchmark.pedantic(
+            lambda: run_hf_hub_download_cold_case(tmp_path, phase9_config),
+            rounds=phase9_config.rounds,
+            warmup_rounds=phase9_config.warmup_rounds,
+            iterations=1,
+        )
+
+    def test_phase9_benchmark_hf_hub_download_warm_large_file(self, benchmark, tmp_path, phase9_config):
+        reference = run_hf_hub_download_warm_case(tmp_path, phase9_config)
+        benchmark.extra_info.update(reference)
+        benchmark.extra_info["scenario"] = "hf_hub_download_warm_large_file"
+        benchmark.pedantic(
+            lambda: run_hf_hub_download_warm_case(tmp_path, phase9_config),
+            rounds=phase9_config.rounds,
+            warmup_rounds=phase9_config.warmup_rounds,
+            iterations=1,
+        )
+
+    def test_phase9_benchmark_threshold_sweep_whole_file_vs_chunked_boundary(self, benchmark, tmp_path, phase9_config):
+        reference = run_threshold_sweep_case(tmp_path, phase9_config)
+        benchmark.extra_info.update(reference)
+        benchmark.extra_info["scenario"] = "threshold_sweep_whole_file_vs_chunked_boundary"
+        benchmark.pedantic(
+            lambda: run_threshold_sweep_case(tmp_path, phase9_config),
             rounds=phase9_config.rounds,
             warmup_rounds=phase9_config.warmup_rounds,
             iterations=1,

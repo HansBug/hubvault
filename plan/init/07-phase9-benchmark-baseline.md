@@ -25,22 +25,27 @@
 
 ```bash
 ./venv/bin/python -m tools.benchmark.run_phase9 --scale smoke --output build/benchmark/phase9-smoke-summary.json
-./venv/bin/python -m tools.benchmark.run_phase9 --scale standard --output build/benchmark/phase9-standard-summary.json
 HUBVAULT_BENCHMARK_SCALE=smoke ./venv/bin/python -m pytest test/benchmark -sv -m benchmark --benchmark-only --benchmark-json=build/benchmark/pytest-benchmark-smoke.json
+make benchmark_phase9_standard
+make benchmark_phase9_pressure
+make unittest
 ```
 
 ## 当前 benchmark 入口
 
-当前首轮 benchmark 代码已经落到以下位置：
+当前 benchmark 代码已经落到以下位置：
 
 - `test/benchmark/test_phase9_small.py`
 - `test/benchmark/test_phase9_large.py`
+- `test/benchmark/test_phase9_history.py`
 - `test/benchmark/test_phase9_maintenance.py`
+- `test/benchmark/test_phase9_cli.py`
 - `test/benchmark/conftest.py`
 - `tools/benchmark/common.py`
 - `tools/benchmark/run_phase9.py`
 - `tools/benchmark/compare.py`
-- `Makefile` 中的 `benchmark` / `benchmark_phase9` / `benchmark_compare`
+- `Makefile` 中的 `benchmark` / `benchmark_smoke` / `benchmark_standard` / `benchmark_phase9` / `benchmark_phase9_smoke` / `benchmark_phase9_standard` / `benchmark_phase9_pressure` / `benchmark_compare`
+- `.github/workflows/benchmark.yml`
 
 这些 benchmark 当前都只通过公开 API 驱动，不依赖 private / protected 内部实现。
 
@@ -87,6 +92,17 @@ HUBVAULT_BENCHMARK_SCALE=smoke ./venv/bin/python -m pytest test/benchmark -sv -m
 - 已包含下载和快照视图痕迹
 - 用于测 `full_verify()` 的维护路径成本
 
+### `pressure-large`
+
+- 512 MiB chunked 大文件
+- 用于 `benchmark_phase9_pressure` 的大文件读写和 detached view 压测
+
+### `pressure-space-live`
+
+- exact duplicate / aligned overlap / shifted overlap 三组 live set
+- 总逻辑体量均在 GiB 级
+- 用于压力档位下的空间膨胀与 chunk 复用行为确认
+
 ## 样本修正说明
 
 首轮实现中，数据生成器一度会把大文件做成固定 1 MiB 周期重复，这会把“文件内部自重复”误算成“跨文件 chunk 复用”，从而污染 dedup 结论。
@@ -108,16 +124,20 @@ HUBVAULT_BENCHMARK_SCALE=smoke ./venv/bin/python -m pytest test/benchmark -sv -m
 以下数值来自：
 
 ```bash
-./venv/bin/python -m tools.benchmark.run_phase9 --scale standard --output build/benchmark/phase9-standard-summary.json
+make benchmark_phase9_standard
 ```
 
 ### 时间性能
 
-- 大文件上传：12 MiB `upload_file()` 实测操作耗时约 `0.214s`，吞吐约 `56.08 MiB/s`
-- 大文件范围读取：1 MiB `read_range()` 实测操作耗时约 `0.0246s`，吞吐约 `40.70 MiB/s`
-- 小文件批量读取：128 个 4 KiB 文件共 512 KiB，实测读取耗时约 `0.495s`，吞吐约 `1.01 MiB/s`
-- 冷快照导出：512 KiB 小文件树 `snapshot_download()` 实测操作耗时约 `1.37s`，吞吐约 `0.36 MiB/s`
-- `full_verify()`：maintenance-heavy 仓库约 9 MiB live 数据，实测校验耗时约 `3.56s`，吞吐约 `2.53 MiB/s`
+- 大文件上传：12 MiB `upload_file()` 实测操作耗时约 `0.279s`，吞吐约 `43.05 MiB/s`
+- 大文件范围读取：1 MiB `read_range()` 实测操作耗时约 `0.0296s`，吞吐约 `33.74 MiB/s`
+- 小文件批量读取：128 个 4 KiB 文件共 512 KiB，实测读取耗时约 `0.510s`，吞吐约 `0.98 MiB/s`
+- 冷快照导出：512 KiB 小文件树 `snapshot_download()` 实测操作耗时约 `2.45s`，吞吐约 `0.20 MiB/s`
+- 冷 `hf_hub_download()`：12 MiB chunked 文件 detached view 实测操作耗时约 `0.193s`，吞吐约 `62.10 MiB/s`
+- warm `hf_hub_download()`：第二次调用缓存增量约 `0`，并复用既有 detached view 路径
+- 非快进 `merge()`：实测操作耗时约 `0.0896s`，吞吐约 `22.40 MiB/s`
+- `squash_history()`：历史重写 + 跟随 GC 实测操作耗时约 `2.19s`，吞吐约 `5.47 MiB/s`
+- `full_verify()`：maintenance-heavy 仓库约 9 MiB live 数据，实测校验耗时约 `3.63s`，吞吐约 `2.48 MiB/s`
 
 ### 空间与复用
 
@@ -165,6 +185,36 @@ HUBVAULT_BENCHMARK_SCALE=smoke ./venv/bin/python -m pytest test/benchmark -sv -m
 - 历史重复写入会在压实前造成非常明显的短期膨胀
 - 但最终是可回收的
 - 风险主要在“未及时 GC 的中间阶段”，不在最终格式不可回收
+
+## Pressure 压测结果
+
+以下数值来自：
+
+```bash
+make benchmark_phase9_pressure
+```
+
+这不是日常 baseline，而是专门把总数据量拉到 GiB 级别的压力子集。它只保留最关键的大文件和重复/重叠空间场景，避免把小文件路径也一起放大。
+
+### 时间性能
+
+- 大文件上传：512 MiB `upload_file()` 实测操作耗时约 `5.95s`，吞吐约 `86.01 MiB/s`
+- 大文件范围读取：32 MiB `read_range()` 实测操作耗时约 `0.299s`，吞吐约 `107.10 MiB/s`
+- 冷 `hf_hub_download()`：512 MiB detached file view 实测操作耗时约 `7.32s`，吞吐约 `69.99 MiB/s`
+
+### 空间与复用
+
+- 完全重复 live 大文件：`chunks.packs` 从约 `1.50 GiB` 降到 `512 MiB`，`dedup_gain_after_gc = 3.0x`
+- 对齐重叠 live 大文件：`chunks.packs` 从约 `1.50 GiB` 降到 `768 MiB`，`dedup_gain_after_gc = 2.0x`
+- 错位重叠 live 大文件：`chunks.packs` 从约 `1.50 GiB` 降到约 `1.00 GiB`，`dedup_gain_after_gc ≈ 1.49x`
+- 冷 `hf_hub_download()` 后缓存增量约 `1.00 GiB`
+
+这说明 pressure 档位已经足以观察真正的 GiB 级行为：
+
+- 大文件读写在 GiB 总量级下仍保持可接受吞吐
+- exact duplicate 与 aligned overlap 的长期空间利用率仍健康
+- shifted overlap 在 GiB 总量下依然明显差于对齐重叠
+- detached view 在大文件下载场景下会带来显著缓存膨胀
 
 ## 当前可以成立的结论
 
@@ -243,24 +293,20 @@ shifted overlap 的结果已经说明：
 
 才值得进入 `fastcdc` 一类内容定义分块实验。
 
-## 当前未完成但已明确排期的内容
+## 后续可继续演进的内容
 
-首轮 benchmark 已经足够支撑当前结论，但 Phase 9 终版还应继续补：
+Phase 9 的核心交付已经完成，但这份文档仍然允许后续继续追记新的长期演进项，例如：
 
-- 历史遍历 benchmark
-- merge benchmark
-- `hf_hub_download()` cold / warm benchmark
-- `squash_history()` benchmark
-- 阈值扫描 benchmark
-- CLI benchmark
-- benchmark workflow
-- Python heap peak / cache amplification 等扩展指标
+- 更细的 mixed-model / nested-small 数据集
+- opt-in `tracemalloc` / Python heap profiling
+- 更系统的热点 flamegraph / cProfile 结果
+- 更细分的 cache amplification 拆解
 
 ## 结论摘要
 
 用最短的话概括当前状态：
 
-- 时间性能：大文件读写可接受，小文件/快照仍偏慢
+- 时间性能：大文件 baseline 和 GiB 级 pressure 都可接受，小文件/快照仍偏慢
 - 空间性能：长期看健康，短期看重复大文件会膨胀
 - 复用能力：exact duplicate 和对齐 overlap 好，错位 overlap 差
 - 优先方向：先做写时复用，再看是否值得做内容定义分块

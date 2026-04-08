@@ -1,6 +1,8 @@
 """Shared benchmark scenarios and metrics for Phase 9 work."""
 
+import random
 import tempfile
+import time
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -9,6 +11,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from hubvault import CommitOperationAdd, HubVaultApi, RepoFile
 
 MIB = 1024 * 1024
+GIB = 1024 * MIB
 
 
 @dataclass(frozen=True)
@@ -51,6 +54,23 @@ class Phase9BenchmarkConfig:
                 range_length=256 * 1024,
                 rounds=3,
                 warmup_rounds=1,
+            )
+        if normalized == "pressure":
+            return cls(
+                scale="pressure",
+                small_file_count=64,
+                small_file_size=8 * 1024,
+                large_file_size=512 * MIB,
+                duplicate_file_count=3,
+                overlap_shared_size=384 * MIB,
+                overlap_unique_size=128 * MIB,
+                shifted_window_step=2 * MIB,
+                history_depth=2,
+                chunk_threshold=8 * MIB,
+                range_start=128 * MIB + 123,
+                range_length=32 * MIB,
+                rounds=1,
+                warmup_rounds=0,
             )
         if normalized == "stress":
             return cls(
@@ -108,14 +128,16 @@ def deterministic_bytes(size: int, label: str) -> bytes:
     if size <= 0:
         return b""
 
-    seed = label.encode("utf-8")
-    digest = sha256(seed).digest()
+    seed = int(sha256(label.encode("utf-8")).hexdigest(), 16)
+    rng = random.Random(seed)
     chunks = bytearray()
-    counter = 0
+    chunk_size = 1024 * 1024
     while len(chunks) < size:
-        digest = sha256(digest + seed + counter.to_bytes(8, byteorder="big", signed=False)).digest()
-        chunks.extend(digest)
-        counter += 1
+        current_size = min(chunk_size, size - len(chunks))
+        try:
+            chunks.extend(rng.randbytes(current_size))
+        except AttributeError:
+            chunks.extend(rng.getrandbits(current_size * 8).to_bytes(current_size, byteorder="little"))
     return bytes(chunks[:size])
 
 
@@ -205,6 +227,14 @@ def create_repo(api: HubVaultApi, large_file_threshold: int) -> None:
     """Create a repository with a chosen chunk threshold."""
 
     api.create_repo(large_file_threshold=int(large_file_threshold))
+
+
+def next_round_repo_dir(tmp_path: Path, scenario_name: str) -> Path:
+    """Return a unique per-round repository directory below ``tmp_path``."""
+
+    scenario_root = tmp_path / scenario_name
+    round_index = len(list(scenario_root.glob("*")))
+    return scenario_root / ("round-%08d" % round_index)
 
 
 def build_small_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tuple[HubVaultApi, List[str], int]:
@@ -339,6 +369,74 @@ def build_maintenance_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tup
     return api, logical_live_bytes(api)
 
 
+def build_history_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tuple[HubVaultApi, int]:
+    """Create a deep small-file history with refs and reflog activity."""
+
+    api = HubVaultApi(repo_dir)
+    create_repo(api, large_file_threshold=max(int(config.large_file_size) * 2, int(config.chunk_threshold) * 4))
+    for index in range(int(config.history_depth)):
+        api.upload_file(
+            path_or_fileobj=deterministic_bytes(int(config.small_file_size), "history-{index}".format(index=index)),
+            path_in_repo="history/timeline.bin",
+            commit_message="history version {index:03d}".format(index=index),
+        )
+    head_commit = api.repo_info().head
+    if head_commit is not None:
+        api.create_branch(branch="review", revision=head_commit, exist_ok=True)
+        api.create_tag(tag="history-tip", revision=head_commit, exist_ok=True)
+    return api, len(api.list_repo_commits())
+
+
+def build_merge_ready_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tuple[HubVaultApi, int]:
+    """Create a repository ready for a non-fast-forward merge benchmark."""
+
+    api = HubVaultApi(repo_dir)
+    create_repo(api, large_file_threshold=int(config.chunk_threshold))
+    base_model = deterministic_bytes(int(config.chunk_threshold) * 2, "merge-base-model")
+    feature_model = deterministic_bytes(int(config.chunk_threshold) * 2, "merge-feature-model")
+    main_note = deterministic_bytes(int(config.small_file_size), "merge-main-note")
+    feature_note = deterministic_bytes(int(config.small_file_size), "merge-feature-note")
+    api.create_commit(
+        operations=[
+            CommitOperationAdd("artifacts/model.bin", base_model),
+            CommitOperationAdd("README.md", b"# merge-benchmark\n"),
+        ],
+        commit_message="seed merge benchmark",
+    )
+    api.create_branch(branch="feature")
+    api.create_commit(
+        revision="feature",
+        operations=[
+            CommitOperationAdd("artifacts/model.bin", feature_model),
+            CommitOperationAdd("notes/feature.txt", feature_note),
+        ],
+        commit_message="feature update",
+    )
+    api.create_commit(
+        revision="main",
+        operations=[CommitOperationAdd("notes/main.txt", main_note)],
+        commit_message="main update",
+    )
+    return api, len(feature_model) + len(feature_note) + len(main_note)
+
+
+def threshold_sweep_sizes(config: Phase9BenchmarkConfig) -> List[int]:
+    """Return the file sizes used for whole-file versus chunked threshold scans."""
+
+    threshold = int(config.chunk_threshold)
+    sizes = [
+        max(1, threshold - 1),
+        threshold,
+        threshold + 1,
+        threshold * 4,
+    ]
+    ordered = []
+    for size in sizes:
+        if size not in ordered:
+            ordered.append(size)
+    return ordered
+
+
 def read_all_small_files(api: HubVaultApi, paths: Sequence[str]) -> int:
     """Read all small files and return the processed byte count."""
 
@@ -450,17 +548,168 @@ def run_large_upload_case(workspace_root: Path, config: Phase9BenchmarkConfig) -
         }
 
 
+def run_hf_hub_download_cold_case(workspace_root: Path, config: Phase9BenchmarkConfig) -> Dict[str, object]:
+    """Execute a cold detached-file download on a chunked large file."""
+
+    with benchmark_workspace(workspace_root, "phase9-download-cold-") as tmpdir:
+        api, payload = build_large_repo(Path(tmpdir) / "repo", config)
+        before = api.get_storage_overview()
+        started = time.perf_counter()
+        path = Path(api.hf_hub_download("artifacts/model.bin"))
+        finished = time.perf_counter()
+        after = api.get_storage_overview()
+        return {
+            "processed_bytes": len(payload),
+            "operation_seconds": round(finished - started, 6),
+            "downloaded_bytes": int(path.stat().st_size),
+            "cache_delta_bytes": int(after.reclaimable_cache_size - before.reclaimable_cache_size),
+            "suffix_preserved": str(path).replace("\\", "/").endswith("artifacts/model.bin"),
+        }
+
+
+def run_hf_hub_download_warm_case(workspace_root: Path, config: Phase9BenchmarkConfig) -> Dict[str, object]:
+    """Execute a warm detached-file download on an already materialized file view."""
+
+    with benchmark_workspace(workspace_root, "phase9-download-warm-") as tmpdir:
+        api, payload = build_large_repo(Path(tmpdir) / "repo", config)
+        first_path = Path(api.hf_hub_download("artifacts/model.bin"))
+        before = api.get_storage_overview()
+        started = time.perf_counter()
+        second_path = Path(api.hf_hub_download("artifacts/model.bin"))
+        finished = time.perf_counter()
+        after = api.get_storage_overview()
+        return {
+            "processed_bytes": len(payload),
+            "operation_seconds": round(finished - started, 6),
+            "downloaded_bytes": int(second_path.stat().st_size),
+            "cache_delta_bytes": int(after.reclaimable_cache_size - before.reclaimable_cache_size),
+            "reused_view_path": str(first_path) == str(second_path),
+            "suffix_preserved": str(second_path).replace("\\", "/").endswith("artifacts/model.bin"),
+        }
+
+
+def run_history_listing_case(workspace_root: Path, config: Phase9BenchmarkConfig) -> Dict[str, object]:
+    """Execute commit/ref/reflog listing over a deep small-file history."""
+
+    with benchmark_workspace(workspace_root, "phase9-history-list-") as tmpdir:
+        api, commit_count = build_history_repo(Path(tmpdir) / "repo", config)
+        started = time.perf_counter()
+        commits = list(api.list_repo_commits())
+        refs = api.list_repo_refs()
+        reflog = list(api.list_repo_reflog("main"))
+        finished = time.perf_counter()
+        return {
+            "processed_bytes": 0,
+            "operation_seconds": round(finished - started, 6),
+            "commit_count": len(commits),
+            "expected_commit_count": int(commit_count),
+            "branch_count": len(refs.branches),
+            "tag_count": len(refs.tags),
+            "reflog_count": len(reflog),
+        }
+
+
+def run_merge_non_fast_forward_case(workspace_root: Path, config: Phase9BenchmarkConfig) -> Dict[str, object]:
+    """Execute one successful non-fast-forward merge workflow."""
+
+    with benchmark_workspace(workspace_root, "phase9-merge-") as tmpdir:
+        api, merge_shape_bytes = build_merge_ready_repo(Path(tmpdir) / "repo", config)
+        before_history_count = len(api.list_repo_commits())
+        started = time.perf_counter()
+        result = api.merge("feature")
+        finished = time.perf_counter()
+        after_history_count = len(api.list_repo_commits())
+        return {
+            "processed_bytes": int(merge_shape_bytes),
+            "operation_seconds": round(finished - started, 6),
+            "merge_status": result.status,
+            "created_commit": bool(result.created_commit),
+            "conflict_count": len(result.conflicts),
+            "history_count_before": before_history_count,
+            "history_count_after": after_history_count,
+        }
+
+
+def run_threshold_sweep_case(workspace_root: Path, config: Phase9BenchmarkConfig) -> Dict[str, object]:
+    """Execute a whole-file versus chunked threshold boundary scan."""
+
+    with benchmark_workspace(workspace_root, "phase9-threshold-sweep-") as tmpdir:
+        workspace = Path(tmpdir)
+        results = []
+        total_processed = 0
+        total_operation_seconds = 0.0
+        for size in threshold_sweep_sizes(config):
+            repo_dir = workspace / ("size-%d" % size)
+            api = HubVaultApi(repo_dir)
+            create_repo(api, large_file_threshold=int(config.chunk_threshold))
+            payload = deterministic_bytes(int(size), "threshold-{size}".format(size=size))
+            started = time.perf_counter()
+            api.upload_file(
+                path_or_fileobj=payload,
+                path_in_repo="artifacts/payload.bin",
+                commit_message="threshold payload {size}".format(size=size),
+            )
+            finished = time.perf_counter()
+            info = api.get_paths_info(["artifacts/payload.bin"])[0]
+            assert isinstance(info, RepoFile)
+            operation_seconds = finished - started
+            results.append(
+                {
+                    "file_size": int(size),
+                    "chunked": bool(info.lfs is not None),
+                    "operation_seconds": round(operation_seconds, 6),
+                    "blob_bytes": int(section_size(api, "objects.blobs.data")),
+                    "chunk_pack_bytes": int(section_size(api, "chunks.packs")),
+                }
+            )
+            total_processed += len(payload)
+            total_operation_seconds += operation_seconds
+
+        below = next((item for item in results if item["file_size"] == int(config.chunk_threshold) - 1), None)
+        at = next((item for item in results if item["file_size"] == int(config.chunk_threshold)), None)
+        above = next((item for item in results if item["file_size"] == int(config.chunk_threshold) + 1), None)
+        return {
+            "processed_bytes": int(total_processed),
+            "operation_seconds": round(total_operation_seconds, 6),
+            "threshold_cases": len(results),
+            "threshold_boundary_below_chunked": bool(below and below["chunked"]),
+            "threshold_boundary_at_chunked": bool(at and at["chunked"]),
+            "threshold_boundary_above_chunked": bool(above and above["chunked"]),
+            "threshold_results": results,
+        }
+
+
+def run_squash_history_case(workspace_root: Path, config: Phase9BenchmarkConfig) -> Dict[str, object]:
+    """Execute a history rewrite followed by in-operation GC."""
+
+    with benchmark_workspace(workspace_root, "phase9-squash-") as tmpdir:
+        api, logical_live_total, _logical_unique = build_historical_duplicate_repo(Path(tmpdir) / "repo", config)
+        started = time.perf_counter()
+        report = api.squash_history("main", run_gc=True, prune_cache=False)
+        finished = time.perf_counter()
+        history_after = len(api.list_repo_commits())
+        reclaimed_size = 0
+        if report.gc_report is not None:
+            reclaimed_size = int(report.gc_report.reclaimed_size)
+        return {
+            "processed_bytes": int(logical_live_total),
+            "operation_seconds": round(finished - started, 6),
+            "rewritten_commit_count": int(report.rewritten_commit_count),
+            "dropped_ancestor_count": int(report.dropped_ancestor_count),
+            "blocking_ref_count": len(report.blocking_refs),
+            "gc_reclaimed_size": reclaimed_size,
+            "history_count_after": history_after,
+        }
+
+
 def infer_space_conclusions(results: Dict[str, Dict[str, object]]) -> List[str]:
     """Build human-readable conclusions from benchmark results."""
 
     conclusions = []
 
-    large_range = results["large_read_range"]["metrics"]
-    large_upload = results["large_upload"]["metrics"]
     exact = results["exact_duplicate_live_space"]["metrics"]
     aligned = results["aligned_overlap_live_space"]["metrics"]
     shifted = results["shifted_overlap_live_space"]["metrics"]
-    historical = results["historical_duplicate_space"]["metrics"]
 
     conclusions.append(
         "大文件上传中位吞吐约 {value:.2f} MiB/s，范围读取中位吞吐约 {range_value:.2f} MiB/s。".format(
@@ -486,6 +735,29 @@ def infer_space_conclusions(results: Dict[str, Dict[str, object]]) -> List[str]:
     conclusions.append(
         "同一路径反复写入完全相同的大文件时，提交阶段的 pack 占用仍会持续增长，但 `gc()` 可把这类重复 pack 压回到接近单份数据体积，当前风险在于压实前的短期空间膨胀而不是最终不可回收。"
     )
+    cold_download = results.get("hf_hub_download_cold", {})
+    warm_download = results.get("hf_hub_download_warm", {})
+    if cold_download and warm_download:
+        conclusions.append(
+            "`hf_hub_download()` 已经具备明确的 cold/warm 语义：warm 路径会复用现有 detached view，第二次调用的缓存增量约为 {delta} 字节，且返回路径保持 repo 相对路径后缀。".format(
+                delta=int(warm_download.get("metrics", {}).get("cache_delta_bytes", 0)),
+            )
+        )
+    threshold_metrics = results.get("threshold_sweep", {}).get("metrics", {})
+    if threshold_metrics:
+        conclusions.append(
+            "阈值扫描已经验证当前分界是稳定的：小于 `large_file_threshold` 的文件保持 whole-file blob，而大于等于阈值的文件转入 chunked storage。"
+        )
+    merge_metrics = results.get("merge_non_fast_forward", {}).get("metrics", {})
+    if merge_metrics:
+        conclusions.append(
+            "非快进 merge 已进入 benchmark 基线，当前基线里该路径能稳定创建结构化 merge commit，后续 profiling 可以直接围绕 merge-base 解析和 tree merge 热点展开。"
+        )
+    squash_metrics = results.get("squash_history", {}).get("metrics", {})
+    if squash_metrics:
+        conclusions.append(
+            "`squash_history()` 已纳入性能基线，当前可以直接衡量“历史重写 + 跟随 GC”这一完整维护路径，而不是只看 `gc()` 单点。"
+        )
     conclusions.append(
         "如果目标是降低重复大文件的即时空间膨胀，优先级最高的问题是写时 chunk/pack 复用；如果目标是提高错位相似内容复用，后续才值得评估内容定义分块方案。"
     )

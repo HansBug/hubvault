@@ -73,10 +73,15 @@ def main() -> int:
         interesting_keys = (
             "processed_bytes",
             "logical_live_bytes",
+            "operation_seconds",
+            "cache_delta_bytes",
             "chunk_pack_bytes_before_gc",
             "chunk_pack_bytes_after_gc",
             "dedup_gain_after_gc",
             "physical_over_unique_after_gc",
+            "merge_status",
+            "rewritten_commit_count",
+            "threshold_boundary_at_chunked",
         )
         extras = {}
         for key in interesting_keys:

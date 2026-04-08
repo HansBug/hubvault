@@ -1,4 +1,4 @@
-.PHONY: help docs docs_en docs_zh pdocs rst_auto test unittest benchmark benchmark_phase9 benchmark_compare build test_cli package clean
+.PHONY: help docs docs_en docs_zh pdocs rst_auto test unittest benchmark benchmark_smoke benchmark_standard benchmark_phase9 benchmark_phase9_smoke benchmark_phase9_standard benchmark_phase9_pressure benchmark_compare build test_cli package clean
 
 PYTHON := $(shell [ -x ./venv/bin/python ] && printf '%s' ./venv/bin/python || which python)
 SPHINXBUILD ?= $(shell which sphinx-build)
@@ -31,6 +31,7 @@ BENCHMARK_DIR ?= ${BUILD_DIR}/benchmark
 BENCHMARK_JSON ?= ${BENCHMARK_DIR}/pytest-benchmark.json
 BENCHMARK_FILTER ?=
 BENCHMARK_SCALE ?= standard
+BENCHMARK_SCENARIO_SET ?= full
 BENCHMARK_PHASE9_JSON ?= ${BENCHMARK_DIR}/phase9-summary.json
 BENCHMARK_BASELINE ?=
 BENCHMARK_CANDIDATE ?=
@@ -52,10 +53,20 @@ help:
 	@echo "  make benchmark    - Run pytest benchmark suite into build/benchmark/"
 	@echo "                      Options: BENCHMARK_SCALE=<smoke|standard|stress>"
 	@echo "                               BENCHMARK_FILTER='<pytest -k expr>' BENCHMARK_JSON=<path>"
+	@echo "  make benchmark_smoke"
+	@echo "                    - Run the pytest benchmark suite with BENCHMARK_SCALE=smoke"
+	@echo "  make benchmark_standard"
+	@echo "                    - Run the pytest benchmark suite with BENCHMARK_SCALE=standard"
 	@echo "  make benchmark_phase9"
 	@echo "                    - Run the curated Phase 9 benchmark runner and emit a JSON summary"
-	@echo "                      Options: BENCHMARK_SCALE=<smoke|standard|stress>"
-	@echo "                               BENCHMARK_PHASE9_JSON=<path>"
+	@echo "                      Options: BENCHMARK_SCALE=<smoke|standard|stress|pressure>"
+	@echo "                               BENCHMARK_SCENARIO_SET=<full|pressure> BENCHMARK_PHASE9_JSON=<path>"
+	@echo "  make benchmark_phase9_smoke"
+	@echo "                    - Run the curated Phase 9 runner with the smoke/full baseline suite"
+	@echo "  make benchmark_phase9_standard"
+	@echo "                    - Run the curated Phase 9 runner with the standard/full baseline suite"
+	@echo "  make benchmark_phase9_pressure"
+	@echo "                    - Run the GB-scale pressure subset focused on large-file IO and dedup space behavior"
 	@echo "  make benchmark_compare"
 	@echo "                    - Compare two pytest-benchmark JSON files"
 	@echo "                      Options: BENCHMARK_BASELINE=<path> BENCHMARK_CANDIDATE=<path>"
@@ -94,7 +105,7 @@ test: unittest
 
 unittest:
 	UNITTEST=1 \
-		pytest "${RANGE_TEST_DIR}" \
+		$(PYTHON) -m pytest "${RANGE_TEST_DIR}" \
 		-sv -m unittest \
 		--junitxml=junit.xml -o junit_family=legacy \
 		$(shell for type in ${COV_TYPES}; do echo "--cov-report=$$type"; done) \
@@ -110,12 +121,28 @@ benchmark:
 		--benchmark-json="${BENCHMARK_JSON}" \
 		$(if ${BENCHMARK_FILTER},-k "${BENCHMARK_FILTER}",)
 
+benchmark_smoke:
+	@$(MAKE) benchmark BENCHMARK_SCALE=smoke
+
+benchmark_standard:
+	@$(MAKE) benchmark BENCHMARK_SCALE=standard
+
 benchmark_phase9:
 	@mkdir -p ${BENCHMARK_DIR}
 	HUBVAULT_BENCHMARK_SCALE=${BENCHMARK_SCALE} \
 		${PYTHON} -m tools.benchmark.run_phase9 \
 		--scale ${BENCHMARK_SCALE} \
+		--scenario-set ${BENCHMARK_SCENARIO_SET} \
 		--output "${BENCHMARK_PHASE9_JSON}"
+
+benchmark_phase9_smoke:
+	@$(MAKE) benchmark_phase9 BENCHMARK_SCALE=smoke BENCHMARK_SCENARIO_SET=full BENCHMARK_PHASE9_JSON="${BENCHMARK_DIR}/phase9-smoke-summary.json"
+
+benchmark_phase9_standard:
+	@$(MAKE) benchmark_phase9 BENCHMARK_SCALE=standard BENCHMARK_SCENARIO_SET=full BENCHMARK_PHASE9_JSON="${BENCHMARK_DIR}/phase9-standard-summary.json"
+
+benchmark_phase9_pressure:
+	@$(MAKE) benchmark_phase9 BENCHMARK_SCALE=pressure BENCHMARK_SCENARIO_SET=pressure BENCHMARK_PHASE9_JSON="${BENCHMARK_DIR}/phase9-pressure-summary.json"
 
 benchmark_compare:
 	@test -n "${BENCHMARK_BASELINE}" || (echo "Missing BENCHMARK_BASELINE=<path>" && exit 1)

@@ -1,6 +1,12 @@
 import pytest
 
-from tools.benchmark.common import build_historical_duplicate_repo, build_maintenance_repo, collect_space_profile
+from tools.benchmark.common import (
+    build_historical_duplicate_repo,
+    build_maintenance_repo,
+    collect_space_profile,
+    next_round_repo_dir,
+    run_squash_history_case,
+)
 
 
 @pytest.mark.benchmark
@@ -25,7 +31,7 @@ class TestPhase9MaintenanceBenchmarks:
 
     def test_phase9_benchmark_historical_duplicate_space_and_gc(self, benchmark, tmp_path, phase9_config):
         def run_once():
-            repo_dir = tmp_path / "historical-duplicates" / ("round-%08d" % len(list((tmp_path / "historical-duplicates").glob("*"))))
+            repo_dir = next_round_repo_dir(tmp_path, "historical-duplicates")
             api, logical_live_total, logical_unique = build_historical_duplicate_repo(repo_dir, phase9_config)
             return collect_space_profile(api, logical_live_total, logical_unique)
 
@@ -34,6 +40,17 @@ class TestPhase9MaintenanceBenchmarks:
         benchmark.extra_info["scenario"] = "historical_duplicate_space_and_gc"
         benchmark.pedantic(
             run_once,
+            rounds=phase9_config.rounds,
+            warmup_rounds=phase9_config.warmup_rounds,
+            iterations=1,
+        )
+
+    def test_phase9_benchmark_squash_history_with_followup_gc(self, benchmark, tmp_path, phase9_config):
+        reference = run_squash_history_case(tmp_path, phase9_config)
+        benchmark.extra_info.update(reference)
+        benchmark.extra_info["scenario"] = "squash_history_with_followup_gc"
+        benchmark.pedantic(
+            lambda: run_squash_history_case(tmp_path, phase9_config),
             rounds=phase9_config.rounds,
             warmup_rounds=phase9_config.warmup_rounds,
             iterations=1,

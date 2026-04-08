@@ -25,6 +25,12 @@ from tools.benchmark.common import (
     deterministic_bytes,
     infer_space_conclusions,
     read_all_small_files,
+    run_hf_hub_download_cold_case,
+    run_hf_hub_download_warm_case,
+    run_history_listing_case,
+    run_merge_non_fast_forward_case,
+    run_squash_history_case,
+    run_threshold_sweep_case,
     snapshot_file_manifest,
     to_mib,
 )
@@ -145,6 +151,26 @@ def _large_read_range_scenario(workspace_root: Path, config: Phase9BenchmarkConf
         }
 
 
+def _hf_hub_download_cold_scenario(workspace_root: Path, config: Phase9BenchmarkConfig) -> Dict[str, object]:
+    return run_hf_hub_download_cold_case(workspace_root, config)
+
+
+def _hf_hub_download_warm_scenario(workspace_root: Path, config: Phase9BenchmarkConfig) -> Dict[str, object]:
+    return run_hf_hub_download_warm_case(workspace_root, config)
+
+
+def _history_listing_scenario(workspace_root: Path, config: Phase9BenchmarkConfig) -> Dict[str, object]:
+    return run_history_listing_case(workspace_root, config)
+
+
+def _merge_non_fast_forward_scenario(workspace_root: Path, config: Phase9BenchmarkConfig) -> Dict[str, object]:
+    return run_merge_non_fast_forward_case(workspace_root, config)
+
+
+def _threshold_sweep_scenario(workspace_root: Path, config: Phase9BenchmarkConfig) -> Dict[str, object]:
+    return run_threshold_sweep_case(workspace_root, config)
+
+
 def _exact_duplicate_space_scenario(workspace_root: Path, config: Phase9BenchmarkConfig) -> Dict[str, object]:
     with benchmark_workspace(workspace_root, "phase9-run-space-exact-") as tmpdir:
         api, logical_live_total, logical_unique = build_exact_duplicate_live_repo(Path(tmpdir) / "repo", config)
@@ -183,11 +209,21 @@ def _full_verify_scenario(workspace_root: Path, config: Phase9BenchmarkConfig) -
         }
 
 
+def _squash_history_scenario(workspace_root: Path, config: Phase9BenchmarkConfig) -> Dict[str, object]:
+    return run_squash_history_case(workspace_root, config)
+
+
 def main() -> int:
     """Run the benchmark suite."""
 
     parser = argparse.ArgumentParser(description="Run the Phase 9 hubvault benchmark suite.")
-    parser.add_argument("--scale", default="standard", choices=("smoke", "standard", "stress"))
+    parser.add_argument("--scale", default="standard", choices=("smoke", "standard", "stress", "pressure"))
+    parser.add_argument(
+        "--scenario-set",
+        default="full",
+        choices=("full", "pressure"),
+        help="Choose the full baseline suite or the GB-scale pressure subset.",
+    )
     parser.add_argument("--rounds", type=int, default=None, help="Override the configured benchmark rounds.")
     parser.add_argument("--warmup-rounds", type=int, default=None, help="Override warmup rounds.")
     parser.add_argument("--output", default=None, help="Optional JSON output path.")
@@ -197,18 +233,33 @@ def main() -> int:
     rounds = int(args.rounds) if args.rounds is not None else int(config.rounds)
     warmup_rounds = int(args.warmup_rounds) if args.warmup_rounds is not None else int(config.warmup_rounds)
 
-    scenarios = [
+    full_scenarios = [
         ("small_batch_commit", _small_batch_commit_scenario),
         ("small_read_all", _small_read_all_scenario),
         ("snapshot_download_small", _snapshot_download_scenario),
         ("large_upload", _large_upload_scenario),
         ("large_read_range", _large_read_range_scenario),
+        ("hf_hub_download_cold", _hf_hub_download_cold_scenario),
+        ("hf_hub_download_warm", _hf_hub_download_warm_scenario),
+        ("history_listing", _history_listing_scenario),
+        ("merge_non_fast_forward", _merge_non_fast_forward_scenario),
+        ("threshold_sweep", _threshold_sweep_scenario),
         ("exact_duplicate_live_space", _exact_duplicate_space_scenario),
         ("aligned_overlap_live_space", _aligned_overlap_space_scenario),
         ("shifted_overlap_live_space", _shifted_overlap_space_scenario),
         ("historical_duplicate_space", _historical_duplicate_space_scenario),
         ("full_verify", _full_verify_scenario),
+        ("squash_history", _squash_history_scenario),
     ]
+    pressure_scenarios = [
+        ("large_upload", _large_upload_scenario),
+        ("large_read_range", _large_read_range_scenario),
+        ("hf_hub_download_cold", _hf_hub_download_cold_scenario),
+        ("exact_duplicate_live_space", _exact_duplicate_space_scenario),
+        ("aligned_overlap_live_space", _aligned_overlap_space_scenario),
+        ("shifted_overlap_live_space", _shifted_overlap_space_scenario),
+    ]
+    scenarios = full_scenarios if args.scenario_set == "full" else pressure_scenarios
 
     with tempfile.TemporaryDirectory(prefix="hubvault-phase9-run-") as tmpdir:
         workspace_root = Path(tmpdir)
@@ -223,6 +274,7 @@ def main() -> int:
     summary = {
         "config": {
             "scale": config.scale,
+            "scenario_set": args.scenario_set,
             "rounds": rounds,
             "warmup_rounds": warmup_rounds,
             "small_file_count": config.small_file_count,

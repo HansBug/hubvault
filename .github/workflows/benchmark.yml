@@ -1,0 +1,91 @@
+name: benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      scale:
+        description: Curated Phase 9 summary scale
+        required: true
+        default: standard
+        type: choice
+        options:
+          - smoke
+          - standard
+          - stress
+          - pressure
+  schedule:
+    - cron: "0 18 * * 0"
+
+jobs:
+  benchmark-smoke:
+    name: benchmark smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt -r requirements-test.txt
+
+      - name: Run pytest benchmark smoke suite
+        env:
+          HUBVAULT_BENCHMARK_SCALE: smoke
+        run: >
+          python -m pytest test/benchmark -sv -m benchmark --benchmark-only
+          --benchmark-json build/benchmark/pytest-benchmark-${{ runner.os }}-smoke.json
+
+      - name: Upload smoke benchmark artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-smoke-${{ runner.os }}
+          path: build/benchmark/pytest-benchmark-${{ runner.os }}-smoke.json
+          if-no-files-found: error
+
+  phase9-summary:
+    name: phase9 summary (ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    needs: benchmark-smoke
+    env:
+      BENCHMARK_SCALE: ${{ github.event.inputs.scale || 'standard' }}
+      BENCHMARK_SCENARIO_SET: ${{ github.event.inputs.scale == 'pressure' && 'pressure' || 'full' }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt -r requirements-test.txt
+
+      - name: Run curated Phase 9 summary
+        run: >
+          python -m tools.benchmark.run_phase9
+          --scale "${BENCHMARK_SCALE}"
+          --scenario-set "${BENCHMARK_SCENARIO_SET}"
+          --output "build/benchmark/phase9-summary-${BENCHMARK_SCALE}.json"
+
+      - name: Upload Phase 9 summary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase9-summary-${{ env.BENCHMARK_SCALE }}
+          path: build/benchmark/phase9-summary-${{ env.BENCHMARK_SCALE }}.json
+          if-no-files-found: error
