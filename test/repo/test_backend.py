@@ -90,6 +90,14 @@ def _internal_ref_value(path):
     return content or None
 
 
+def _remove_tree(path):
+    def handle_readonly(func, failing_path, _exc_info):
+        Path(failing_path).chmod(0o700)
+        func(failing_path)
+
+    shutil.rmtree(path, onerror=handle_readonly)
+
+
 @pytest.mark.unittest
 class TestRepoBackendPackage:
     def test_repo_backend_split_preserves_public_api_behavior(self, tmp_path):
@@ -536,8 +544,8 @@ class TestRepoBackendPackage:
         _ = api.upload_file(path_or_fileobj=b"v2", path_in_repo="bundle/file.bin")
         _ = api.hf_hub_download("bundle/file.bin")
 
-        shutil.rmtree(repo_dir / "quarantine")
-        shutil.rmtree(repo_dir / "cache")
+        _remove_tree(repo_dir / "quarantine")
+        _remove_tree(repo_dir / "cache")
         (repo_dir / "txn" / "manual-note.txt").write_text("manual", encoding="utf-8")
         (repo_dir / "quarantine" / "objects" / "manual" / "old.bin").parent.mkdir(parents=True, exist_ok=True)
         (repo_dir / "quarantine" / "objects" / "manual" / "old.bin").write_bytes(b"old")
@@ -727,8 +735,8 @@ class TestRepoBackendPackage:
         empty_repo_dir = tmp_path / "empty-repo"
         empty_api = HubVaultApi(empty_repo_dir)
         empty_api.create_repo()
-        shutil.rmtree(empty_repo_dir / "refs" / "heads")
-        shutil.rmtree(empty_repo_dir / "refs" / "tags")
+        _remove_tree(empty_repo_dir / "refs" / "heads")
+        _remove_tree(empty_repo_dir / "refs" / "tags")
 
         refs = empty_api.list_repo_refs()
         assert refs.branches == []
@@ -738,7 +746,7 @@ class TestRepoBackendPackage:
         api = HubVaultApi(repo_dir)
         api.create_repo()
         api.upload_file(path_or_fileobj=b"payload-v1", path_in_repo="bundle/file.bin")
-        shutil.rmtree(repo_dir / "txn")
+        _remove_tree(repo_dir / "txn")
 
         assert api.read_bytes("bundle/file.bin") == b"payload-v1"
         second = api.upload_file(path_or_fileobj=b"payload-v2", path_in_repo="bundle/second.bin")
