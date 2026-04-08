@@ -11,15 +11,19 @@ The module contains:
 
 Example::
 
+    >>> import tempfile
+    >>> from pathlib import Path
     >>> from hubvault import CommitOperationAdd, HubVaultApi
-    >>> api = HubVaultApi("/tmp/demo-repo")
-    >>> _ = api.create_repo(exist_ok=True)
-    >>> commit = api.create_commit(
-    ...     operations=[CommitOperationAdd("demo.txt", b"hello")],
-    ...     commit_message="seed",
-    ... )
-    >>> commit.oid.startswith("sha256:")
-    True
+    >>> with tempfile.TemporaryDirectory() as tmpdir:
+    ...     repo_dir = Path(tmpdir) / "repo"
+    ...     api = HubVaultApi(repo_dir)
+    ...     _ = api.create_repo()
+    ...     _ = api.create_commit(
+    ...         operations=[CommitOperationAdd("demo.txt", b"hello")],
+    ...         commit_message="seed",
+    ...     )
+    ...     api.read_bytes("demo.txt")
+    b'hello'
 """
 
 from os import PathLike
@@ -54,18 +58,21 @@ class HubVaultApi:
 
     Example::
 
-        >>> from hubvault import HubVaultApi, CommitOperationAdd
-        >>> api = HubVaultApi("/tmp/demo-repo")
-        >>> _ = api.create_repo(exist_ok=True)
-        >>> commit = api.create_commit(
-        ...     revision="main",
-        ...     operations=[
-        ...         CommitOperationAdd("example.txt", b"hello"),
-        ...     ],
-        ...     commit_message="add example",
-        ... )
-        >>> commit.oid.startswith("sha256:")
-        True
+        >>> import tempfile
+        >>> from pathlib import Path
+        >>> from hubvault import CommitOperationAdd, HubVaultApi
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     api = HubVaultApi(Path(tmpdir) / "repo")
+        ...     _ = api.create_repo()
+        ...     _ = api.create_commit(
+        ...         revision="main",
+        ...         operations=[
+        ...             CommitOperationAdd("example.txt", b"hello"),
+        ...         ],
+        ...         commit_message="add example",
+        ...     )
+        ...     api.list_repo_files()
+        ['example.txt']
     """
 
     def __init__(self, repo_path: Union[str, PathLike], revision: str = "main") -> None:
@@ -81,8 +88,11 @@ class HubVaultApi:
 
         Example::
 
-            >>> api = HubVaultApi("/tmp/demo-repo")
-            >>> api._default_revision
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     api = HubVaultApi(Path(tmpdir) / "repo", revision="main")
+            ...     api.create_repo().default_branch
             'main'
         """
 
@@ -119,10 +129,13 @@ class HubVaultApi:
 
         Example::
 
-            >>> api = HubVaultApi("/tmp/demo-repo")
-            >>> info = api.create_repo(exist_ok=True)
-            >>> info.default_branch
-            'main'
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     api = HubVaultApi(Path(tmpdir) / "repo")
+            ...     info = api.create_repo(default_branch="main")
+            ...     (info.default_branch, info.head is None)
+            ('main', True)
         """
 
         return self._backend.create_repo(
@@ -146,9 +159,17 @@ class HubVaultApi:
 
         Example::
 
-            >>> api = HubVaultApi("/tmp/demo-repo")
-            >>> _ = api.create_repo(exist_ok=True)
-            >>> isinstance(api.repo_info().repo_path, str)
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> from hubvault import CommitOperationAdd
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     api = HubVaultApi(Path(tmpdir) / "repo")
+            ...     _ = api.create_repo()
+            ...     commit = api.create_commit(
+            ...         operations=[CommitOperationAdd("demo.txt", b"hello")],
+            ...         commit_message="seed",
+            ...     )
+            ...     api.repo_info().head == commit.oid
             True
         """
 
@@ -194,14 +215,18 @@ class HubVaultApi:
 
         Example::
 
-            >>> api = HubVaultApi("/tmp/demo-repo")
-            >>> _ = api.create_repo(exist_ok=True)
-            >>> commit = api.create_commit(
-            ...     operations=[CommitOperationAdd("demo.txt", b"hello")],
-            ...     commit_message="seed",
-            ... )
-            >>> commit.oid.startswith("sha256:")
-            True
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> from hubvault import CommitOperationAdd
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     api = HubVaultApi(Path(tmpdir) / "repo")
+            ...     _ = api.create_repo()
+            ...     commit = api.create_commit(
+            ...         operations=[CommitOperationAdd("demo.txt", b"hello")],
+            ...         commit_message="seed",
+            ...     )
+            ...     (commit.commit_message, api.read_bytes("demo.txt"))
+            ('seed', b'hello')
         """
 
         return self._backend.create_commit(
@@ -234,14 +259,21 @@ class HubVaultApi:
 
         Example::
 
-            >>> api = HubVaultApi("/tmp/demo-repo")
-            >>> _ = api.create_repo(exist_ok=True)
-            >>> _ = api.create_commit(
-            ...     operations=[CommitOperationAdd("demo.txt", b"hello")],
-            ...     commit_message="seed",
-            ... )
-            >>> api.get_paths_info(["demo.txt"])[0].path
-            'demo.txt'
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> from hubvault import CommitOperationAdd
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     api = HubVaultApi(Path(tmpdir) / "repo")
+            ...     _ = api.create_repo()
+            ...     _ = api.create_commit(
+            ...         operations=[
+            ...             CommitOperationAdd("demo.txt", b"hello"),
+            ...             CommitOperationAdd("nested/config.json", b"{}"),
+            ...         ],
+            ...         commit_message="seed",
+            ...     )
+            ...     sorted(item.path for item in api.get_paths_info(["demo.txt", "nested", "missing.txt"]))
+            ['demo.txt', 'nested']
         """
 
         return self._backend.get_paths_info(paths=paths, revision=revision or self._default_revision)
@@ -273,10 +305,21 @@ class HubVaultApi:
 
         Example::
 
-            >>> api = HubVaultApi("/tmp/demo-repo")
-            >>> _ = api.create_repo(exist_ok=True)
-            >>> api.list_repo_tree()
-            []
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> from hubvault import CommitOperationAdd
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     api = HubVaultApi(Path(tmpdir) / "repo")
+            ...     _ = api.create_repo()
+            ...     _ = api.create_commit(
+            ...         operations=[
+            ...             CommitOperationAdd("demo.txt", b"hello"),
+            ...             CommitOperationAdd("nested/config.json", b"{}"),
+            ...         ],
+            ...         commit_message="seed",
+            ...     )
+            ...     [item.path for item in api.list_repo_tree()]
+            ['demo.txt', 'nested']
         """
 
         return self._backend.list_repo_tree(
@@ -298,10 +341,21 @@ class HubVaultApi:
 
         Example::
 
-            >>> api = HubVaultApi("/tmp/demo-repo")
-            >>> _ = api.create_repo(exist_ok=True)
-            >>> api.list_repo_files()
-            []
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> from hubvault import CommitOperationAdd
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     api = HubVaultApi(Path(tmpdir) / "repo")
+            ...     _ = api.create_repo()
+            ...     _ = api.create_commit(
+            ...         operations=[
+            ...             CommitOperationAdd("demo.txt", b"hello"),
+            ...             CommitOperationAdd("nested/config.json", b"{}"),
+            ...         ],
+            ...         commit_message="seed",
+            ...     )
+            ...     api.list_repo_files()
+            ['demo.txt', 'nested/config.json']
         """
 
         return self._backend.list_repo_files(revision=revision or self._default_revision)
@@ -334,14 +388,18 @@ class HubVaultApi:
 
         Example::
 
-            >>> api = HubVaultApi("/tmp/demo-repo")
-            >>> _ = api.create_repo(exist_ok=True)
-            >>> _ = api.create_commit(
-            ...     operations=[CommitOperationAdd("demo.txt", b"hello")],
-            ...     commit_message="seed",
-            ... )
-            >>> api.list_repo_commits()[0].title
-            'seed'
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> from hubvault import CommitOperationAdd
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     api = HubVaultApi(Path(tmpdir) / "repo")
+            ...     _ = api.create_repo()
+            ...     _ = api.create_commit(
+            ...         operations=[CommitOperationAdd("demo.txt", b"hello")],
+            ...         commit_message="seed\\n\\nbody",
+            ...     )
+            ...     [(item.title, item.message) for item in api.list_repo_commits()]
+            [('seed', 'body')]
         """
 
         return self._backend.list_repo_commits(
@@ -364,10 +422,21 @@ class HubVaultApi:
 
         Example::
 
-            >>> api = HubVaultApi("/tmp/demo-repo")
-            >>> _ = api.create_repo(exist_ok=True)
-            >>> api.list_repo_refs().branches[0].name
-            'main'
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> from hubvault import CommitOperationAdd
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     api = HubVaultApi(Path(tmpdir) / "repo")
+            ...     _ = api.create_repo()
+            ...     _ = api.create_commit(
+            ...         operations=[CommitOperationAdd("demo.txt", b"hello")],
+            ...         commit_message="seed",
+            ...     )
+            ...     api.create_branch(branch="dev")
+            ...     api.create_tag(tag="v1")
+            ...     refs = api.list_repo_refs()
+            ...     ([ref.name for ref in refs.branches], [ref.name for ref in refs.tags])
+            (['dev', 'main'], ['v1'])
         """
 
         return self._backend.list_repo_refs(include_pull_requests=include_pull_requests)
@@ -399,9 +468,14 @@ class HubVaultApi:
 
         Example::
 
-            >>> api = HubVaultApi("/tmp/demo-repo")
-            >>> _ = api.create_repo(exist_ok=True)
-            >>> api.create_branch(branch="dev")
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     api = HubVaultApi(Path(tmpdir) / "repo")
+            ...     _ = api.create_repo()
+            ...     api.create_branch(branch="dev")
+            ...     [ref.name for ref in api.list_repo_refs().branches]
+            ['dev', 'main']
         """
 
         self._backend.create_branch(
@@ -425,10 +499,15 @@ class HubVaultApi:
 
         Example::
 
-            >>> api = HubVaultApi("/tmp/demo-repo")
-            >>> _ = api.create_repo(exist_ok=True)
-            >>> api.create_branch(branch="dev")
-            >>> api.delete_branch(branch="dev")
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     api = HubVaultApi(Path(tmpdir) / "repo")
+            ...     _ = api.create_repo()
+            ...     api.create_branch(branch="dev")
+            ...     api.delete_branch(branch="dev")
+            ...     [ref.name for ref in api.list_repo_refs().branches]
+            ['main']
         """
 
         self._backend.delete_branch(branch=branch)
@@ -461,13 +540,19 @@ class HubVaultApi:
 
         Example::
 
-            >>> api = HubVaultApi("/tmp/demo-repo")
-            >>> _ = api.create_repo(exist_ok=True)
-            >>> _ = api.create_commit(
-            ...     operations=[CommitOperationAdd("demo.txt", b"hello")],
-            ...     commit_message="seed",
-            ... )
-            >>> api.create_tag(tag="v1")
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> from hubvault import CommitOperationAdd
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     api = HubVaultApi(Path(tmpdir) / "repo")
+            ...     _ = api.create_repo()
+            ...     _ = api.create_commit(
+            ...         operations=[CommitOperationAdd("demo.txt", b"hello")],
+            ...         commit_message="seed",
+            ...     )
+            ...     api.create_tag(tag="v1")
+            ...     [ref.name for ref in api.list_repo_refs().tags]
+            ['v1']
         """
 
         self._backend.create_tag(
@@ -490,14 +575,20 @@ class HubVaultApi:
 
         Example::
 
-            >>> api = HubVaultApi("/tmp/demo-repo")
-            >>> _ = api.create_repo(exist_ok=True)
-            >>> _ = api.create_commit(
-            ...     operations=[CommitOperationAdd("demo.txt", b"hello")],
-            ...     commit_message="seed",
-            ... )
-            >>> api.create_tag(tag="v1")
-            >>> api.delete_tag(tag="v1")
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> from hubvault import CommitOperationAdd
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     api = HubVaultApi(Path(tmpdir) / "repo")
+            ...     _ = api.create_repo()
+            ...     _ = api.create_commit(
+            ...         operations=[CommitOperationAdd("demo.txt", b"hello")],
+            ...         commit_message="seed",
+            ...     )
+            ...     api.create_tag(tag="v1")
+            ...     api.delete_tag(tag="v1")
+            ...     api.list_repo_refs().tags
+            []
         """
 
         self._backend.delete_tag(tag=tag)
@@ -527,14 +618,18 @@ class HubVaultApi:
 
         Example::
 
-            >>> api = HubVaultApi("/tmp/demo-repo")
-            >>> _ = api.create_repo(exist_ok=True)
-            >>> _ = api.create_commit(
-            ...     operations=[CommitOperationAdd("demo.txt", b"hello")],
-            ...     commit_message="seed",
-            ... )
-            >>> api.list_repo_reflog("main")[0].ref_name
-            'refs/heads/main'
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> from hubvault import CommitOperationAdd
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     api = HubVaultApi(Path(tmpdir) / "repo")
+            ...     _ = api.create_repo()
+            ...     _ = api.create_commit(
+            ...         operations=[CommitOperationAdd("demo.txt", b"hello")],
+            ...         commit_message="seed",
+            ...     )
+            ...     [entry.message for entry in api.list_repo_reflog("main")]
+            ['seed']
         """
 
         return self._backend.list_repo_reflog(ref_name=ref_name, limit=limit)
@@ -556,14 +651,18 @@ class HubVaultApi:
 
         Example::
 
-            >>> api = HubVaultApi("/tmp/demo-repo")
-            >>> _ = api.create_repo(exist_ok=True)
-            >>> _ = api.create_commit(
-            ...     operations=[CommitOperationAdd("demo.txt", b"hello")],
-            ...     commit_message="seed",
-            ... )
-            >>> with api.open_file("demo.txt") as fileobj:
-            ...     fileobj.read()
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> from hubvault import CommitOperationAdd
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     api = HubVaultApi(Path(tmpdir) / "repo")
+            ...     _ = api.create_repo()
+            ...     _ = api.create_commit(
+            ...         operations=[CommitOperationAdd("demo.txt", b"hello")],
+            ...         commit_message="seed",
+            ...     )
+            ...     with api.open_file("demo.txt") as fileobj:
+            ...         fileobj.read()
             b'hello'
         """
 
@@ -588,13 +687,17 @@ class HubVaultApi:
 
         Example::
 
-            >>> api = HubVaultApi("/tmp/demo-repo")
-            >>> _ = api.create_repo(exist_ok=True)
-            >>> _ = api.create_commit(
-            ...     operations=[CommitOperationAdd("demo.txt", b"hello")],
-            ...     commit_message="seed",
-            ... )
-            >>> api.read_bytes("demo.txt")
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> from hubvault import CommitOperationAdd
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     api = HubVaultApi(Path(tmpdir) / "repo")
+            ...     _ = api.create_repo()
+            ...     _ = api.create_commit(
+            ...         operations=[CommitOperationAdd("demo.txt", b"hello")],
+            ...         commit_message="seed",
+            ...     )
+            ...     api.read_bytes("demo.txt")
             b'hello'
         """
 
@@ -635,13 +738,17 @@ class HubVaultApi:
 
         Example::
 
-            >>> api = HubVaultApi("/tmp/demo-repo")
-            >>> _ = api.create_repo(exist_ok=True)
-            >>> _ = api.create_commit(
-            ...     operations=[CommitOperationAdd("demo.txt", b"hello")],
-            ...     commit_message="seed",
-            ... )
-            >>> api.read_range("demo.txt", start=1, length=3)
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> from hubvault import CommitOperationAdd
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     api = HubVaultApi(Path(tmpdir) / "repo")
+            ...     _ = api.create_repo()
+            ...     _ = api.create_commit(
+            ...         operations=[CommitOperationAdd("demo.txt", b"hello")],
+            ...         commit_message="seed",
+            ...     )
+            ...     api.read_range("demo.txt", start=1, length=3)
             b'ell'
         """
 
@@ -679,14 +786,19 @@ class HubVaultApi:
 
         Example::
 
-            >>> api = HubVaultApi("/tmp/demo-repo")
-            >>> _ = api.create_repo(exist_ok=True)
-            >>> _ = api.create_commit(
-            ...     operations=[CommitOperationAdd("demo.txt", b"hello")],
-            ...     commit_message="seed",
-            ... )
-            >>> api.hf_hub_download("demo.txt").endswith("demo.txt")
-            True
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> from hubvault import CommitOperationAdd
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     api = HubVaultApi(Path(tmpdir) / "repo")
+            ...     _ = api.create_repo()
+            ...     _ = api.create_commit(
+            ...         operations=[CommitOperationAdd("nested/demo.txt", b"hello")],
+            ...         commit_message="seed",
+            ...     )
+            ...     download_path = Path(api.hf_hub_download("nested/demo.txt"))
+            ...     (download_path.parts[-2:], download_path.read_bytes())
+            (('nested', 'demo.txt'), b'hello')
         """
 
         local_dir_str = None if local_dir is None else str(local_dir)
@@ -724,10 +836,22 @@ class HubVaultApi:
 
         Example::
 
-            >>> api = HubVaultApi("/tmp/demo-repo")
-            >>> _ = api.create_repo(exist_ok=True)
-            >>> api.snapshot_download().endswith("cache/snapshots/" + api.snapshot_download().split("cache/snapshots/")[-1])
-            True
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> from hubvault import CommitOperationAdd
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     api = HubVaultApi(Path(tmpdir) / "repo")
+            ...     _ = api.create_repo()
+            ...     _ = api.create_commit(
+            ...         operations=[
+            ...             CommitOperationAdd("demo.txt", b"hello"),
+            ...             CommitOperationAdd("nested/extra.txt", b"world"),
+            ...         ],
+            ...         commit_message="seed",
+            ...     )
+            ...     snapshot_dir = Path(api.snapshot_download(allow_patterns="nested/*"))
+            ...     Path(snapshot_dir, "nested", "extra.txt").read_bytes()
+            b'world'
         """
 
         local_dir_str = None if local_dir is None else str(local_dir)
@@ -768,10 +892,14 @@ class HubVaultApi:
 
         Example::
 
-            >>> api = HubVaultApi("/tmp/demo-repo")
-            >>> _ = api.create_repo(exist_ok=True)
-            >>> api.upload_file(path_or_fileobj=b"hello", path_in_repo="demo.txt").commit_message
-            'Upload demo.txt with hubvault'
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     api = HubVaultApi(Path(tmpdir) / "repo")
+            ...     _ = api.create_repo()
+            ...     commit = api.upload_file(path_or_fileobj=b"hello", path_in_repo="demo.txt")
+            ...     (commit.commit_message, api.read_bytes("demo.txt"))
+            ('Upload demo.txt with hubvault', b'hello')
         """
 
         return self._backend.upload_file(
@@ -821,11 +949,29 @@ class HubVaultApi:
         :return: Commit metadata for the created commit
         :rtype: CommitInfo
 
+        .. note::
+           The low-level staging, publish, and recovery sequence is implemented
+           by :class:`hubvault.repo.backend.RepositoryBackend`. This API
+           example focuses only on the public workflow.
+
         Example::
 
-            >>> api = HubVaultApi("/tmp/demo-repo")
-            >>> _ = api.create_repo(exist_ok=True)
-            >>> # See :meth:`hubvault.repo.backend.RepositoryBackend.upload_folder` for a full filesystem example.
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     root = Path(tmpdir)
+            ...     repo_dir = root / "repo"
+            ...     source_dir = root / "source"
+            ...     source_dir.mkdir()
+            ...     _ = source_dir.joinpath("config.json").write_text(
+            ...         '{"dtype":"float16"}',
+            ...         encoding="utf-8",
+            ...     )
+            ...     api = HubVaultApi(repo_dir)
+            ...     _ = api.create_repo()
+            ...     commit = api.upload_folder(folder_path=source_dir, path_in_repo="bundle")
+            ...     (commit.commit_message, api.list_repo_files())
+            ('Upload folder using hubvault', ['bundle/config.json'])
         """
 
         return self._backend.upload_folder(
@@ -868,11 +1014,26 @@ class HubVaultApi:
         :raises ValueError: Raised when ``folder_path`` is not a local
             directory.
 
+        .. note::
+           The underlying chunk planning and atomic publish logic lives in
+           :class:`hubvault.repo.backend.RepositoryBackend`. The public example
+           below shows the API-level behavior only.
+
         Example::
 
-            >>> api = HubVaultApi("/tmp/demo-repo")
-            >>> _ = api.create_repo(exist_ok=True)
-            >>> # See :meth:`hubvault.repo.backend.RepositoryBackend.upload_large_folder` for a full filesystem example.
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     root = Path(tmpdir)
+            ...     repo_dir = root / "repo"
+            ...     source_dir = root / "source"
+            ...     source_dir.mkdir()
+            ...     _ = source_dir.joinpath("model.bin").write_bytes(b"A" * 64)
+            ...     api = HubVaultApi(repo_dir)
+            ...     _ = api.create_repo(large_file_threshold=32)
+            ...     commit = api.upload_large_folder(folder_path=source_dir)
+            ...     (commit.commit_message, api.read_range("model.bin", start=0, length=4))
+            ('Upload large folder using hubvault', b'AAAA')
         """
 
         return self._backend.upload_large_folder(
@@ -906,6 +1067,25 @@ class HubVaultApi:
         :type parent_commit: Optional[str]
         :return: Commit metadata for the created commit
         :rtype: CommitInfo
+
+        Example::
+
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> from hubvault import CommitOperationAdd
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     api = HubVaultApi(Path(tmpdir) / "repo")
+            ...     _ = api.create_repo()
+            ...     _ = api.create_commit(
+            ...         operations=[
+            ...             CommitOperationAdd("keep.txt", b"keep"),
+            ...             CommitOperationAdd("remove.txt", b"gone"),
+            ...         ],
+            ...         commit_message="seed",
+            ...     )
+            ...     commit = api.delete_file("remove.txt")
+            ...     (commit.commit_message, api.list_repo_files())
+            ('Delete remove.txt with hubvault', ['keep.txt'])
         """
 
         return self._backend.delete_file(
@@ -940,6 +1120,25 @@ class HubVaultApi:
         :type parent_commit: Optional[str]
         :return: Commit metadata for the created commit
         :rtype: CommitInfo
+
+        Example::
+
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> from hubvault import CommitOperationAdd
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     api = HubVaultApi(Path(tmpdir) / "repo")
+            ...     _ = api.create_repo()
+            ...     _ = api.create_commit(
+            ...         operations=[
+            ...             CommitOperationAdd("bundle/model.bin", b"data"),
+            ...             CommitOperationAdd("keep.txt", b"keep"),
+            ...         ],
+            ...         commit_message="seed",
+            ...     )
+            ...     commit = api.delete_folder("bundle")
+            ...     (commit.commit_message, api.list_repo_files())
+            ('Delete folder bundle with hubvault', ['keep.txt'])
         """
 
         return self._backend.delete_folder(
@@ -967,14 +1166,23 @@ class HubVaultApi:
 
         Example::
 
-            >>> api = HubVaultApi("/tmp/demo-repo")
-            >>> _ = api.create_repo(exist_ok=True)
-            >>> commit = api.create_commit(
-            ...     operations=[CommitOperationAdd("demo.txt", b"hello")],
-            ...     commit_message="seed",
-            ... )
-            >>> api.reset_ref("main", to_revision=commit.oid).oid == commit.oid
-            True
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> from hubvault import CommitOperationAdd
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     api = HubVaultApi(Path(tmpdir) / "repo")
+            ...     _ = api.create_repo()
+            ...     first = api.create_commit(
+            ...         operations=[CommitOperationAdd("demo.txt", b"v1")],
+            ...         commit_message="seed v1",
+            ...     )
+            ...     _ = api.create_commit(
+            ...         operations=[CommitOperationAdd("demo.txt", b"v2")],
+            ...         commit_message="seed v2",
+            ...     )
+            ...     _ = api.reset_ref("main", to_revision=first.oid)
+            ...     api.read_bytes("demo.txt")
+            b'v1'
         """
 
         return self._backend.reset_ref(ref_name=ref_name, to_revision=to_revision)
@@ -990,10 +1198,19 @@ class HubVaultApi:
 
         Example::
 
-            >>> api = HubVaultApi("/tmp/demo-repo")
-            >>> _ = api.create_repo(exist_ok=True)
-            >>> api.quick_verify().ok
-            True
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> from hubvault import CommitOperationAdd
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     api = HubVaultApi(Path(tmpdir) / "repo")
+            ...     _ = api.create_repo()
+            ...     _ = api.create_commit(
+            ...         operations=[CommitOperationAdd("demo.txt", b"hello")],
+            ...         commit_message="seed",
+            ...     )
+            ...     report = api.quick_verify()
+            ...     (report.ok, report.errors)
+            (True, [])
         """
 
         return self._backend.quick_verify()
@@ -1014,10 +1231,19 @@ class HubVaultApi:
 
         Example::
 
-            >>> api = HubVaultApi("/tmp/demo-repo")
-            >>> _ = api.create_repo(exist_ok=True)
-            >>> api.full_verify().ok
-            True
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> from hubvault import CommitOperationAdd
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     api = HubVaultApi(Path(tmpdir) / "repo")
+            ...     _ = api.create_repo(large_file_threshold=32)
+            ...     _ = api.create_commit(
+            ...         operations=[CommitOperationAdd("model.bin", b"A" * 64)],
+            ...         commit_message="seed",
+            ...     )
+            ...     report = api.full_verify()
+            ...     (report.ok, report.errors)
+            (True, [])
         """
 
         return self._backend.full_verify()
@@ -1040,10 +1266,20 @@ class HubVaultApi:
 
         Example::
 
-            >>> api = HubVaultApi("/tmp/demo-repo")
-            >>> _ = api.create_repo(exist_ok=True)
-            >>> api.get_storage_overview().total_size >= 0
-            True
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> from hubvault import CommitOperationAdd
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     api = HubVaultApi(Path(tmpdir) / "repo")
+            ...     _ = api.create_repo(large_file_threshold=32)
+            ...     _ = api.create_commit(
+            ...         operations=[CommitOperationAdd("model.bin", b"A" * 64)],
+            ...         commit_message="seed",
+            ...     )
+            ...     _ = api.hf_hub_download("model.bin")
+            ...     overview = api.get_storage_overview()
+            ...     (overview.total_size > 0, overview.reclaimable_cache_size > 0)
+            (True, True)
         """
 
         return self._backend.get_storage_overview()
@@ -1075,10 +1311,20 @@ class HubVaultApi:
 
         Example::
 
-            >>> api = HubVaultApi("/tmp/demo-repo")
-            >>> _ = api.create_repo(exist_ok=True)
-            >>> api.gc(dry_run=True).dry_run
-            True
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> from hubvault import CommitOperationAdd
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     api = HubVaultApi(Path(tmpdir) / "repo")
+            ...     _ = api.create_repo(large_file_threshold=32)
+            ...     _ = api.create_commit(
+            ...         operations=[CommitOperationAdd("model.bin", b"A" * 64)],
+            ...         commit_message="seed",
+            ...     )
+            ...     _ = api.hf_hub_download("model.bin")
+            ...     report = api.gc(dry_run=True, prune_cache=True)
+            ...     (report.dry_run, report.reclaimed_cache_size > 0)
+            (True, True)
         """
 
         return self._backend.gc(dry_run=dry_run, prune_cache=prune_cache)
@@ -1127,12 +1373,30 @@ class HubVaultApi:
         :raises hubvault.errors.UnsupportedPathError: Raised when ``ref_name``
             is not a valid branch name.
 
+        .. note::
+           The object rewrite, ref update, and optional follow-up GC are
+           implemented by :class:`hubvault.repo.backend.RepositoryBackend`.
+           The example below stays at the public API level.
+
         Example::
 
-            >>> api = HubVaultApi("/tmp/demo-repo")
-            >>> _ = api.create_repo(exist_ok=True)
-            >>> # See :meth:`hubvault.repo.backend.RepositoryBackend.squash_history`
-            >>> # for a full filesystem example.
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> from hubvault import CommitOperationAdd
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     api = HubVaultApi(Path(tmpdir) / "repo")
+            ...     _ = api.create_repo(large_file_threshold=32)
+            ...     _ = api.create_commit(
+            ...         operations=[CommitOperationAdd("model.bin", b"A" * 64)],
+            ...         commit_message="seed v1",
+            ...     )
+            ...     second = api.create_commit(
+            ...         operations=[CommitOperationAdd("model.bin", b"B" * 64)],
+            ...         commit_message="seed v2",
+            ...     )
+            ...     report = api.squash_history("main", root_revision=second.oid, run_gc=False)
+            ...     (report.rewritten_commit_count, len(api.list_repo_commits()))
+            (1, 1)
         """
 
         return self._backend.squash_history(
