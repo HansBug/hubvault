@@ -4,6 +4,14 @@
 
 执行顺序遵循一个原则：先交付最小可用、可验证、可回归的本地仓库核心，再逐步扩充大文件、维护和性能能力。
 
+在当前 Phase 0-4 已经落地的前提下，后半程不再把“功能补齐、对拍、异常安全、性能和文档交付”混成一个大阶段，而是按下面顺序拆开推进：
+
+1. 先补 `merge()` 本体与冲突模型
+2. 再与真实 `git` / `git-lfs` / `huggingface_hub` 做行为对拍
+3. 再补极端场景与故障注入测试，把“最坏等效于本次操作从未发生过”压实
+4. 然后再做性能基线与可选优化
+5. 最后统一收尾文档、README、教程与交付检查
+
 ## 当前状态
 
 截至当前仓库实现状态：
@@ -17,6 +25,7 @@
 - 当前 Phase 3 已经落地 `hubvault/storage/` 大文件引擎与 `test/test_phase3.py` 集成回归，并把 `hubvault/repo.py` 包化为 `hubvault/repo/`。
 - 当前 Phase 3 已补齐阈值边界回归，明确验证“只有大小大于等于 `large_file_threshold` 的文件才进入 chunked storage，小文件保持 whole-file blob”。
 - 当前 Phase 4 已经落地 `full_verify()`、`get_storage_overview()`、`gc()`、`squash_history()` 与对应公开模型，并补上 `test/test_phase4.py` 全周期维护回归。
+- 当前剩余工作会从原单一 Phase 5 拆成五个顺序 phase，分别处理 merge、真实对拍、异常安全、性能与文档交付，避免把 correctness 验证与性能/文档收尾混做。
 
 优先级排序如下：
 
@@ -25,7 +34,11 @@
 3. refs / 历史 / 快照增强
 4. chunk / pack / range read
 5. full verify / 空间画像 / GC / 历史压缩
-6. merge / 性能优化 / 发布
+6. merge / 冲突模型
+7. `git` / `git-lfs` / `huggingface_hub` 对拍
+8. 异常测试 / 故障注入 / 极端场景安全
+9. 性能基线 / 可选优化
+10. 文档 / README / 教程 / 交付收尾
 
 ## Phase 0. 规范冻结与脚手架
 
@@ -201,26 +214,174 @@
 * [x] Phase 4 的空间治理能力不会破坏仓库自包含、可搬迁和公开 API 读取语义。
 * [x] `make unittest` 通过。
 
-## Phase 5. merge、性能、文档与发布
+## Phase 5. merge
 
 ### Goal
 
-在协议正确性稳定后，再补 merge，并做原生加速、构建发布和用户文档完善。
+先补齐版本控制核心中最后一个大的写路径能力：`merge()` 本体、三方 tree merge 规则和结构化冲突模型，同时继续遵守当前对象协议、事务协议与 rollback-only 恢复红线。
+
+### Status
+
+未开始。
 
 ### Todo
 
-* [ ] 设计并实现首版结构化 `merge()`，优先三方 tree merge + 明确冲突返回。
-* [ ] 评估可选原生加速模块，例如 `blake3`、`zstd`、`fastcdc`。
-* [ ] 增加 benchmark 和跨平台性能基线。
-* [ ] 完善公开 API 文档、MVP 教程和恢复/诊断文档。
-* [ ] 视需要扩展 CLI，但保持其为公开 API 的薄封装。
-* [ ] 跑通 `make package`、必要时跑 `make build` 与 `make test_cli`。
+* [ ] 冻结 `merge()` 的公开 API 形状，尽量贴近 Git/HF 用户能理解的语义，同时删除没有真实行为的兼容占位参数。
+* [ ] 实现首版三方 tree merge，覆盖 `target revision`、`source revision` 与 merge-base 自动解析。
+* [ ] 明确并实现首版冲突模型，至少覆盖同路径双改、增删冲突、文件/目录冲突、二进制大文件冲突。
+* [ ] 让 merge 复用现有事务发布、reflog 记录与 rollback-only 恢复链路，确保“要么产生一个新 merge commit，要么什么都没发生”。
+* [ ] 增加 merge commit、快进、非快进、冲突返回等公开 API 与集成回归。
+* [ ] 在 `plan/init/04-api-compat.md` 中同步记录 merge 与 Git/HF 的对齐结论及最小必要偏差。
 
 ### Checklist
 
-* [ ] merge 结果与冲突模型不破坏现有对象协议和事务发布原则。
-* [ ] 性能优化不改变格式与公开语义。
-* [ ] 文档示例全部走公开 API。
-* [ ] 打包产物和基础安装路径可验证。
-* [ ] 对 Python 3.7-3.14 与主要平台的兼容性假设有回归证据。
-* [ ] `make unittest` 以及相关发布回归通过。
+* [ ] merge commit 仍使用现有 commit/tree/file/chunk 对象协议，不引入新的真相源。
+* [ ] 冲突不会写入半成品 ref，也不会污染任何已提交对象。
+* [ ] 快进、非快进和冲突三类结果都能通过公开 API 稳定区分。
+* [ ] merge 相关回归覆盖普通小文件、chunked 大文件和 branch/tag 组合场景。
+* [ ] `make unittest` 通过。
+
+## Phase 6. 对拍
+
+### Goal
+
+在 merge 本体落地后，用真实 `git`、`git-lfs` 和 `huggingface_hub` 行为做系统对拍，证明 `hubvault` 的 VCS 与公开 API 语义不只是“内部自洽”，而是对外部主流基准也成立。
+
+### Status
+
+未开始。
+
+### Todo
+
+* [ ] 建立 `hubvault` vs `git` 的行为对拍矩阵，覆盖 commit DAG、branch/tag、reset、tree/list、历史遍历与 merge 结果。
+* [ ] 建立 `hubvault` vs `git-lfs` 的文件行为对拍，覆盖大文件身份元数据、阈值边界、下载路径后缀保真与对象哈希语义。
+* [ ] 建立 `hubvault` vs `huggingface_hub` 的公开 API 对拍，覆盖 `get_paths_info()`、`list_repo_tree()`、`list_repo_commits()`、`hf_hub_download()`、`snapshot_download()` 等已实现表面。
+* [ ] 将可离线复现的 `git` / `git-lfs` 对拍纳入常规或条件回归，把需要联网的 HF 实测整理成可选或夜间基线。
+* [ ] 把经过确认的最小必要偏差回写到 `plan/init/04-api-compat.md`、`README.md` 与公开 docstring。
+* [ ] 对拍结果不仅校验“能否调用成功”，还要校验返回结构、关键字段和值语义。
+
+### Checklist
+
+* [ ] 对拍结论能明确说明哪些行为已经严格对齐，哪些行为属于有文档记录的最小偏差。
+* [ ] `oid` / `blob_id` / `sha256` / size / path suffix 等用户可见文件语义有实测证据支撑。
+* [ ] 历史列表、refs、下载和快照行为都有真实 VCS/HF 基线可回归。
+* [ ] 对拍套件不会回退去依赖 private / protected 内部实现。
+* [ ] `make unittest` 与相应对拍回归通过。
+
+## Phase 7. 异常测试
+
+### Goal
+
+系统化模拟极端场景、损坏中间态和中断写入，确保仓库真相永远不被半写状态污染；最坏结果只允许等效于“本次操作从未发生过”，而不是留下任何介于“成功提交”和“从未发生过”之间的暧昧状态。
+
+### Status
+
+未开始。
+
+### Technical Focus
+
+这一阶段不只做“抛异常能报错”式测试，而是要直接验证事务线性化边界、对象发布边界和用户可观测恢复语义。
+
+故障注入的技术手段规划如下：
+
+- 通过子进程执行公开 API，并用受控 failpoint 在 `flush/fsync`、对象发布、`os.replace(ref)`、reflog 追加、`MANIFEST` 切换等关键点主动触发 `RuntimeError`、`OSError`、`KeyboardInterrupt` 或直接 `os._exit(...)`
+- 对 pack/index/manifest、txn 元数据和 cache 视图构造“只写了一半”的预制损坏夹具，然后只通过重新打开仓库和公开 API 观察恢复结果
+- 对跨进程读写锁使用真实多进程阻塞/中断场景，而不是 mock 锁对象
+- 对需要模拟磁盘层失败的场景，优先注入精确的 `OSError(errno.ENOSPC)`、`PermissionError`、`InterruptedError`，而不是笼统 `except Exception`
+
+这一阶段计划覆盖的代表性异常矩阵如下：
+
+- 提交路径：`create_commit()` 在写 blob/file/tree/commit、发布对象、更新 ref、写 reflog、删除事务目录前后的中断
+- merge 路径：`merge()` 在 merge-base 解析后、冲突判定后、生成 merge commit 前后、更新目标 ref 前后的中断
+- refs 路径：`reset_ref()`、`create_branch()`、`delete_branch()`、`create_tag()`、`delete_tag()` 在 ref 切换与 reflog 记录之间的中断
+- 大文件路径：chunk 写入中断、pack append 中断、index/manifest 切换中断、阈值边界文件在异常下不得被错误 chunk 化
+- 维护路径：`full_verify()` 面对损坏 pack/index/manifest、`gc()`/`squash_history()` 在 live pack 重写和发布中的中断
+- 只读视图路径：`hf_hub_download()` / `snapshot_download()` 产物被删改、替换成目录/文件/坏 symlink 后的重建
+- 可搬迁路径：中断后直接 `mv` 仓库、打包/解包恢复，再重新打开并验证主状态仍一致
+- 并发路径：writer 崩溃时 reader/writer 阻塞释放、长读期间写阻塞、写锁持有者异常退出后的后续恢复
+
+这一阶段的核心断言也固定如下：
+
+- 当前 head、branch/tag 指向、tree/list/read 结果必须仍然等效于“本次写操作从未发生过”，或者已经完整成功
+- 已提交版本的字节内容、大小、`oid`、`blob_id`、`sha256` 不得发生漂移
+- 新写到一半的对象即使遗留为孤儿，也必须不可达且不会污染主状态；后续可由 `gc()` 安全清理
+- `quick_verify()` / `full_verify()` 必须能把异常态解释成明确问题，而不是沉默吞掉
+- 用户视图损坏只影响视图本身，不影响正式对象，可通过重新下载/导出恢复
+
+### Todo
+
+* [ ] 建立 failpoint 目录与统一注入协议，明确每个公开写 API 可触发的故障点名称、触发时机和预期结果。
+* [ ] 为 `create_commit()` 增加阶段性故障注入测试，至少覆盖写对象前、对象发布后/ref 更新前、ref 更新后/提交标记前、reflog 追加前后、事务清理前后。
+* [ ] 为 `merge()` 增加与 `create_commit()` 同等级别的阶段性故障注入测试，并显式覆盖快进 merge、非快进 merge 和冲突 merge。
+* [ ] 为 refs 操作增加异常测试，覆盖 branch/tag 创建删除、`reset_ref()` 和 reflog 之间的原子性。
+* [ ] 为大文件写路径增加异常测试，覆盖 chunk append、pack flush、index 发布、manifest 切换、阈值边界文件误分流防护。
+* [ ] 为维护路径增加异常测试，覆盖 `gc()` live pack 重写、`squash_history()` 历史重写与阻塞 ref 分析中的中断恢复。
+* [ ] 为用户视图和快照缓存增加破坏性测试，覆盖删除、截断、追加脏数据、替换为目录、替换为坏链接后的重建。
+* [ ] 为 repo 可搬迁性增加异常后回归，覆盖中断后直接搬迁目录、打包/解包恢复再重开。
+* [ ] 为跨进程并发增加异常回归，覆盖持写锁进程崩溃后锁释放、阻塞 reader/writer 恢复和只读并发不互相阻塞。
+* [ ] 为校验与诊断接口增加异常态断言，确保 warning / error / blocking refs / quarantined objects 等结果可解释且稳定。
+* [ ] 明确区分“允许 API 失败但仓库主状态必须等效于从未发生过”的场景与“必须自动恢复成功”的场景，并把期望写进测试名称和 pydoc。
+* [ ] 对所有异常态补充恢复指南文档，说明哪些情况由系统自动回滚，哪些需要用户显式处理。
+
+### Checklist
+
+* [ ] 任意中断都不会让 `refs/` 指向半成品提交，也不会破坏任何已提交对象。
+* [ ] 最坏结果等效于“本次操作从未发生过”，不存在第三种半提交状态。
+* [ ] 损坏的用户视图、快照缓存或临时目录不会被误判成正式仓库数据损坏。
+* [ ] 半写 pack/index/manifest 等异常态能够被识别、隔离或回滚，而不是悄悄进入主状态。
+* [ ] 异常测试在三平台上至少保有可运行的核心子集。
+* [ ] `make unittest` 通过。
+
+## Phase 8. 性能
+
+### Goal
+
+在语义、对拍和异常安全都稳定之后，再建立正式性能基线并做可选优化，避免为了吞吐量引入协议漂移或隐藏一致性风险。
+
+### Status
+
+未开始。
+
+### Todo
+
+* [ ] 建立公开场景性能基线，覆盖小文件提交/读取、chunked 大文件提交/范围读取、快照导出、历史遍历、校验、GC 与历史压缩。
+* [ ] 在不改变磁盘协议和公开语义的前提下，识别热点并评估 hash、压缩、chunk 规划与索引查找等优化点。
+* [ ] 评估可选依赖 `blake3`、`zstd`、`fastcdc` 等的收益与兼容成本，确保没有它们时仍保持完全正确。
+* [ ] 为性能回归增加固定输入规模和结果记录，避免“感觉更快”式优化。
+* [ ] 明确区分默认路径与可选加速路径，确保 Python 3.7-3.14 与三平台兼容红线不被突破。
+* [ ] 针对 Phase 3 大文件引擎增加“何时 chunk、何时 whole-file 更优”的基线分析，避免不必要的 chunk 化。
+
+### Checklist
+
+* [ ] 性能优化前后公开 API 行为、存储格式和事务语义保持不变。
+* [ ] 至少一组可重复 benchmark 能展示当前瓶颈与优化收益。
+* [ ] 可选原生加速是纯增益项，不成为正确性与可安装性的前置条件。
+* [ ] 小文件路径不会因为追求大文件性能而出现明显回退。
+* [ ] `make unittest` 与性能基线回归通过。
+
+## Phase 9. 文档、README 与教程
+
+### Goal
+
+在前述功能、对拍和安全结论稳定后，统一收尾用户文档、README、教程与交付检查，让外部使用者看到的公开说明和真实实现完全一致。
+
+### Status
+
+未开始。
+
+### Todo
+
+* [ ] 重写 README 的定位、快速开始、能力矩阵和与 `huggingface_hub` / `git-lfs` 的关系说明，确保内容与 Phase 0-8 的真实实现一致。
+* [ ] 补齐公开 API 文档、docstring 示例、MVP 教程、merge 使用教程、异常恢复与空间治理教程。
+* [ ] 所有示例都直接展示完整流程、真实输出形状和公开返回模型，不再只引用内部说明。
+* [ ] 为常见真实场景编排端到端教程，包括初始化仓库、提交多个版本、分支/merge、下载、校验、GC/历史压缩与异常后恢复。
+* [ ] 同步记录对拍结论、最小必要偏差和已知限制，避免用户误以为与 HF/Git 完全等价。
+* [ ] 在文档收尾阶段跑通 `make rst_auto`、`make package`，必要时补 `make build` 与 `make test_cli`，确保交付面一致。
+
+### Checklist
+
+* [ ] README、API 文档和教程与当前代码行为一致，没有未来时伪实现。
+* [ ] 文档示例全部走公开 API / 公开 CLI，不依赖 private / protected 内容。
+* [ ] 教程覆盖正常路径、恢复路径和空间治理路径。
+* [ ] 关键示例中的路径、哈希、commit/refs 输出形状与真实实现一致。
+* [ ] `make rst_auto` 和相关交付回归通过。

@@ -13,9 +13,9 @@
 | 存储引擎 | Phase 3 已有 | whole-file commit/tree/blob 与 chunk/pack 已落地 |
 | 事务协议 | Phase 2 已有 | 跨进程 RW 锁、事务目录、恢复、回滚、快速校验已落地 |
 | 维护与空间治理 | Phase 4 已有 | `full_verify()`、空间画像、`gc()`、`squash_history()` 已落地 |
-| merge | 后续 phase | 仍未实现，继续后延 |
+| merge | 后续 phase | 仍未实现，后续将拆分为 merge / 对拍 / 异常测试 / 性能 / 文档收尾多个阶段推进 |
 
-因此，当前初始化规划的重点已经从“如何从 0 到 1 做出 MVP”转成“如何在不破坏已落地协议与公开兼容语义的前提下，继续推进 merge、性能优化与发布收尾”。
+因此，当前初始化规划的重点已经从“如何从 0 到 1 做出 MVP”转成“如何在不破坏已落地协议与公开兼容语义的前提下，继续推进 merge、真实对拍、异常安全验证、性能优化和文档交付收尾”。
 
 ## 2. 项目目标
 
@@ -130,6 +130,8 @@ content = api.read_bytes("weights/config.json", revision="main")
 - 支持 branch、tag、merge、verify、GC、compact
 - 支持大文件 chunked / pack 存储和 range read
 - 可以列出历史、refs、文件信息并执行回收策略
+- 已通过真实 `git` / `git-lfs` / `huggingface_hub` 行为对拍验证关键公开语义，并把最小必要偏差文档化
+- 在异常中断、残留事务、半写 pack/index/manifest 和损坏用户视图等极端场景下，仓库真相仍不会损坏，最坏也只允许等效于“本次操作从未发生过”
 
 ## 8. 术语约定
 
