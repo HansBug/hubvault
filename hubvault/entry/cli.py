@@ -2,9 +2,8 @@
 Command-line interface assembly for the hubvault entry points.
 
 This module composes the top-level CLI command group by applying a sequence
-of subcommand decorators. In the current repository state there are no extra
-subcommands yet, so the exported group is the same top-level command defined in
-:mod:`hubvault.entry.dispatch`.
+of subcommand decorators. Each decorator registers one command family while
+keeping the exported top-level group stable.
 
 The module contains the following main component:
 
@@ -19,17 +18,25 @@ Example::
 
 .. note::
    Subcommands are added by decorator functions that mutate the Click group in
-   place and return it for chaining. Phase 2 and later work may append
-   decorators here while keeping the exported object stable.
+   place and return it for chaining. The CLI stays on top of the public API
+   and does not add a git workspace/index layer of its own.
 """
 
 from typing import Callable, List
 
 import click
 
+from .content import register_content_commands
 from .dispatch import hubvaultcli
+from .history import register_history_commands
+from .refs import register_ref_commands
+from .repo import register_repo_commands
 
 _DECORATORS: List[Callable[[click.Group], click.Group]] = [
+    register_repo_commands,
+    register_ref_commands,
+    register_history_commands,
+    register_content_commands,
 ]
 
 cli: click.Group = hubvaultcli

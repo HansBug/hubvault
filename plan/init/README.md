@@ -1,6 +1,6 @@
 # init 计划说明
 
-`plan/init/` 保存的是 `hubvault` 从当前“基础 CLI + 元信息骨架”状态走向“可运行的本地嵌入式版本仓库”的初始化设计基线。
+`plan/init/` 保存的是 `hubvault` 从当前“已具备 Git-like 本地 CLI 与本地仓库核心能力”的状态继续走向完整交付的初始化设计基线。
 
 这一组文档不再只是抽象蓝图，而是同时承担两类职责：
 
@@ -15,7 +15,7 @@
 
 - Python 包结构、打包脚本和测试基础设施
 - `hubvault.config.meta` 中的公开包元信息
-- `hubvault.entry` 下的基础 CLI 壳层与版本输出
+- `hubvault.entry` 下已落地的 Phase 6 CLI：`hubvault` / `hv` 双入口、全局 `-C`、以及 `init/status/branch/tag/log/ls-tree/commit/merge/reset/download/snapshot/verify`
 - `pytest` / `make unittest` / `make package` 等基础工程能力
 - 已落地的公开仓库 API 与包结构：`hubvault.api`、`hubvault.errors`、`hubvault.models`、`hubvault.operations`、`hubvault.repo/`
 - 已落地的 Phase 3 大文件存储包：`hubvault.storage/`（`chunk.py`、`pack.py`、`index.py`）
@@ -26,16 +26,16 @@
 - 已落地的 Phase 3 阈值边界回归，明确验证只有满足 `large_file_threshold` 条件的文件才进入 chunked storage
 - 已落地的 Phase 4 `full_verify()` / `get_storage_overview()` / `gc()` / `squash_history()` 能力，以及对应的 `test/test_phase4.py` 全周期维护回归
 - 已落地的 Phase 5 `merge()`、结构化 `MergeConflict` / `MergeResult`、merge DAG 历史遍历，以及对应的 `test/test_phase5.py` 全周期 merge 集成回归
+- 已落地的 Phase 6 Git-like 本地 CLI，以及对应的 `test/entry/test_*.py` 命令回归与 `test/test_phase6.py` 全周期 CLI 集成回归
 
 尚未落地的核心能力包括：
 
-- 基于现有公开 API 的 CLI 专题 phase，让 `hubvault` / `hv` 成为可日常使用的本地命令行工具
 - 基于真实 `git` / `git-lfs` / `huggingface_hub` 的行为对拍
 - 面向极端场景的异常测试与故障注入验证
 - 更进一步的性能基线与可选优化
 - 文档、README、教程与最终交付收尾
 
-因此，这组初始化方案既要记录已经实现的 MVP 基线，也要继续约束后续 Phase 6-10，避免把已经落地的格式和公开语义重新漂移回“抽象设想”，也避免把 CLI 交付、correctness 验证、性能和文档收尾混成一个模糊的大阶段。
+因此，这组初始化方案既要记录已经实现的 MVP 与 CLI 基线，也要继续约束后续 Phase 7-10，避免把已经落地的格式和公开语义重新漂移回“抽象设想”，也避免把 correctness 验证、性能和文档收尾混成一个模糊的大阶段。
 
 ## 2. 使用方式
 
@@ -79,7 +79,6 @@
 
 更重的能力放到后续 phase：
 
-- 基于现有公开 API 的 Git-like 本地 CLI
 - `git` / `git-lfs` / `huggingface_hub` 对拍
 - 异常测试与故障注入
 - 原生加速与性能基线
@@ -88,7 +87,7 @@
 ## 5. 执行原则
 
 - 设计先冻结协议，再推进实现，避免边写边改磁盘格式。
-- 公开 API 仍优先于 CLI；Phase 6 会补齐 Git-like CLI，但 CLI 只包装公开 API，不引入额外 workspace/index 真相层。
+- 公开 API 仍优先于 CLI；已落地的 Phase 6 CLI 仍然只包装公开 API，不引入额外 workspace/index 真相层。
 - 所有持久化仓库状态必须位于 repo root 内，且不得依赖绝对路径或仓库外 sidecar 数据。
 - 任何新增能力都必须配套公开表面的单元测试。
 - 每次改动完成后都要跑与改动面匹配的回归；结束前必须通过要求的完整回归集。

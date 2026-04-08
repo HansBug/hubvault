@@ -51,6 +51,12 @@ hubvault/
     base.py
     cli.py
     dispatch.py
+    context.py
+    formatters.py
+    repo.py
+    refs.py
+    history.py
+    content.py
 ```
 
 含义：
@@ -68,7 +74,7 @@ hubvault/
 - `storage/`
   当前 Phase 3 大文件存储包，`chunk.py` 负责分块规划与 canonical LFS pointer 元数据，`pack.py` 负责 append-only pack 读写，`index.py` 负责 manifest 与不可变索引段。
 - `entry/`
-  当前仍以壳层为主；Phase 6 会在这里补充 Git-like 本地 CLI，但所有命令依旧只调用公开 API，不直接碰内部存储真相，也不会引入 workspace/index 层。
+  当前 Phase 6 已经在这里落地 Git-like 本地 CLI：`dispatch.py` 处理顶层入口和 `-C`，`context.py` 负责 repo 解析，`formatters.py` 负责 git-like 文本输出，`repo.py` / `refs.py` / `history.py` / `content.py` 负责命令族注册。所有命令依旧只调用公开 API，不直接碰内部存储真相，也不会引入 workspace/index 层。
 
 ### 2.2 后续推荐拆分结构
 
@@ -125,7 +131,7 @@ hubvault/
 
 - Phase 0-2 已经落地 `api.py`、`errors.py`、`models.py`、`operations.py` 与 `repo/`
 - Phase 3 已经落地 `storage/chunk.py`、`storage/pack.py`、`storage/index.py`
-- Phase 6 期间优先拆出 `entry/context.py`、`entry/formatters.py` 与 `entry/commands/*`
+- Phase 6 已经拆出 `entry/context.py`、`entry/formatters.py`、`entry/repo.py`、`entry/refs.py`、`entry/history.py`、`entry/content.py`
 - 后续再按需要继续拆分 `repo/backend.py`、`services/repository.py`、`services/commit.py`、`storage/object_store.py`、`storage/blob_store.py`
 
 ## 3. 分层职责

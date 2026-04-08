@@ -7,7 +7,7 @@
 | 领域 | 当前状态 | 备注 |
 | --- | --- | --- |
 | 包元信息 | 已有 | `hubvault.config.meta` 可用 |
-| CLI 壳层 | 已有 | `hubvault.entry` 能输出版本与帮助 |
+| CLI | Phase 6 已有 | `hubvault.entry` 已支持 `hubvault` / `hv`、全局 `-C` 以及 `init/status/branch/tag/log/ls-tree/commit/merge/reset/download/snapshot/verify` |
 | 打包/测试基础设施 | 已有 | `Makefile`、`pytest.ini`、`setup.py` 已就位 |
 | 公开仓库 API | 已有 | `HubVaultApi`、`CommitOperation*`、`RepoFile/RepoFolder`、异常模型已落地 |
 | 存储引擎 | Phase 3 已有 | whole-file commit/tree/blob 与 chunk/pack 已落地 |
@@ -15,7 +15,7 @@
 | 维护与空间治理 | Phase 4 已有 | `full_verify()`、空间画像、`gc()`、`squash_history()` 已落地 |
 | merge | Phase 5 已有 | 三方 tree merge、结构化冲突返回、merge DAG 历史遍历与公开集成回归已落地 |
 
-因此，当前初始化规划的重点已经从“如何从 0 到 1 做出 MVP”转成“如何在不破坏已落地协议与公开兼容语义的前提下，继续推进 CLI 专题、真实对拍、异常安全验证、性能优化和文档交付收尾”。
+因此，当前初始化规划的重点已经从“如何从 0 到 1 做出 MVP”转成“如何在不破坏已落地协议与公开兼容语义的前提下，继续推进真实对拍、异常安全验证、性能优化和文档交付收尾”。
 
 ## 2. 项目目标
 

@@ -27,7 +27,8 @@
 - 当前 Phase 3 已补齐阈值边界回归，明确验证“只有大小大于等于 `large_file_threshold` 的文件才进入 chunked storage，小文件保持 whole-file blob”。
 - 当前 Phase 4 已经落地 `full_verify()`、`get_storage_overview()`、`gc()`、`squash_history()` 与对应公开模型，并补上 `test/test_phase4.py` 全周期维护回归。
 - 当前 Phase 5 已经落地 `merge()`、`MergeConflict`、`MergeResult`、merge DAG 历史遍历与 `test/test_phase5.py` 集成回归，并明确把冲突结果收敛成结构化返回而不是半提交异常状态。
-- 当前剩余工作会从原单一 Phase 5 继续拆成后续五个顺序 phase，分别处理 CLI 交付、真实对拍、异常安全、性能与文档交付，避免把用户入口、correctness 验证与性能/文档收尾混做。
+- 当前 Phase 6 已经落地 `hubvault` / `hv` CLI、全局 `-C`、`init/status/branch/tag/log/ls-tree/commit/merge/reset/download/snapshot/verify` 命令，以及 `test/entry/test_*.py` 与 `test/test_phase6.py` 回归。
+- 当前剩余工作会从 Phase 6 之后继续拆成后续四个顺序 phase，分别处理真实对拍、异常安全、性能与文档交付，避免把 correctness 验证与性能/文档收尾混做。
 
 优先级排序如下：
 
@@ -252,7 +253,7 @@
 
 ### Status
 
-未开始。
+已完成。
 
 ### Technical Focus
 
@@ -289,22 +290,22 @@
 
 ### Todo
 
-* [ ] 在 `hubvault/entry/` 下补充分层结构，至少拆出命令注册、上下文解析与文本格式化责任，避免所有 CLI 逻辑继续堆在单个模块里。
-* [ ] 增加全局 `-C <path>` 语义，并确保 `hubvault` / `hv` 两个入口都指向同一套 CLI。
-* [ ] 实现 `init`、`status`、`branch`、`tag`、`log`、`ls-tree`、`commit`、`merge`、`reset` 命令。
-* [ ] 实现 `download`、`snapshot`、`verify` 等 `hubvault` 特有但高频的核心命令。
-* [ ] 用真实 `git` 的帮助与典型输出校准 help、选项命名和常见人类可读文案，但不照搬不适用的 workspace/index 语义。
-* [ ] 为新增 `hubvault/entry/*.py` 各自补对应的 `test/entry/test_*.py`，只通过公开 CLI 行为断言，不碰 private / protected 细节。
-* [ ] 为 Phase 6 增加一个端到端 CLI 集成测试，覆盖 init、commit、branch、merge、log、下载/读取和 verify 的全周期真实使用场景。
+* [x] 在 `hubvault/entry/` 下补充分层结构，拆出 `dispatch.py`、`context.py`、`formatters.py`、`repo.py`、`refs.py`、`history.py`、`content.py` 的责任边界。
+* [x] 增加全局 `-C <path>` 语义，并确保 `hubvault` / `hv` 两个入口都指向同一套 CLI。
+* [x] 实现 `init`、`status`、`branch`、`tag`、`log`、`ls-tree`、`commit`、`merge`、`reset` 命令。
+* [x] 实现 `download`、`snapshot`、`verify` 等 `hubvault` 特有但高频的核心命令。
+* [x] 用真实 `git` 的帮助与典型输出校准 help、选项命名和常见人类可读文案，但不照搬不适用的 workspace/index 语义。
+* [x] 为新增 `hubvault/entry/*.py` 各自补对应的 `test/entry/test_*.py`，只通过公开 CLI 行为断言，不碰 private / protected 细节。
+* [x] 为 Phase 6 增加 `test/test_phase6.py` 端到端 CLI 集成测试，覆盖 init、commit、branch、merge、log、下载/读取和 verify 的全周期真实使用场景。
 
 ### Checklist
 
-* [ ] `hubvault --help` 与 `hv --help` 都能展示同一套命令面。
-* [ ] CLI 命令只通过公开 API 工作，没有私自读取内部实现细节。
-* [ ] `status` / `branch` / `tag` / `log` / `ls-tree` 的输出对 Git 用户是熟悉的，但不会伪造 workspace/index 语义。
-* [ ] `commit` / `merge` / `reset` / `download` / `snapshot` / `verify` 能稳定跑通当前已支持的公开能力。
-* [ ] 新增 CLI 测试按 `hubvault/entry` 模块树一一对应拆分。
-* [ ] `make unittest` 通过。
+* [x] `hubvault --help` 与 `hv --help` 都能展示同一套命令面。
+* [x] CLI 命令只通过公开 API 工作，没有私自读取内部实现细节。
+* [x] `status` / `branch` / `tag` / `log` / `ls-tree` 的输出对 Git 用户是熟悉的，但不会伪造 workspace/index 语义。
+* [x] `commit` / `merge` / `reset` / `download` / `snapshot` / `verify` 能稳定跑通当前已支持的公开能力。
+* [x] 新增 CLI 测试按 `hubvault/entry` 模块树一一对应拆分。
+* [x] `make unittest` 通过。
 
 ## Phase 7. 对拍
 

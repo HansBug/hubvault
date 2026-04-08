@@ -2,9 +2,9 @@
 Command-line interface entry point for the :mod:`hubvault` package.
 
 This module defines the main Click command group used to expose the CLI for
-the project, including version reporting and help configuration. It builds
-user-facing metadata from the project configuration and provides a top-level
-command entry point.
+the project, including version reporting, global repository-path selection,
+and help configuration. It builds user-facing metadata from the project
+configuration and provides a top-level command entry point.
 
 The module contains the following main components:
 
@@ -18,7 +18,8 @@ Example::
 
 .. note::
    The version display is implemented via a Click option callback, which
-   prints version information and exits the process.
+   prints version information and exits the process. Runtime repo discovery is
+   delegated to :mod:`hubvault.entry.context`.
 
 """
 
@@ -26,6 +27,7 @@ import click
 from click.core import Context, Option
 
 from .base import CONTEXT_SETTINGS
+from .context import set_cli_repo_path
 from ..config.meta import __TITLE__, __VERSION__, __AUTHOR__, __AUTHOR_EMAIL__, __DESCRIPTION__
 
 _raw_authors = [item.strip() for item in __AUTHOR__.split(',') if item.strip()]
@@ -83,15 +85,28 @@ def print_version(ctx: Context, param: Option, value: bool) -> None:
 
 
 @click.group(context_settings=CONTEXT_SETTINGS, help=__DESCRIPTION__)
+@click.option(
+    "-C",
+    "repo_path",
+    default=None,
+    type=click.Path(file_okay=False, dir_okay=True),
+    help="Run the command as if hubvault was started in the given path.",
+)
 @click.option('-v', '--version', is_flag=True,
               callback=print_version, expose_value=False, is_eager=True,
               help="Show hubvault's version information.")
-def hubvaultcli() -> None:
+@click.pass_context
+def hubvaultcli(ctx: Context, repo_path: str) -> None:
     """
     Main Click command group for the :mod:`hubvault` CLI.
 
     This command group provides a common entry point for subcommands and
-    integrates global options such as ``--version`` and help flags.
+    integrates global options such as ``-C``, ``--version``, and help flags.
+
+    :param ctx: Click context for the current command invocation.
+    :type ctx: :class:`click.core.Context`
+    :param repo_path: Optional repo path passed through ``-C``.
+    :type repo_path: str
 
     :return: ``None``.
     :rtype: None
@@ -99,7 +114,7 @@ def hubvaultcli() -> None:
     Example::
 
         >>> # Typically invoked via a console entry point:
-        >>> # $ hubvault --help
+        >>> # $ hubvault -C /path/to/repo status
 
     """
-    pass  # pragma: no cover
+    set_cli_repo_path(ctx, repo_path)
