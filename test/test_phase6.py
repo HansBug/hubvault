@@ -83,8 +83,9 @@ class TestPhase6IntegratedCliLifecycle:
 
         assert log_result.exit_code == 0
         log_lines = [line for line in log_result.output.splitlines() if line.strip()]
-        assert len(log_lines) == 4
+        assert len(log_lines) == 5
         assert any("merge feature" in line for line in log_lines)
+        assert any("Initial commit" in line for line in log_lines)
 
         assert download_result.exit_code == 0
         download_path = Path(download_result.output.strip())

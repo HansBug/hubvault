@@ -45,8 +45,9 @@ class TestApi:
         created = api.create_repo(default_branch="release/v1")
         assert isinstance(created, RepoInfo)
         assert created.default_branch == "release/v1"
-        assert created.head is None
+        assert created.head is not None
         assert created.refs == ["refs/heads/release/v1"]
+        initial_commit_id = created.head
 
         with pytest.raises(RepositoryAlreadyExistsError):
             api.create_repo(default_branch="release/v1")
@@ -77,12 +78,14 @@ class TestApi:
         assert commit.repo_url.startswith("file:")
         assert "#commit=" in commit.commit_url
         commit_history = api.list_repo_commits()
-        assert len(commit_history) == 1
+        assert len(commit_history) == 2
         assert commit_history[0].commit_id == commit.oid
         assert commit_history[0].title == "add api assets"
         assert commit_history[0].message == ""
         assert commit_history[0].formatted_title is None
         assert commit_history[0].formatted_message is None
+        assert commit_history[1].commit_id == initial_commit_id
+        assert commit_history[1].title == "Initial commit"
         assert api.list_repo_files() == [
             "artifacts/weights.bin",
             "configs/model.json",
@@ -146,17 +149,18 @@ class TestApi:
         repo_dir = tmp_path / "repo"
         api = HubVaultApi(repo_dir)
         api.create_repo()
-        assert api.list_repo_commits() == []
+        assert [item.title for item in api.list_repo_commits()] == ["Initial commit"]
         first_commit = api.create_commit(
             operations=[CommitOperationAdd("data/file.txt", b"v1")],
             commit_message="seed",
         )
 
         formatted_history = api.list_repo_commits(formatted=True)
-        assert len(formatted_history) == 1
+        assert len(formatted_history) == 2
         assert formatted_history[0].title == "seed"
         assert formatted_history[0].formatted_title == "seed"
         assert formatted_history[0].formatted_message == ""
+        assert formatted_history[1].title == "Initial commit"
 
         with pytest.raises(ConflictError):
             api.create_commit(operations=[], commit_message="noop")
@@ -243,19 +247,21 @@ class TestApi:
         )
 
         plain_history = api.list_repo_commits()
-        assert len(plain_history) == 1
+        assert len(plain_history) == 2
         assert plain_history[0].commit_id == commit.oid
         assert plain_history[0].title == "document <api>"
         assert plain_history[0].message == "body & tail"
         assert plain_history[0].formatted_title is None
         assert plain_history[0].formatted_message is None
+        assert plain_history[1].title == "Initial commit"
 
         formatted_history = api.list_repo_commits(formatted=True)
-        assert len(formatted_history) == 1
+        assert len(formatted_history) == 2
         assert formatted_history[0].title == "document <api>"
         assert formatted_history[0].message == "body & tail"
         assert formatted_history[0].formatted_title == "document &lt;api&gt;"
         assert formatted_history[0].formatted_message == "body &amp; tail"
+        assert formatted_history[1].title == "Initial commit"
         assert commit.commit_message == "document <api>"
         assert commit.commit_description == "body & tail"
 
@@ -358,17 +364,20 @@ class TestApi:
         with pytest.raises(ConflictError):
             api.merge("feature", parent_commit=seed_commit.oid)
 
-    def test_merge_public_api_treats_empty_source_branch_as_already_up_to_date(self, tmp_path):
+    def test_merge_public_api_treats_equal_and_ancestor_source_heads_as_already_up_to_date(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")
         api.create_repo()
+        initial_head = api.repo_info().head
         api.create_branch(branch="feature")
 
-        empty_result = api.merge("feature")
-        assert empty_result.status == "already-up-to-date"
-        assert empty_result.target_head_before is None
-        assert empty_result.source_head is None
-        assert empty_result.head_after is None
-        assert empty_result.commit is None
+        same_head_result = api.merge("feature")
+        assert same_head_result.status == "already-up-to-date"
+        assert same_head_result.base_commit == initial_head
+        assert same_head_result.target_head_before == initial_head
+        assert same_head_result.source_head == initial_head
+        assert same_head_result.head_after == initial_head
+        assert same_head_result.commit is not None
+        assert same_head_result.commit.oid == initial_head
 
         main_commit = api.create_commit(
             operations=[CommitOperationAdd("main.txt", b"main")],
@@ -378,18 +387,19 @@ class TestApi:
         result = api.merge("feature")
 
         assert result.status == "already-up-to-date"
-        assert result.base_commit is None
+        assert result.base_commit == initial_head
         assert result.target_head_before == main_commit.oid
-        assert result.source_head is None
+        assert result.source_head == initial_head
         assert result.head_after == main_commit.oid
         assert result.commit is not None
         assert result.commit.oid == main_commit.oid
         assert result.conflicts == []
         assert api.repo_info().head == main_commit.oid
 
-    def test_merge_public_api_fast_forwards_empty_target_branch_via_full_ref_name(self, tmp_path):
+    def test_merge_public_api_fast_forwards_ancestor_target_branch_via_full_ref_name(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")
         api.create_repo()
+        initial_head = api.repo_info().head
         api.create_branch(branch="archive")
         source_commit = api.create_commit(
             operations=[CommitOperationAdd("notes.txt", b"seed")],
@@ -399,9 +409,9 @@ class TestApi:
         result = api.merge("main", target_revision="refs/heads/archive")
 
         assert result.status == "fast-forward"
-        assert result.base_commit is None
+        assert result.base_commit == initial_head
         assert result.target_revision == "archive"
-        assert result.target_head_before is None
+        assert result.target_head_before == initial_head
         assert result.source_head == source_commit.oid
         assert result.head_after == source_commit.oid
         assert result.commit is not None
@@ -630,6 +640,7 @@ class TestApi:
             "Delete models/model.bin with hubvault",
             "Upload folder using hubvault",
             "Upload models/model.bin with hubvault",
+            "Initial commit",
         ]
 
         api.delete_tag(tag="v1")
@@ -648,13 +659,13 @@ class TestApi:
         api = HubVaultApi(repo_dir)
         api.create_repo()
 
-        assert api.list_repo_reflog("main") == []
+        assert [item.message for item in api.list_repo_reflog("main")] == ["Initial commit"]
 
         with pytest.raises(RevisionNotFoundError):
             api.create_branch(branch="dev", revision="missing")
 
         with pytest.raises(RevisionNotFoundError):
-            api.create_tag(tag="v1")
+            api.create_tag(tag="v1", revision="missing")
 
         first_commit = api.upload_file(path_or_fileobj=b"payload", path_in_repo="file.txt")
         api.create_branch(branch="same", revision=first_commit.oid)
@@ -851,6 +862,6 @@ class TestApi:
         assert squash_report.new_head != second_commit.oid
         assert squash_report.root_commit_before == second_commit.oid
         assert squash_report.rewritten_commit_count == 1
-        assert squash_report.dropped_ancestor_count == 1
+        assert squash_report.dropped_ancestor_count == 2
         assert squash_report.blocking_refs == ["refs/heads/archive"]
         assert squash_report.gc_report is None

@@ -16,6 +16,7 @@ import click
 from .base import ClickErrorException, command_wrap
 from .context import load_cli_repo_context
 from .formatters import format_ls_tree_output, format_verify_output
+from .style import echo
 
 
 def register_content_commands(group: click.Group) -> click.Group:
@@ -70,7 +71,7 @@ def register_content_commands(group: click.Group) -> click.Group:
             revision=selected_revision,
         )
         if entries:
-            click.echo(format_ls_tree_output(entries))
+            echo(format_ls_tree_output(entries))
 
     @group.command("download")
     @click.argument("path_in_repo")
@@ -106,7 +107,7 @@ def register_content_commands(group: click.Group) -> click.Group:
             revision=selected_revision,
             local_dir=local_dir,
         )
-        click.echo(path)
+        echo(path)
 
     @group.command("snapshot")
     @click.option("-r", "--revision", default=None, help="Revision to export.")
@@ -133,7 +134,7 @@ def register_content_commands(group: click.Group) -> click.Group:
             revision=selected_revision,
             local_dir=local_dir,
         )
-        click.echo(path)
+        echo(path)
 
     @group.command("verify")
     @click.option("--full", "full_mode", is_flag=True, help="Run the full verification pass.")
@@ -157,6 +158,6 @@ def register_content_commands(group: click.Group) -> click.Group:
         output = format_verify_output(report, full=full_mode)
         if not report.ok:
             raise ClickErrorException(output)
-        click.echo(output)
+        echo(output, tone="success")
 
     return group

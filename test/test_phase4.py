@@ -94,7 +94,7 @@ class TestPhase4IntegratedLifecycle:
         assert squash_report.new_head != second_commit.oid
         assert squash_report.root_commit_before == second_commit.oid
         assert squash_report.rewritten_commit_count == 1
-        assert squash_report.dropped_ancestor_count == 1
+        assert squash_report.dropped_ancestor_count == 2
         assert squash_report.blocking_refs == []
         assert isinstance(squash_report.gc_report, GcReport)
         assert squash_report.gc_report.dry_run is False

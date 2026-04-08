@@ -21,6 +21,7 @@ from ..errors import RepositoryNotFoundError
 from .base import ClickErrorException, command_wrap
 from .context import get_cli_repo_path, load_cli_repo_context
 from .formatters import format_merge_output, format_status_output, short_oid
+from .style import echo, style_text
 
 
 def _split_mapping_spec(value: str, option_name: str) -> Tuple[str, str]:
@@ -118,7 +119,7 @@ def register_repo_commands(group: click.Group) -> click.Group:
         template = "Reinitialized existing HubVault repository in {path}"
         if not existing_repo:
             template = "Initialized empty HubVault repository in {path}"
-        click.echo(template.format(path=str(repo_path)))
+        echo(template.format(path=str(repo_path)), tone="success")
 
     @group.command("status")
     @click.option("-s", "--short", "short_mode", is_flag=True, help="Give the output in the short format.")
@@ -148,7 +149,7 @@ def register_repo_commands(group: click.Group) -> click.Group:
             show_branch=show_branch,
         )
         if output:
-            click.echo(output)
+            echo(output)
 
     @group.command("commit")
     @click.option("-m", "--message", "message", required=True, help="Commit message.")
@@ -201,10 +202,10 @@ def register_repo_commands(group: click.Group) -> click.Group:
             commit_message=message,
             commit_description=description,
         )
-        click.echo(
+        echo(
             "[{revision} {oid}] {message}".format(
-                revision=selected_revision,
-                oid=short_oid(commit.oid),
+                revision=style_text(selected_revision, tone="accent"),
+                oid=style_text(short_oid(commit.oid), tone="accent"),
                 message=commit.commit_message,
             )
         )
@@ -251,7 +252,7 @@ def register_repo_commands(group: click.Group) -> click.Group:
         output = format_merge_output(result)
         if result.status == "conflict":
             raise ClickErrorException(output)
-        click.echo(output)
+        echo(output, tone="success")
 
     @group.command("reset")
     @click.argument("to_revision")
@@ -278,9 +279,9 @@ def register_repo_commands(group: click.Group) -> click.Group:
             selected_revision,
             to_revision=to_revision,
         )
-        click.echo(
+        echo(
             "HEAD is now at {oid} {message}".format(
-                oid=short_oid(commit.oid),
+                oid=style_text(short_oid(commit.oid), tone="accent"),
                 message=commit.commit_message,
             )
         )

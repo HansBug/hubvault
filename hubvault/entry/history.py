@@ -16,6 +16,7 @@ import click
 from .base import ClickErrorException, command_wrap
 from .context import load_cli_repo_context
 from .formatters import format_log_output
+from .style import echo
 
 
 def register_history_commands(group: click.Group) -> click.Group:
@@ -76,6 +77,6 @@ def register_history_commands(group: click.Group) -> click.Group:
         commits = list(api.list_repo_commits(revision=selected_revision))
         if max_count is not None:
             commits = commits[:max_count]
-        click.echo(format_log_output(commits, oneline=oneline))
+        echo(format_log_output(commits, oneline=oneline))
 
     return group

@@ -166,7 +166,7 @@ from hubvault import (
 - `GitRefInfo` / `GitRefs` 直接按 HF 公开字段命名实现
 - `GitRefs.pull_requests` 与 HF 一致，默认 `None`，仅在 `include_pull_requests=True` 时返回 `[]`
 - 本地必要偏差只有一处：
-  empty branch 在第一次 commit 前是合法的，因此 `GitRefInfo.target_commit` 在本地允许为 `None`
+  `create_repo()` 现在会自动生成空树 `Initial commit`，因此正常仓库的 branch head 不再为空；但为了兼容恢复场景、历史遗留空 ref 或手工损坏仓库的诊断，`GitRefInfo.target_commit` 仍保持 `Optional[str]`
 - `ReflogEntry` 没有直接 HF 对标，属于本地审计/恢复模型
 
 ### 4.5 Merge 模型
@@ -258,6 +258,12 @@ class HubVaultApi:
         exist_ok=False,
         large_file_threshold=16777216,
     ) -> RepoInfo: ...
+
+`create_repo()` 当前约束补充：
+
+- 创建仓库后会自动产生一个空树 `Initial commit`
+- 因此 `RepoInfo.head` 在正常新仓库中应立即为非空
+- `list_repo_commits()` 在新仓库上至少会返回这一条初始历史
     def repo_info(self, *, revision=None) -> RepoInfo: ...
 
     def create_commit(

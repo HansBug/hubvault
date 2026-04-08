@@ -28,6 +28,7 @@ from click.core import Context, Option
 
 from .base import CONTEXT_SETTINGS
 from .context import set_cli_repo_path
+from .style import echo, style_text
 from ..config.meta import __TITLE__, __VERSION__, __AUTHOR__, __AUTHOR_EMAIL__, __DESCRIPTION__
 
 _raw_authors = [item.strip() for item in __AUTHOR__.split(',') if item.strip()]
@@ -78,9 +79,14 @@ def print_version(ctx: Context, param: Option, value: bool) -> None:
     """
     if not value or ctx.resilient_parsing:
         return  # pragma: no cover
-    click.echo('{title}, version {version}.'.format(title=__TITLE__.capitalize(), version=__VERSION__))
+    echo(
+        '{title}, version {version}.'.format(
+            title=style_text(__TITLE__.capitalize(), tone="accent"),
+            version=__VERSION__,
+        )
+    )
     if _authors:
-        click.echo('Developed by {authors}.'.format(authors=', '.join(_authors)))
+        echo('Developed by {authors}.'.format(authors=', '.join(_authors)))
     ctx.exit()
 
 

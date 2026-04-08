@@ -44,6 +44,8 @@ except ImportError:
 import click
 from click.exceptions import ClickException
 
+from .style import echo
+
 CONTEXT_SETTINGS = dict(
     help_option_names=['-h', '--help']
 )
@@ -81,7 +83,7 @@ class ClickWarningException(ClickException):
             >>> err = ClickWarningException("warn")
             >>> err.show()  # doctest: +SKIP
         """
-        click.secho(self.format_message(), fg='yellow', file=sys.stderr)
+        echo(self.format_message(), tone="warning", file=sys.stderr)
 
 
 class ClickErrorException(ClickException):
@@ -113,7 +115,7 @@ class ClickErrorException(ClickException):
             >>> err = ClickErrorException("error")
             >>> err.show()  # doctest: +SKIP
         """
-        click.secho(self.format_message(), fg='red', file=sys.stderr)
+        echo(self.format_message(), tone="error", file=sys.stderr)
 
 
 def print_exception(err: BaseException, print_func: Optional[Callable[..., None]] = None) -> None:
@@ -277,8 +279,8 @@ def command_wrap() -> Callable[[Callable[P, R]], Callable[P, R]]:
             # CLI dispatch is the outermost process boundary. Convert unexpected
             # runtime failures into a visible error instead of leaking a raw traceback.
             except Exception as err:
-                click.secho('Unexpected error found when running hubvault!', fg='red', file=sys.stderr)
-                print_exception(err, partial(click.secho, fg='red', file=sys.stderr))
+                echo("Unexpected error found when running hubvault!", tone="error", file=sys.stderr)
+                print_exception(err, partial(echo, tone="error", file=sys.stderr))
                 click.get_current_context().exit(1)
 
         return _new_func

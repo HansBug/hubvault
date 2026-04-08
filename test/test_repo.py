@@ -49,6 +49,17 @@ def _object_json_path(repo_dir, object_type, object_id):
     return repo_dir / "objects" / object_type / "sha256" / digest[:2] / (digest[2:] + ".json")
 
 
+def _head_tree_path(repo_dir, branch_name="main"):
+    head_commit_id = (repo_dir / "refs" / "heads" / branch_name).read_text(encoding="utf-8").strip()
+    commit_payload = _read_json(_object_json_path(repo_dir, "commits", head_commit_id))
+    return _object_json_path(repo_dir, "trees", commit_payload["payload"]["tree_id"])
+
+
+def _head_commit_path(repo_dir, branch_name="main"):
+    head_commit_id = (repo_dir / "refs" / "heads" / branch_name).read_text(encoding="utf-8").strip()
+    return _object_json_path(repo_dir, "commits", head_commit_id)
+
+
 def _read_json(path):
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -226,11 +237,10 @@ class TestRepoSemantics:
         assert report.ok is True
         assert report.errors == []
         assert report.checked_refs == ["refs/heads/main"]
-        assert created.head is None
+        assert created.head is not None
         assert api.list_repo_tree() == []
-
-        with pytest.raises(RevisionNotFoundError):
-            api.list_repo_files(revision="refs/heads/main")
+        assert api.list_repo_files(revision="refs/heads/main") == []
+        assert [item.title for item in api.list_repo_commits(revision="refs/heads/main")] == ["Initial commit"]
 
         commit = api.create_commit(
             operations=[CommitOperationAdd("file.bin", b"payload")],
@@ -557,7 +567,7 @@ class TestRepoSemantics:
             api.read_bytes("file.bin")
 
         api, repo_dir = _single_file_repo(tmp_path, repo_name="invalid-tree-entry", payload=b"payload")
-        tree_object_path = _only_path(repo_dir / "objects" / "trees" / "sha256", "*.json")
+        tree_object_path = _head_tree_path(repo_dir)
         tree_payload = _read_json(tree_object_path)
         tree_payload["payload"]["entries"][0]["entry_type"] = "weird"
         _write_json(tree_object_path, tree_payload)
@@ -567,7 +577,7 @@ class TestRepoSemantics:
             api.list_repo_tree()
 
         api, repo_dir = _single_file_repo(tmp_path, repo_name="missing-commit-object", payload=b"payload")
-        commit_object_path = _only_path(repo_dir / "objects" / "commits" / "sha256", "*.json")
+        commit_object_path = _head_commit_path(repo_dir)
         commit_object_path.unlink()
         report = api.quick_verify()
         assert report.ok is False
@@ -638,7 +648,7 @@ class TestRepoSemantics:
         assert api.quick_verify().ok is True
 
         api, repo_dir = _single_file_repo(tmp_path, repo_name="weird-tree-entry", payload=b"payload")
-        tree_object_path = _only_path(repo_dir / "objects" / "trees" / "sha256", "*.json")
+        tree_object_path = _head_tree_path(repo_dir)
         tree_payload = _read_json(tree_object_path)
         tree_payload["payload"]["entries"][0]["entry_type"] = "weird"
         _write_json(tree_object_path, tree_payload)
@@ -646,7 +656,7 @@ class TestRepoSemantics:
         assert report.ok is False
 
         api, repo_dir = _single_file_repo(tmp_path, repo_name="malformed-tree", payload=b"payload")
-        tree_object_path = _only_path(repo_dir / "objects" / "trees" / "sha256", "*.json")
+        tree_object_path = _head_tree_path(repo_dir)
         tree_payload = _read_json(tree_object_path)
         tree_payload["payload"]["entries"] = [{}]
         _write_json(tree_object_path, tree_payload)

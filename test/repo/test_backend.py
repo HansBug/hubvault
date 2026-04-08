@@ -563,9 +563,11 @@ class TestRepoBackendPackage:
             api.gc(dry_run=True)
 
     def test_backend_squash_history_covers_public_edge_cases_and_custom_root_metadata(self, tmp_path):
-        empty_api = HubVaultApi(tmp_path / "empty-repo")
+        empty_repo_dir = tmp_path / "empty-repo"
+        empty_api = HubVaultApi(empty_repo_dir)
         empty_api.create_repo()
         empty_api.create_branch(branch="empty")
+        (empty_repo_dir / "refs" / "heads" / "empty").write_text("", encoding="utf-8")
 
         with pytest.raises(RevisionNotFoundError, match="revision has no commits yet: empty"):
             empty_api.squash_history("empty", run_gc=False)
@@ -612,7 +614,7 @@ class TestRepoBackendPackage:
         assert report.new_head != third.oid
         assert report.root_commit_before == first.oid
         assert report.rewritten_commit_count == 3
-        assert report.dropped_ancestor_count == 0
+        assert report.dropped_ancestor_count == 1
         assert history[-1].title == "squashed root"
         assert history[-1].message == "manual body"
         assert api.read_bytes("bundle/file.bin") == b"v3"
@@ -691,9 +693,11 @@ class TestRepoBackendPackage:
         assert api.list_repo_reflog("main")[0].message == "seed pattern filters"
 
     def test_backend_full_verify_handles_empty_heads_and_stale_snapshot_content(self, tmp_path):
-        api = HubVaultApi(tmp_path / "repo")
+        repo_dir = tmp_path / "repo"
+        api = HubVaultApi(repo_dir)
         api.create_repo()
         api.create_branch(branch="empty")
+        (repo_dir / "refs" / "heads" / "empty").write_text("", encoding="utf-8")
 
         empty_report = api.full_verify()
         assert empty_report.ok is True

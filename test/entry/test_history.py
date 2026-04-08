@@ -36,12 +36,12 @@ class TestEntryHistoryCommands:
         assert "seed title" in full_result.output
         assert "seed body" in full_result.output
 
-    def test_log_command_rejects_empty_branch_history(self, tmp_path):
+    def test_log_command_outputs_initial_history_after_init(self, tmp_path):
         repo_dir = tmp_path / "repo"
         HubVaultApi(repo_dir).create_repo()
 
         runner = CliRunner()
         result = runner.invoke(cli, ["-C", str(repo_dir), "log"])
 
-        assert result.exit_code != 0
-        assert "does not have any commits yet" in result.output
+        assert result.exit_code == 0
+        assert "Initial commit" in result.output

@@ -81,7 +81,7 @@ class TestPhase2IntegratedLifecycle:
 
         created = api.create_repo()
         assert created.default_branch == "main"
-        assert created.head is None
+        assert created.head is not None
         assert created.refs == ["refs/heads/main"]
 
         config_stream = io.BytesIO(b'{"lr":1e-4,"epochs":3}\n')
@@ -143,6 +143,7 @@ class TestPhase2IntegratedLifecycle:
             "Upload folder using hubvault",
             "Upload runs/phase2/notes.txt with hubvault",
             "seed main assets",
+            "Initial commit",
         ]
 
         root_items = [item.path for item in api.list_repo_tree(revision="experiments/phase2")]

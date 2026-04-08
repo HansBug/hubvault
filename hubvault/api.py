@@ -111,6 +111,10 @@ class HubVaultApi:
         """
         Create a local repository.
 
+        The repository layout is bootstrapped under ``repo_path`` and the
+        default branch immediately receives an empty ``Initial commit`` so the
+        repo starts with a valid history root.
+
         :param default_branch: Default branch name, defaults to ``"main"``
         :type default_branch: str
         :param exist_ok: Whether an existing repository may be reused
@@ -135,7 +139,7 @@ class HubVaultApi:
             >>> with tempfile.TemporaryDirectory() as tmpdir:
             ...     api = HubVaultApi(Path(tmpdir) / "repo")
             ...     info = api.create_repo(default_branch="main")
-            ...     (info.default_branch, info.head is None)
+            ...     (info.default_branch, info.head is not None)
             ('main', True)
         """
 

@@ -90,7 +90,7 @@ class TestPhase3IntegratedLifecycle:
 
         created = api.create_repo(large_file_threshold=threshold)
         assert created.default_branch == "main"
-        assert created.head is None
+        assert created.head is not None
 
         config_payload = b'{"model":"phase3","dtype":"fp16"}\n'
         near_threshold_payload = b"N" * (threshold - 1)
@@ -157,6 +157,7 @@ class TestPhase3IntegratedLifecycle:
         assert [item.title for item in api.list_repo_commits()] == [
             "Upload large folder using hubvault",
             "seed phase3 assets",
+            "Initial commit",
         ]
 
         snapshot_dir = Path(api.snapshot_download())

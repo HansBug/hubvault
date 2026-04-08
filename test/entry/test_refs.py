@@ -71,11 +71,12 @@ class TestEntryRefCommands:
 
         assert create_branch_result.exit_code == 0
         assert verbose_result.exit_code == 0
-        assert "* main (empty)" in verbose_result.output
-        assert "  feature (empty)" in verbose_result.output
+        assert "* main" in verbose_result.output
+        assert "Initial commit" in verbose_result.output
+        assert "  feature" in verbose_result.output
 
         assert delete_empty_branch_result.exit_code == 0
-        assert "Deleted branch feature." in delete_empty_branch_result.output
+        assert "Deleted branch feature" in delete_empty_branch_result.output
 
         assert missing_branch_result.exit_code != 0
         assert "branch -d/-D requires a branch name." in missing_branch_result.output

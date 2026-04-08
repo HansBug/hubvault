@@ -78,7 +78,7 @@ class TestPhase1IntegratedLifecycle:
 
         created = api.create_repo()
         assert created.default_branch == "main"
-        assert created.head is None
+        assert created.head is not None
         assert created.refs == ["refs/heads/main"]
 
         staging_dir = tmp_path / "staging"
@@ -118,13 +118,14 @@ class TestPhase1IntegratedLifecycle:
         assert first_commit.oid.startswith("sha256:")
         assert api.list_repo_files() == sorted(first_commit_files)
         first_history = api.list_repo_commits()
-        assert [item.commit_id for item in first_history] == [first_commit.oid]
+        assert [item.commit_id for item in first_history] == [first_commit.oid, created.head]
         assert first_history[0].authors == []
         assert first_history[0].title == "seed phase1 assets"
         assert first_history[0].message == ""
         assert first_history[0].formatted_title is None
         assert first_history[0].formatted_message is None
         assert first_history[0].created_at.tzinfo is not None
+        assert first_history[1].title == "Initial commit"
 
         root_items = [item.path for item in api.list_repo_tree()]
         assert root_items == ["checkpoints", "configs", "runs", "tokenizer"]
@@ -229,24 +230,29 @@ class TestPhase1IntegratedLifecycle:
             third_commit.oid,
             second_commit.oid,
             first_commit.oid,
+            created.head,
         ]
         assert [item.title for item in full_history] == [
             "record latest manifest",
             "publish v1 and advance checkpoint",
             "seed phase1 assets",
+            "Initial commit",
         ]
         assert [item.commit_id for item in api.list_repo_commits(revision=second_commit.oid)] == [
             second_commit.oid,
             first_commit.oid,
+            created.head,
         ]
         assert [item.commit_id for item in api.list_repo_commits(revision=first_commit.oid)] == [
             first_commit.oid,
+            created.head,
         ]
         formatted_history = api.list_repo_commits(formatted=True)
         assert [item.commit_id for item in formatted_history] == [
             third_commit.oid,
             second_commit.oid,
             first_commit.oid,
+            created.head,
         ]
         assert formatted_history[0].formatted_title == "record latest manifest"
         assert formatted_history[0].formatted_message == ""
@@ -293,10 +299,12 @@ class TestPhase1IntegratedLifecycle:
         assert [item.commit_id for item in reset_history] == [
             second_commit.oid,
             first_commit.oid,
+            created.head,
         ]
         assert [item.title for item in reset_history] == [
             "publish v1 and advance checkpoint",
             "seed phase1 assets",
+            "Initial commit",
         ]
 
         reset_file_payloads = {
@@ -326,6 +334,7 @@ class TestPhase1IntegratedLifecycle:
         assert [item.commit_id for item in reopened_history] == [
             second_commit.oid,
             first_commit.oid,
+            created.head,
         ]
         assert reopened_api.read_bytes("releases/v1/model.safetensors") == weights_v1
         assert reopened_api.read_bytes("checkpoints/epoch-0002/model.safetensors") == weights_v2

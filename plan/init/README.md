@@ -19,6 +19,7 @@
 - `pytest` / `make unittest` / `make package` 等基础工程能力
 - 已落地的公开仓库 API 与包结构：`hubvault.api`、`hubvault.errors`、`hubvault.models`、`hubvault.operations`、`hubvault.repo/`
 - 已落地的 Phase 3 大文件存储包：`hubvault.storage/`（`chunk.py`、`pack.py`、`index.py`）
+- 当前 `create_repo()` / CLI `init` 在初始化后会自动生成一个空树的 `Initial commit`，因此默认分支从仓库创建起就拥有合法 head
 - 已落地的本地仓库目录布局、whole-file blob 提交/读取、`hf_hub_download()` 路径保真与只读/可重建视图语义
 - 已落地的 public-only 单元测试，按 `hubvault/` 模块树拆分到对应的 `test/**/test_<module>.py` 文件，并覆盖新仓库 API 的核心行为与回归要求
 - 已落地的 Phase 2 refs / reflog / 便捷 upload-delete / `snapshot_download()` 能力，以及对应的 `test/test_phase2.py` 全周期集成回归
@@ -88,6 +89,7 @@
 
 - 设计先冻结协议，再推进实现，避免边写边改磁盘格式。
 - 公开 API 仍优先于 CLI；已落地的 Phase 6 CLI 仍然只包装公开 API，不引入额外 workspace/index 真相层。
+- CLI 输出允许适度 ANSI 样式，但必须统一经由集中 helper 处理，并支持 `NO_COLOR` / `HUBVAULT_NO_COLOR` 完全禁色。
 - 所有持久化仓库状态必须位于 repo root 内，且不得依赖绝对路径或仓库外 sidecar 数据。
 - 任何新增能力都必须配套公开表面的单元测试。
 - 每次改动完成后都要跑与改动面匹配的回归；结束前必须通过要求的完整回归集。

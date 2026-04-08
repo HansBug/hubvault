@@ -56,6 +56,7 @@
 MVP 只要求打通以下最短路径：
 
 - `create_repo()` 初始化本地仓库
+- 初始化后自动写入一个空树 `Initial commit`，让默认分支立即拥有合法 head
 - `repo_info()` 返回格式版本、默认分支和 head 信息
 - `create_commit()` 支持公开 `CommitOperationAdd` / `CommitOperationDelete`
 - `list_repo_tree()` / `get_paths_info()` 返回 `RepoFile` / `RepoFolder`
@@ -118,6 +119,7 @@ content = api.read_bytes("weights/config.json", revision="main")
 ### 7.1 MVP 成功标准
 
 - 在空目录中初始化仓库成功
+- 初始化完成后默认分支已经指向自动生成的空树 `Initial commit`
 - 通过公开 Python API 完成提交、读取、列树、回滚
 - 发生异常中断后不会破坏已提交版本
 - 仓库关闭后整体搬迁路径或打包迁移后仍可正常打开、读取、校验

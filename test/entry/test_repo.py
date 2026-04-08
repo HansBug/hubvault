@@ -51,7 +51,7 @@ class TestEntryRepoCommands:
 
         api = HubVaultApi(repo_dir)
         commits = list(api.list_repo_commits(revision="main"))
-        first_commit = commits[-1]
+        first_commit = [item for item in commits if item.title == "seed commit"][0]
 
         reset_result = runner.invoke(cli, ["-C", str(repo_dir), "reset", first_commit.commit_id])
 

@@ -44,14 +44,14 @@ class RepoInfo:
     :param default_branch: Name of the default branch
     :type default_branch: str
     :param head: Resolved head commit ID for the selected revision, or ``None``
-        when the revision has no commit yet
+        only for malformed or recovery-era empty refs
     :type head: Optional[str]
     :param refs: Visible refs in the repository
     :type refs: List[str]
 
     Example::
 
-        >>> info = RepoInfo("/tmp/repo", 1, "main", None)
+        >>> info = RepoInfo("/tmp/repo", 1, "main", "sha256:c1")
         >>> info.default_branch
         'main'
     """
@@ -322,20 +322,22 @@ class GitRefInfo:
     Describe a git reference in HF-style form.
 
     This model follows the public role of
-    ``huggingface_hub.hf_api.GitRefInfo``. The local repository allows an
-    empty branch ref before the first commit, so ``target_commit`` may be
-    ``None`` for that local-only case.
+    ``huggingface_hub.hf_api.GitRefInfo``. Normal repositories now create an
+    initial empty-tree commit during :meth:`hubvault.api.HubVaultApi.create_repo`,
+    but ``target_commit`` remains optional so recovery tooling can still report
+    malformed or legacy empty refs.
 
     :param name: Short branch or tag name
     :type name: str
     :param ref: Full ref name such as ``refs/heads/main``
     :type ref: str
-    :param target_commit: Target commit ID, or ``None`` for an empty local ref
+    :param target_commit: Target commit ID, or ``None`` for a malformed or
+        legacy empty local ref
     :type target_commit: Optional[str]
 
     Example::
 
-        >>> info = GitRefInfo("main", "refs/heads/main", None)
+        >>> info = GitRefInfo("main", "refs/heads/main", "sha256:c1")
         >>> info.ref
         'refs/heads/main'
     """

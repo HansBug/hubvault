@@ -17,6 +17,7 @@ from ..models import GitCommitInfo
 from .base import ClickErrorException, command_wrap
 from .context import load_cli_repo_context
 from .formatters import format_branch_output, short_oid
+from .style import echo, style_text
 
 
 def register_ref_commands(group: click.Group) -> click.Group:
@@ -80,7 +81,7 @@ def register_ref_commands(group: click.Group) -> click.Group:
         refs = api.list_repo_refs()
 
         if show_current:
-            click.echo(repo_context.default_branch)
+            echo(repo_context.default_branch)
             return
 
         if delete_mode or force_delete:
@@ -93,12 +94,12 @@ def register_ref_commands(group: click.Group) -> click.Group:
                     break
             api.delete_branch(branch=branch)
             if target_oid is None:
-                click.echo("Deleted branch {branch}.".format(branch=branch))
+                echo("Deleted branch {branch}.".format(branch=branch), tone="success")
             else:
-                click.echo(
+                echo(
                     "Deleted branch {branch} (was {oid}).".format(
                         branch=branch,
-                        oid=short_oid(target_oid),
+                        oid=style_text(short_oid(target_oid), tone="accent"),
                     )
                 )
             return
@@ -115,7 +116,7 @@ def register_ref_commands(group: click.Group) -> click.Group:
                     commit_map[ref.name] = None
                 else:
                     commit_map[ref.name] = api.list_repo_commits(revision=ref.name)[:1][0]
-        click.echo(
+        echo(
             format_branch_output(
                 branch_names=branch_names,
                 current_branch=repo_context.default_branch,
@@ -173,12 +174,12 @@ def register_ref_commands(group: click.Group) -> click.Group:
                     break
             api.delete_tag(tag=tag)
             if target_oid is None:
-                click.echo("Deleted tag '{tag}'.".format(tag=tag))
+                echo("Deleted tag '{tag}'.".format(tag=tag), tone="success")
             else:
-                click.echo(
+                echo(
                     "Deleted tag '{tag}' (was {oid}).".format(
                         tag=tag,
-                        oid=short_oid(target_oid),
+                        oid=style_text(short_oid(target_oid), tone="accent"),
                     )
                 )
             return
@@ -193,6 +194,6 @@ def register_ref_commands(group: click.Group) -> click.Group:
 
         lines = [ref.name for ref in refs.tags]
         if lines:
-            click.echo("\n".join(lines))
+            echo("\n".join(lines))
 
     return group

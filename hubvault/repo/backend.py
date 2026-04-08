@@ -835,8 +835,9 @@ class RepositoryBackend(object):
         Create a repository at the configured root path.
 
         This method bootstraps the self-contained on-disk layout, writes the
-        format marker and repository configuration, and initializes the default
-        branch as an empty ref.
+        format marker and repository configuration, initializes the default
+        branch, and immediately writes an empty initial commit so the repo has a
+        valid first history entry from the start.
 
         :param default_branch: Default branch name to create, defaults to
             :data:`DEFAULT_BRANCH`
@@ -863,8 +864,8 @@ class RepositoryBackend(object):
             >>> with tempfile.TemporaryDirectory() as tmpdir:
             ...     backend = RepositoryBackend(Path(tmpdir) / "repo")
             ...     info = backend.create_repo()
-            ...     info.default_branch
-            'main'
+            ...     (info.default_branch, info.head is not None)
+            ('main', True)
         """
 
         default_branch = _validate_ref_name(default_branch)
@@ -909,7 +910,50 @@ class RepositoryBackend(object):
             )
             IndexStore(self._repo_path / "chunks" / "index").write_manifest(IndexManifest.empty())
             self._write_ref(default_branch, None)
+            self._create_initial_commit_unlocked(default_branch)
             return self._repo_info_unlocked(revision=None)
+
+    def _create_initial_commit_unlocked(self, branch_name: str) -> str:
+        """
+        Create the bootstrap empty commit while the repo write lock is held.
+
+        :param branch_name: Default branch name receiving the initial commit
+        :type branch_name: str
+        :return: Initial commit object ID
+        :rtype: str
+        """
+
+        current_head = self._read_ref(branch_name)
+        txdir = self._create_txdir(branch_name, current_head)
+        try:
+            tree_id = self._stage_tree_objects(txdir, {})
+            commit_payload = {
+                "format_version": FORMAT_VERSION,
+                "tree_id": tree_id,
+                "parents": [],
+                "author": "",
+                "committer": "",
+                "created_at": _utc_now(),
+                "message": "Initial commit",
+                "title": "Initial commit",
+                "description": "",
+                "metadata": {},
+            }
+            commit_id = self._stage_json_object(txdir, "commits", commit_payload)
+            self._stage_chunk_manifest(txdir)
+            self._write_tx_state(txdir, "STAGED")
+            self._publish_staged_objects(txdir)
+            self._write_tx_state(txdir, "PUBLISHED_OBJECTS")
+            self._commit_branch_ref_update_unlocked(
+                txdir=txdir,
+                branch_name=branch_name,
+                old_head=current_head,
+                new_head=commit_id,
+                message="Initial commit",
+            )
+            return commit_id
+        finally:
+            self._cleanup_txdir(txdir)
 
     def repo_info(self, revision: Optional[str] = None) -> RepoInfo:
         """

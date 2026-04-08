@@ -262,13 +262,14 @@
 - 对齐真实 git 的优先级只限于命令名、主要选项、帮助结构和常见输出措辞，不为了“更像 git”而发明 workspace、index、staged/unstaged 差异或 checkout 工作树
 - 所有命令只通过 `hubvault.api.HubVaultApi` 和公开模型工作，不直接读取 `repo/`、`storage/`、`txn/` 内部细节
 - 统一支持 `hubvault` 与 `hv` 两个控制台入口，并补充顶层 `-C <path>`，让 `hv -C /path/to/repo status` 的使用方式尽量接近 `git -C ...`
+- CLI 输出允许适度 ANSI 样式，但样式开关必须集中封装，且在设置 `NO_COLOR` 或 `HUBVAULT_NO_COLOR` 时完全退化为无色纯文本
 - 优先实现与当前公开能力直接对标、且 Git 用户最容易预期的命令：`init`、`status`、`branch`、`tag`、`log`、`ls-tree`、`commit`、`merge`、`reset`
 - 对于 `download`、`snapshot`、`verify` 这类 `hubvault` 特有但非常核心的能力，保留直观的本地命令名，并让输出风格继续保持简洁、脚本友好
 
 命令范围与预期手感规划如下：
 
 - `init [path] [-b|--initial-branch <name>] [--large-file-threshold <bytes>]`
-  对齐 `git init` 的基础调用方式，输出“Initialized empty HubVault repository in ...”
+  对齐 `git init` 的基础调用方式，输出仍保持“Initialized empty HubVault repository in ...”这类熟悉措辞，但底层会额外自动生成一个空树 `Initial commit`
 - `status [-s|--short] [-b|--branch]`
   不伪造工作区状态；默认输出当前分支/head 与“nothing to commit, repository clean”式摘要，`--short --branch` 提供稳定紧凑输出
 - `branch [--show-current] [-v] [name] [start-point] [-d|-D <name>]`
@@ -294,6 +295,7 @@
 * [x] 增加全局 `-C <path>` 语义，并确保 `hubvault` / `hv` 两个入口都指向同一套 CLI。
 * [x] 实现 `init`、`status`、`branch`、`tag`、`log`、`ls-tree`、`commit`、`merge`、`reset` 命令。
 * [x] 实现 `download`、`snapshot`、`verify` 等 `hubvault` 特有但高频的核心命令。
+* [x] 为 CLI 输出补充统一 ANSI 样式 helper，并支持 `NO_COLOR` / `HUBVAULT_NO_COLOR` 完全禁色。
 * [x] 用真实 `git` 的帮助与典型输出校准 help、选项命名和常见人类可读文案，但不照搬不适用的 workspace/index 语义。
 * [x] 为新增 `hubvault/entry/*.py` 各自补对应的 `test/entry/test_*.py`，只通过公开 CLI 行为断言，不碰 private / protected 细节。
 * [x] 为 Phase 6 增加 `test/test_phase6.py` 端到端 CLI 集成测试，覆盖 init、commit、branch、merge、log、下载/读取和 verify 的全周期真实使用场景。
@@ -303,6 +305,7 @@
 * [x] `hubvault --help` 与 `hv --help` 都能展示同一套命令面。
 * [x] CLI 命令只通过公开 API 工作，没有私自读取内部实现细节。
 * [x] `status` / `branch` / `tag` / `log` / `ls-tree` 的输出对 Git 用户是熟悉的，但不会伪造 workspace/index 语义。
+* [x] 样式输出不在命令里分散判断，且设置禁色环境变量后会退化为纯文本输出。
 * [x] `commit` / `merge` / `reset` / `download` / `snapshot` / `verify` 能稳定跑通当前已支持的公开能力。
 * [x] 新增 CLI 测试按 `hubvault/entry` 模块树一一对应拆分。
 * [x] `make unittest` 通过。
