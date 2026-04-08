@@ -15,6 +15,7 @@
 - 当前回归基线应至少包括 `make unittest` 与 `make rst_auto`，并且 Phase 2 公开集成回归已补到 `test/test_phase2.py`。
 - 当前仓库并发与恢复基线已经收敛为 `fasteners.InterProcessReaderWriterLock` + rollback-only 恢复：多个 reader 可并发，writer 独占；中断写事务只回滚，不继续补完。
 - 当前 Phase 3 已经落地 `hubvault/storage/` 大文件引擎与 `test/test_phase3.py` 集成回归，并把 `hubvault/repo.py` 包化为 `hubvault/repo/`。
+- 当前 Phase 3 已补齐阈值边界回归，明确验证“只有大小大于等于 `large_file_threshold` 的文件才进入 chunked storage，小文件保持 whole-file blob”。
 
 优先级排序如下：
 
@@ -157,6 +158,7 @@
 * [x] 增加 chunk/hash、pack 截断、索引查找和范围读取测试。
 * [x] 为大文件补齐 HF 风格 LFS 兼容 `oid` / `sha256` / `pointer_size` 语义。
 * [x] 将 `hubvault/repo.py` 调整为 `hubvault/repo/` 包结构，保留 `hubvault.repo` 导入入口。
+* [x] 增加阈值边界回归，验证“小于阈值不 chunk、等于阈值会 chunk、大于阈值会 chunk”。
 
 ### Checklist
 
@@ -166,30 +168,31 @@
 * [x] 旧的 whole-file blob 仓库仍可兼容读取。
 * [x] chunk/pack 引入后仍不破坏仓库整体搬迁与归档恢复能力。
 * [x] 大文件公开元数据与 HF `RepoFile.blob_id + lfs.sha256` 语义对齐。
+* [x] chunk 使用判定与 `large_file_threshold` 语义一致，不会把不满足条件的小文件误写入 pack。
 * [x] `make unittest` 通过。
 
-## Phase 4. 一致性与维护能力
+## Phase 4. 维护、空间治理与历史压缩
 
 ### Goal
 
-补齐 merge、full verify、GC、compact 和保留策略，让仓库具备长期运行能力。
+补齐长期运行所需的维护与空间治理能力：完整校验、空间画像、安全 GC、pack/索引清理，以及“把某个 commit 之前的历史压缩后再回收旧数据”的显式历史重写能力。
 
 ### Todo
 
-* [ ] 实现 `merge()` 和结构化冲突结果。
-* [ ] 实现 `full_verify()`，覆盖 chunk、pack、manifest 和逻辑 hash。
-* [ ] 实现 mark-sweep `gc()` 与 `quarantine/`。
-* [ ] 实现 `compact()` 和 pack/索引段合并。
-* [ ] 实现 reflog 保留窗口、pin 与历史保留策略。
-* [ ] 增加故障注入测试，覆盖崩溃恢复和回收安全边界。
+* [ ] 实现 `full_verify()`，覆盖 refs、commit/tree/file/blob、chunk、pack、manifest 和逻辑 hash。
+* [ ] 实现公开空间画像 API，输出仓库总体占用、各目录/各数据类型占用、可安全释放建议和主要阻塞项。
+* [ ] 实现 mark-sweep `gc()` 与 `quarantine/`，并能输出 dry-run / 实删报告。
+* [ ] 实现受控历史压缩 API，可把指定 commit 之前的历史压缩后再执行回收。
+* [ ] 将 reflog/引用保留策略与 `gc()`、历史压缩联动，避免“看起来压缩了、实际上旧对象仍被保留”。
+* [ ] 增加集成测试，覆盖 full verify、空间画像、历史压缩后回收、以及回收前后读取正确性。
 
 ### Checklist
 
-* [ ] merge 冲突通过公开结果对象返回，而不是暴露内部工作区。
-* [ ] `full_verify()` 能定位损坏对象和范围。
-* [ ] GC 不会删除任何可达对象。
-* [ ] compact 只在新 pack 和新索引发布后才删除旧数据。
-* [ ] GC/compact 后仓库仍然保持自包含和可搬迁。
+* [ ] `full_verify()` 能定位损坏对象、损坏 pack/索引和受影响范围。
+* [ ] 用户可以直接拿到仓库总占用与分项占用，并能据此判断“删缓存、做 GC、做历史压缩”各自能释放什么空间。
+* [ ] GC 不会删除任何可达对象，也不会在中断后留下半删半不删状态。
+* [ ] 历史压缩后，指定边界之前的旧历史可变为不可达并被后续 GC 安全清理。
+* [ ] Phase 4 的空间治理能力不会破坏仓库自包含、可搬迁和公开 API 读取语义。
 * [ ] `make unittest` 通过。
 
 ## Phase 5. 性能、文档与发布

@@ -23,10 +23,11 @@
 - 已落地的 public-only 单元测试，按 `hubvault/` 模块树拆分到对应的 `test/**/test_<module>.py` 文件，并覆盖新仓库 API 的核心行为与回归要求
 - 已落地的 Phase 2 refs / reflog / 便捷 upload-delete / `snapshot_download()` 能力，以及对应的 `test/test_phase2.py` 全周期集成回归
 - 已落地的 Phase 3 chunked file / pack / index / `read_range()` / `upload_large_folder()` 能力，以及对应的 `test/test_phase3.py` 全周期集成回归
+- 已落地的 Phase 3 阈值边界回归，明确验证只有满足 `large_file_threshold` 条件的文件才进入 chunked storage
 
 尚未落地的核心能力包括：
 
-- full verify、gc、compact、merge 等长期维护能力
+- full verify、空间画像、gc、历史压缩/compact 等长期维护能力
 
 因此，这组初始化方案既要记录已经实现的 MVP 基线，也要继续约束后续 phase，避免把已经落地的格式和公开语义重新漂移回“抽象设想”。
 
@@ -52,7 +53,7 @@
 - `04-api-compat.md`
   公开 Python API、数据模型、错误模型和与 `huggingface_hub` 的兼容边界，包含 Phase 2 refs / snapshot / upload-delete 对齐结论。
 - `05-gc-roadmap.md`
-  verify / GC / compact 路线图、保留策略和回收阶段拆分。
+  verify / GC / 历史压缩 / 空间治理路线图、保留策略和回收阶段拆分。
 - `06-phase-execution.md`
   可执行 phase 计划，包含每个阶段的 Todo 与 Checklist。
 
@@ -72,9 +73,9 @@
 
 更重的能力放到后续 phase：
 
-- merge
 - full verify
-- GC / compact
+- GC / 历史压缩 / 空间画像
+- merge
 - 原生加速模块
 
 ## 5. 执行原则
