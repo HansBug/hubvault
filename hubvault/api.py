@@ -36,7 +36,8 @@ from .models import (
     RepoInfo,
     VerifyReport,
 )
-from .repo import _RepositoryBackend
+from .repo import LARGE_FILE_THRESHOLD
+from .repo.backend import RepositoryBackend
 
 
 class HubVaultApi:
@@ -84,13 +85,14 @@ class HubVaultApi:
 
         self._repo_path = Path(repo_path)
         self._default_revision = revision
-        self._backend = _RepositoryBackend(self._repo_path)
+        self._backend = RepositoryBackend(self._repo_path)
 
     def create_repo(
         self,
         *,
         default_branch: str = "main",
         exist_ok: bool = False,
+        large_file_threshold: int = LARGE_FILE_THRESHOLD,
     ) -> RepoInfo:
         """
         Create a local repository.
@@ -99,12 +101,18 @@ class HubVaultApi:
         :type default_branch: str
         :param exist_ok: Whether an existing repository may be reused
         :type exist_ok: bool
+        :param large_file_threshold: File size threshold in bytes at or above
+            which newly added files switch to chunked storage, defaults to
+            :data:`hubvault.repo.LARGE_FILE_THRESHOLD`
+        :type large_file_threshold: int
         :return: Information about the created repository
         :rtype: RepoInfo
         :raises hubvault.errors.RepositoryAlreadyExistsError: Raised when the target
             path already contains a repository or non-empty directory.
         :raises hubvault.errors.UnsupportedPathError: Raised when the default
             branch name is invalid.
+        :raises ValueError: Raised when ``large_file_threshold`` is not
+            positive.
 
         Example::
 
@@ -114,7 +122,11 @@ class HubVaultApi:
             'main'
         """
 
-        return self._backend.create_repo(default_branch=default_branch, exist_ok=exist_ok)
+        return self._backend.create_repo(
+            default_branch=default_branch,
+            exist_ok=exist_ok,
+            large_file_threshold=large_file_threshold,
+        )
 
     def repo_info(self, *, revision: Optional[str] = None) -> RepoInfo:
         """
@@ -585,6 +597,58 @@ class HubVaultApi:
 
         return self._backend.read_bytes(path_in_repo=path_in_repo, revision=revision or self._default_revision)
 
+    def read_range(
+        self,
+        path_in_repo: str,
+        *,
+        start: int,
+        length: int,
+        revision: Optional[str] = None,
+    ) -> bytes:
+        """
+        Read a byte range from a file.
+
+        For whole-blob files the local backend slices the materialized file
+        bytes. For chunked files it resolves only the overlapping chunks and
+        avoids reconstructing unrelated file regions.
+
+        :param path_in_repo: Repo-relative file path
+        :type path_in_repo: str
+        :param start: Starting byte offset in the logical file
+        :type start: int
+        :param length: Number of bytes to read
+        :type length: int
+        :param revision: Revision to resolve, defaults to the API default revision
+        :type revision: Optional[str]
+        :return: Requested byte range, clamped to the file end
+        :rtype: bytes
+        :raises hubvault.errors.IntegrityError: Raised when chunk or blob
+            storage fails verification checks.
+        :raises hubvault.errors.EntryNotFoundError: Raised when the file is not
+            present in the selected revision.
+        :raises hubvault.errors.RevisionNotFoundError: Raised when the revision
+            cannot be resolved.
+        :raises ValueError: Raised when ``start`` or ``length`` is negative.
+
+        Example::
+
+            >>> api = HubVaultApi("/tmp/demo-repo")
+            >>> _ = api.create_repo(exist_ok=True)
+            >>> _ = api.create_commit(
+            ...     operations=[CommitOperationAdd("demo.txt", b"hello")],
+            ...     commit_message="seed",
+            ... )
+            >>> api.read_range("demo.txt", start=1, length=3)
+            b'ell'
+        """
+
+        return self._backend.read_range(
+            path_in_repo=path_in_repo,
+            start=start,
+            length=length,
+            revision=revision or self._default_revision,
+        )
+
     def hf_hub_download(
         self,
         filename: str,
@@ -758,7 +822,7 @@ class HubVaultApi:
 
             >>> api = HubVaultApi("/tmp/demo-repo")
             >>> _ = api.create_repo(exist_ok=True)
-            >>> # See :meth:`hubvault.repo._RepositoryBackend.upload_folder` for a full filesystem example.
+            >>> # See :meth:`hubvault.repo.backend.RepositoryBackend.upload_folder` for a full filesystem example.
         """
 
         return self._backend.upload_folder(
@@ -771,6 +835,48 @@ class HubVaultApi:
             allow_patterns=allow_patterns,
             ignore_patterns=ignore_patterns,
             delete_patterns=delete_patterns,
+        )
+
+    def upload_large_folder(
+        self,
+        *,
+        folder_path: Union[str, PathLike],
+        revision: Optional[str] = None,
+        allow_patterns: Optional[Union[Sequence[str], str]] = None,
+        ignore_patterns: Optional[Union[Sequence[str], str]] = None,
+    ) -> CommitInfo:
+        """
+        Upload a large folder through a single atomic local commit.
+
+        The method name follows :meth:`huggingface_hub.HfApi.upload_large_folder`.
+        Unlike the remote API, the local backend keeps the whole operation
+        atomic and therefore returns a single :class:`CommitInfo`.
+
+        :param folder_path: Local folder to upload
+        :type folder_path: Union[str, os.PathLike[str]]
+        :param revision: Target branch name, defaults to the API default revision
+        :type revision: Optional[str]
+        :param allow_patterns: Optional allowlist for local relative paths
+        :type allow_patterns: Optional[Union[Sequence[str], str]]
+        :param ignore_patterns: Optional denylist for local relative paths
+        :type ignore_patterns: Optional[Union[Sequence[str], str]]
+        :return: Commit metadata for the created commit
+        :rtype: CommitInfo
+        :raises ValueError: Raised when ``folder_path`` is not a local
+            directory.
+
+        Example::
+
+            >>> api = HubVaultApi("/tmp/demo-repo")
+            >>> _ = api.create_repo(exist_ok=True)
+            >>> # See :meth:`hubvault.repo.backend.RepositoryBackend.upload_large_folder` for a full filesystem example.
+        """
+
+        return self._backend.upload_large_folder(
+            folder_path=str(folder_path),
+            revision=revision or self._default_revision,
+            allow_patterns=allow_patterns,
+            ignore_patterns=ignore_patterns,
         )
 
     def delete_file(

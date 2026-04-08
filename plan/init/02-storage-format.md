@@ -63,9 +63,9 @@ repo_root/
 - `cache/files/`、`cache/snapshots/`：保留 repo 相对路径后缀的用户读取视图
 - `quarantine/`：待删对象与后续 pack/manifests 的隔离区
 
-### 1.1.1 当前 MVP 已实现的具体布局
+### 1.1.1 当前已实现的具体布局
 
-截至当前实现，`hubvault.repo` 已按如下目录和命名约束创建仓库骨架：
+截至当前实现，`hubvault.repo` 已按如下目录和命名约束创建仓库骨架，并在 Phase 3 启用了 `chunks/` 下的 pack 与 index 布局：
 
 ```text
 repo_root/
@@ -83,9 +83,20 @@ repo_root/
   cache/files/<view_key>/<repo_relative_path>
   cache/snapshots/<view_key>/<repo_relative_path>
   quarantine/{objects,packs,manifests}/
+  chunks/packs/<pack_id>.pack
+  chunks/index/MANIFEST
+  chunks/index/L0/<segment>.idx
 ```
 
 当前版本的 `hf_hub_download()` 默认使用 `cache/files/<view_key>/<repo_relative_path>` 作为返回路径根，`snapshot_download()` 默认使用 `cache/snapshots/<view_key>/<repo_relative_path>` 作为返回路径根，从而保证用户拿到的最终文件/目录路径保留原始 repo 相对路径后缀。
+
+当前 Phase 3 的 chunked 文件实现已经满足：
+
+- 大于等于 `repo.json.large_file_threshold` 的新增文件默认切换到 `storage_kind="chunked"`
+- chunk payload 进入 `chunks/packs/*.pack`
+- `chunks/index/L0/*.idx` 记录 `chunk_id -> pack_id/offset` 映射
+- `chunks/index/MANIFEST` 是当前可见索引段集合的唯一真相
+- `read_range()` 直接按 chunk 读取重叠范围，不需要重建无关区间
 
 当 `snapshot_download(local_dir=...)` 导出到仓库外目录时，会在导出目录下写入：
 

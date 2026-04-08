@@ -22,7 +22,7 @@
 
 ### 2.1 当前已落地结构
 
-Phase 0-1 MVP 目前已经落地如下公开模块：
+截至当前仓库状态，公开包结构已经演进到如下布局：
 
 ```text
 hubvault/
@@ -31,7 +31,16 @@ hubvault/
   errors.py
   models.py
   operations.py
-  repo.py
+  repo/
+    __init__.py
+    backend.py
+    constants.py
+
+  storage/
+    __init__.py
+    chunk.py
+    pack.py
+    index.py
 
   config/
     __init__.py
@@ -54,8 +63,10 @@ hubvault/
   公开 `RepoInfo`、`CommitInfo`、`GitCommitInfo`、`GitRefInfo`、`GitRefs`、`ReflogEntry`、`RepoFile`、`RepoFolder`、`BlobLfsInfo`、`VerifyReport`。
 - `operations.py`
   公开 `CommitOperationAdd/Delete/Copy`。
-- `repo.py`
-  当前 MVP + Phase 2 的嵌入式本地仓库后端，负责磁盘格式、事务、对象读写、branch/tag 生命周期、reflog、下载/快照视图、HF 风格路径查询和快速校验。
+- `repo/`
+  当前本地仓库后端包，`backend.py` 负责主协调逻辑，`constants.py` 固化仓库级常量，`__init__.py` 保持 `hubvault.repo` 导入入口稳定。
+- `storage/`
+  当前 Phase 3 大文件存储包，`chunk.py` 负责分块规划与 canonical LFS pointer 元数据，`pack.py` 负责 append-only pack 读写，`index.py` 负责 manifest 与不可变索引段。
 
 ### 2.2 后续推荐拆分结构
 
@@ -68,7 +79,10 @@ hubvault/
   errors.py
   models.py
   operations.py
-  repo.py
+  repo/
+    __init__.py
+    backend.py
+    constants.py
   layout.py
 
   entry/
@@ -87,9 +101,9 @@ hubvault/
   storage/
     object_store.py
     blob_store.py
-    chunk_store.py
-    pack_store.py
-    index_store.py
+    chunk.py
+    pack.py
+    index.py
 
   txn/
     manager.py
@@ -98,9 +112,9 @@ hubvault/
 
 分阶段实现建议：
 
-- Phase 0-1 已经落地 `api.py`、`errors.py`、`models.py`、`operations.py`、`repo.py`
-- Phase 2-3 再按需要拆分 `services/repository.py`、`services/commit.py`、`storage/object_store.py`、`storage/blob_store.py`
-- Phase 3 之后再引入 `chunk_store.py`、`pack_store.py`、`index_store.py`
+- Phase 0-2 已经落地 `api.py`、`errors.py`、`models.py`、`operations.py` 与 `repo/`
+- Phase 3 已经落地 `storage/chunk.py`、`storage/pack.py`、`storage/index.py`
+- 后续再按需要继续拆分 `repo/backend.py`、`services/repository.py`、`services/commit.py`、`storage/object_store.py`、`storage/blob_store.py`
 
 ## 3. 分层职责
 

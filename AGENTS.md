@@ -5,15 +5,19 @@ edit both files separately or duplicate changes in both places.
 
 ## Project Structure & Module Organization
 
-`hubvault/` contains the Python package. Current runtime modules include the local repository surface in
-`hubvault/api.py`, `hubvault/errors.py`, `hubvault/models.py`, `hubvault/operations.py`, `hubvault/repo.py`, package
-metadata in `hubvault/config/meta.py`, and the CLI surface in `hubvault/entry/` (`base.py`, `cli.py`, `dispatch.py`, and
-package re-exports in `__init__.py`). `test/` contains pytest-based checks and should mirror `hubvault/` as closely as
-practical, for example `hubvault/api.py` → `test/test_api.py`, `hubvault/repo.py` → `test/test_repo.py`,
-`hubvault/entry/dispatch.py` → `test/entry/test_dispatch.py`. Repository automation lives in `.github/workflows/`.
-Packaging files are at the root: `setup.py`, `requirements*.txt`, `pytest.ini`, and `Makefile`. CLI packaging helpers
-and smoke-test tooling live under `tools/`. Design notes and scope drafts live in `plan/` and should be treated as
-reference material, not runtime code.
+`hubvault/` contains the Python package. Current runtime modules include the public API in `hubvault/api.py`,
+`hubvault/errors.py`, `hubvault/models.py`, `hubvault/operations.py`, the local repository package in
+`hubvault/repo/` (`__init__.py`, `backend.py`, `constants.py`), the Phase 3 storage package in `hubvault/storage/`
+(`__init__.py`, `chunk.py`, `pack.py`, `index.py`), package metadata in `hubvault/config/meta.py`, and the CLI surface
+in `hubvault/entry/` (`base.py`, `cli.py`, `dispatch.py`, and package re-exports in `__init__.py`). `test/` contains
+pytest-based checks and should mirror `hubvault/` as closely as practical, for example `hubvault/api.py` →
+`test/test_api.py`, `hubvault/repo/backend.py` → `test/repo/test_backend.py`, `hubvault/repo/constants.py` →
+`test/repo/test_constants.py`, `hubvault/storage/chunk.py` → `test/storage/test_chunk.py`,
+`hubvault/storage/pack.py` → `test/storage/test_pack.py`, `hubvault/storage/index.py` →
+`test/storage/test_index.py`, and `hubvault/entry/dispatch.py` → `test/entry/test_dispatch.py`. Repository automation
+lives in `.github/workflows/`. Packaging files are at the root: `setup.py`, `requirements*.txt`, `pytest.ini`, and
+`Makefile`. CLI packaging helpers and smoke-test tooling live under `tools/`. Design notes and scope drafts live in
+`plan/` and should be treated as reference material, not runtime code.
 
 ## Build, Test, and Development Commands
 

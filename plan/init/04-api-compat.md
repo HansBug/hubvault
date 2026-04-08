@@ -30,7 +30,7 @@
 - `hf_hub_download("gpt2", "config.json")` 返回普通文件路径，并保留
   `.../config.json` 这样的 repo 相对路径后缀
 
-这几条就是 `hubvault` 当前 Phase 0-1 API 对齐的直接行为基准。
+这几条就是 `hubvault` 当前 Phase 0-3 API 对齐的直接行为基准。
 
 ## 3. 当前公开入口
 
@@ -207,7 +207,13 @@ CommitOperationCopy(src_path_in_repo, path_in_repo, src_revision=None)
 class HubVaultApi:
     def __init__(self, repo_path, revision="main") -> None: ...
 
-    def create_repo(self, *, default_branch="main", exist_ok=False) -> RepoInfo: ...
+    def create_repo(
+        self,
+        *,
+        default_branch="main",
+        exist_ok=False,
+        large_file_threshold=16777216,
+    ) -> RepoInfo: ...
     def repo_info(self, *, revision=None) -> RepoInfo: ...
 
     def create_commit(
@@ -238,6 +244,7 @@ class HubVaultApi:
     def list_repo_reflog(self, ref_name, *, limit=None) -> Sequence[ReflogEntry]: ...
     def open_file(self, path_in_repo, *, revision=None) -> BinaryIO: ...
     def read_bytes(self, path_in_repo, *, revision=None) -> bytes: ...
+    def read_range(self, path_in_repo, *, start, length, revision=None) -> bytes: ...
     def hf_hub_download(self, filename, *, revision=None, local_dir=None) -> str: ...
     def snapshot_download(
         self,
@@ -270,6 +277,7 @@ class HubVaultApi:
         ignore_patterns=None,
         delete_patterns=None,
     ) -> CommitInfo: ...
+    def upload_large_folder(self, *, folder_path, revision=None, allow_patterns=None, ignore_patterns=None) -> CommitInfo: ...
     def delete_file(
         self,
         path_in_repo,
@@ -291,6 +299,12 @@ class HubVaultApi:
     def reset_ref(self, ref_name, *, to_revision) -> CommitInfo: ...
     def quick_verify(self) -> VerifyReport: ...
 ```
+
+当前 Phase 3 对齐说明：
+
+- `read_range()` 是本地嵌入式仓库新增的必要读取 API，没有直接 HF Python 方法对标，但语义遵循“只返回请求范围，不暴露可写别名”
+- `upload_large_folder()` 保留 HF 方法名，但本地实现坚持单事务原子提交，因此返回一个 `CommitInfo`，而不是像远端多 commit 流程那样返回 `None`
+- 对 `storage_kind="chunked"` 的文件，`RepoFile.blob_id` / `RepoFile.oid` 使用 canonical LFS pointer 的 git blob OID，`RepoFile.sha256` 与 `RepoFile.lfs.sha256` 都使用真实文件内容的裸 hex
 
 ### 6.2 已对齐行为
 

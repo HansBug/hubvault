@@ -9,11 +9,12 @@
 截至当前仓库实现状态：
 
 - Phase 0 的协议冻结、测试制度、repo 自包含/可搬迁约束、HF 风格路径与文件元数据语义已经落入 `plan/init/`、`AGENTS.md` 与公开源码接口。
-- Phase 1 的 MVP 公开模块 `hubvault.api`、`hubvault.errors`、`hubvault.models`、`hubvault.operations`、`hubvault.repo` 已经落地。
+- Phase 1 的 MVP 公开模块 `hubvault.api`、`hubvault.errors`、`hubvault.models`、`hubvault.operations`、`hubvault.repo/` 已经落地。
 - 当前 MVP 已支持 `create_repo -> create_commit -> refs -> list -> list_repo_commits -> read -> hf_hub_download -> snapshot_download -> reset_ref -> quick_verify` 的闭环。
 - 当前单元测试已经按 `hubvault/` 模块树拆分为对应的 `test/**/test_<module>.py` 文件，不再依赖单一 MVP 汇总测试文件。
 - 当前回归基线应至少包括 `make unittest` 与 `make rst_auto`，并且 Phase 2 公开集成回归已补到 `test/test_phase2.py`。
 - 当前仓库并发与恢复基线已经收敛为 `fasteners.InterProcessReaderWriterLock` + rollback-only 恢复：多个 reader 可并发，writer 独占；中断写事务只回滚，不继续补完。
+- 当前 Phase 3 已经落地 `hubvault/storage/` 大文件引擎与 `test/test_phase3.py` 集成回归，并把 `hubvault/repo.py` 包化为 `hubvault/repo/`。
 
 优先级排序如下：
 
@@ -72,7 +73,7 @@
 
 * [x] 新增 `hubvault/errors.py`，定义公开异常类型。
 * [x] 新增 `hubvault/models.py` 与 `hubvault/operations.py`，定义公开 dataclass 和 `CommitOperation*`。
-* [x] 新增 `hubvault/api.py` 与 `hubvault/repo.py`，提供 `HubVaultApi` 公开入口。
+* [x] 新增 `hubvault/api.py` 与 `hubvault/repo/`，提供 `HubVaultApi` 公开入口。
 * [x] 实现 repo 初始化、打开、`repo_info()` 与默认分支解析。
 * [x] 按固定组织结构创建 `FORMAT`、`repo.json`、`refs/`、`logs/refs/`、`objects/`、`txn/`、`locks/`、`cache/`、`quarantine/`。
 * [x] 实现 whole-file blob 存储、commit/tree/file/blob 对象写入和读取。
@@ -143,24 +144,29 @@
 
 补齐 chunked file、pack 和 range read，使仓库真正适合中大型模型产物。
 
+### Status
+
+已完成。
+
 ### Todo
 
-* [ ] 新增 `chunk_store.py`、`pack_store.py`、`index_store.py`。
-* [ ] 引入 `storage_kind="chunked"` 和 chunk 元信息模型。
-* [ ] 实现 append-only pack 写入与 `MANIFEST` 管理。
-* [ ] 实现 `read_range()` 与 `upload_large_folder()`。
-* [ ] 增加 chunk/hash、pack 截断、索引查找和范围读取测试。
-* [ ] 为大文件补齐 HF 风格 LFS 兼容 `oid` / `sha256` / `pointer_size` 语义。
+* [x] 新增 `hubvault/storage/chunk.py`、`hubvault/storage/pack.py`、`hubvault/storage/index.py`，并通过 `hubvault/storage/__init__.py` 统一导出。
+* [x] 引入 `storage_kind="chunked"` 和 chunk 元信息模型。
+* [x] 实现 append-only pack 写入与 `MANIFEST` 管理。
+* [x] 实现 `read_range()` 与 `upload_large_folder()`。
+* [x] 增加 chunk/hash、pack 截断、索引查找和范围读取测试。
+* [x] 为大文件补齐 HF 风格 LFS 兼容 `oid` / `sha256` / `pointer_size` 语义。
+* [x] 将 `hubvault/repo.py` 调整为 `hubvault/repo/` 包结构，保留 `hubvault.repo` 导入入口。
 
 ### Checklist
 
-* [ ] 大文件可以通过 chunk/pack 存储并稳定读回。
-* [ ] `read_range()` 在大文件上可工作且不需要重组全量文件。
-* [ ] pack/manifest 更新遵守事务发布原则。
-* [ ] 旧的 whole-file blob 仓库仍可兼容读取。
-* [ ] chunk/pack 引入后仍不破坏仓库整体搬迁与归档恢复能力。
-* [ ] 大文件公开元数据与 HF `RepoFile.blob_id + lfs.sha256` 语义对齐。
-* [ ] `make unittest` 通过。
+* [x] 大文件可以通过 chunk/pack 存储并稳定读回。
+* [x] `read_range()` 在大文件上可工作且不需要重组全量文件。
+* [x] pack/manifest 更新遵守事务发布原则。
+* [x] 旧的 whole-file blob 仓库仍可兼容读取。
+* [x] chunk/pack 引入后仍不破坏仓库整体搬迁与归档恢复能力。
+* [x] 大文件公开元数据与 HF `RepoFile.blob_id + lfs.sha256` 语义对齐。
+* [x] `make unittest` 通过。
 
 ## Phase 4. 一致性与维护能力
 

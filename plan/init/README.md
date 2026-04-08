@@ -17,14 +17,15 @@
 - `hubvault.config.meta` 中的公开包元信息
 - `hubvault.entry` 下的 CLI 壳层与版本输出
 - `pytest` / `make unittest` / `make package` 等基础工程能力
-- 已落地的 Phase 0-1 MVP 公开仓库 API：`hubvault.api`、`hubvault.errors`、`hubvault.models`、`hubvault.operations`、`hubvault.repo`
+- 已落地的公开仓库 API 与包结构：`hubvault.api`、`hubvault.errors`、`hubvault.models`、`hubvault.operations`、`hubvault.repo/`
+- 已落地的 Phase 3 大文件存储包：`hubvault.storage/`（`chunk.py`、`pack.py`、`index.py`）
 - 已落地的本地仓库目录布局、whole-file blob 提交/读取、`hf_hub_download()` 路径保真与只读/可重建视图语义
 - 已落地的 public-only 单元测试，按 `hubvault/` 模块树拆分到对应的 `test/**/test_<module>.py` 文件，并覆盖新仓库 API 的核心行为与回归要求
 - 已落地的 Phase 2 refs / reflog / 便捷 upload-delete / `snapshot_download()` 能力，以及对应的 `test/test_phase2.py` 全周期集成回归
+- 已落地的 Phase 3 chunked file / pack / index / `read_range()` / `upload_large_folder()` 能力，以及对应的 `test/test_phase3.py` 全周期集成回归
 
 尚未落地的核心能力包括：
 
-- chunk/pack/index 大文件引擎
 - full verify、gc、compact、merge 等长期维护能力
 
 因此，这组初始化方案既要记录已经实现的 MVP 基线，也要继续约束后续 phase，避免把已经落地的格式和公开语义重新漂移回“抽象设想”。
@@ -71,7 +72,6 @@
 
 更重的能力放到后续 phase：
 
-- chunked file、pack、LSM 索引
 - merge
 - full verify
 - GC / compact

@@ -22,6 +22,8 @@ from hubvault import (
     RevisionNotFoundError,
     UnsupportedPathError,
 )
+from hubvault.storage.chunk import DEFAULT_CHUNK_SIZE
+from hubvault.storage.pack import PACK_MAGIC
 
 
 def _single_file_repo(tmp_path, repo_name="repo", path_in_repo="file.bin", payload=b"payload-v1"):
@@ -837,3 +839,26 @@ class TestRepoSemantics:
         assert rebuilt_snapshot == first_snapshot
         assert not (rebuilt_snapshot / "bundle" / "new.txt").exists()
         assert not (rebuilt_snapshot / "bundle").exists()
+
+    def test_phase3_range_reads_can_succeed_without_rebuilding_missing_later_chunks(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo(large_file_threshold=64)
+
+        large_payload = (b"A" * DEFAULT_CHUNK_SIZE) + (b"B" * 1024)
+        api.create_commit(
+            operations=[CommitOperationAdd("artifacts/large.bin", large_payload)],
+            commit_message="seed chunked file",
+        )
+
+        pack_path = _only_path(tmp_path / "repo" / "chunks" / "packs", "*.pack")
+        first_chunk_limit = len(PACK_MAGIC) + DEFAULT_CHUNK_SIZE
+        pack_path.write_bytes(pack_path.read_bytes()[:first_chunk_limit])
+
+        assert api.read_range("artifacts/large.bin", start=0, length=1024) == b"A" * 1024
+
+        with pytest.raises(IntegrityError):
+            api.read_bytes("artifacts/large.bin")
+
+        report = api.quick_verify()
+        assert report.ok is False
+        assert any("pack truncated" in item for item in report.errors)

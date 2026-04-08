@@ -18,6 +18,7 @@ from hubvault import (
     RevisionNotFoundError,
     UnsupportedPathError,
 )
+from hubvault.storage.chunk import canonical_lfs_pointer, git_blob_oid as lfs_pointer_oid
 
 
 def _git_blob_oid(data):
@@ -388,3 +389,48 @@ class TestApi:
 
         with pytest.raises(ValueError):
             api.upload_folder(folder_path=tmp_path / "missing-folder")
+
+    def test_phase3_public_range_read_and_large_folder_upload_methods(self, tmp_path):
+        repo_dir = tmp_path / "repo"
+        api = HubVaultApi(repo_dir)
+        api.create_repo(large_file_threshold=32)
+
+        large_payload = b"phase3-range-" * 12
+        expected_sha256 = _sha256_value(large_payload)
+        expected_oid = lfs_pointer_oid(canonical_lfs_pointer(expected_sha256, len(large_payload)))
+
+        commit = api.create_commit(
+            operations=[CommitOperationAdd("models/model.bin", large_payload)],
+            commit_message="seed phase3 public api",
+        )
+
+        assert commit.commit_message == "seed phase3 public api"
+        info = api.get_paths_info("models/model.bin")[0]
+        assert isinstance(info, RepoFile)
+        assert info.size == len(large_payload)
+        assert info.blob_id == expected_oid
+        assert info.oid == expected_oid
+        assert info.sha256 == expected_sha256
+        assert info.etag == expected_sha256
+        assert info.lfs is not None
+        assert info.lfs.size == len(large_payload)
+        assert info.lfs.sha256 == expected_sha256
+        assert info.lfs.pointer_size == len(canonical_lfs_pointer(expected_sha256, len(large_payload)))
+        assert api.read_range("models/model.bin", start=7, length=19) == large_payload[7:26]
+
+        source_dir = tmp_path / "large-folder"
+        (source_dir / "bundle").mkdir(parents=True)
+        (source_dir / "bundle" / "keep.bin").write_bytes(b"K" * 96)
+        (source_dir / "bundle" / "drop.log").write_bytes(b"ignored\n")
+
+        folder_commit = api.upload_large_folder(
+            folder_path=source_dir,
+            allow_patterns="*.bin",
+        )
+
+        assert folder_commit.commit_message == "Upload large folder using hubvault"
+        assert api.list_repo_files() == [
+            "bundle/keep.bin",
+            "models/model.bin",
+        ]
+        assert api.read_bytes("bundle/keep.bin") == b"K" * 96

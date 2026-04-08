@@ -7,7 +7,7 @@ self-contained and movable as a normal directory tree.
 
 The module contains:
 
-* :class:`_RepositoryBackend` - Internal repository service used by the public API
+* :class:`RepositoryBackend` - Internal repository service used by the public API
 """
 
 import io
@@ -28,7 +28,7 @@ from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 from fasteners import InterProcessReaderWriterLock
 
-from .errors import (
+from ..errors import (
     ConflictError,
     EntryNotFoundError,
     IntegrityError,
@@ -37,7 +37,8 @@ from .errors import (
     RevisionNotFoundError,
     UnsupportedPathError,
 )
-from .models import (
+from ..models import (
+    BlobLfsInfo,
     CommitInfo,
     GitCommitInfo,
     GitRefInfo,
@@ -48,14 +49,18 @@ from .models import (
     RepoInfo,
     VerifyReport,
 )
-from .operations import CommitOperationAdd, CommitOperationCopy, CommitOperationDelete
-
-FORMAT_MARKER = "hubvault-repo/v1"
-FORMAT_VERSION = 1
-DEFAULT_BRANCH = "main"
-OBJECT_HASH = "sha256"
-LARGE_FILE_THRESHOLD = 16 * 1024 * 1024
-REPO_LOCK_FILENAME = "repo.lock"
+from ..operations import CommitOperationAdd, CommitOperationCopy, CommitOperationDelete
+from ..storage import (
+    ChunkStore,
+    IndexEntry,
+    IndexManifest,
+    IndexStore,
+    PackChunkLocation,
+    PackStore,
+    canonical_lfs_pointer,
+    git_blob_oid as chunk_git_blob_oid,
+)
+from .constants import DEFAULT_BRANCH, FORMAT_MARKER, FORMAT_VERSION, LARGE_FILE_THRESHOLD, OBJECT_HASH, REPO_LOCK_FILENAME
 WINDOWS_RESERVED_NAMES = {
     "CON",
     "PRN",
@@ -679,7 +684,7 @@ def _build_object_container(object_type: str, payload: object) -> Tuple[str, byt
     return _object_id_from_container(container)
 
 
-class _RepositoryBackend(object):
+class RepositoryBackend(object):
     """
     Internal repository backend for the MVP.
 
@@ -689,8 +694,8 @@ class _RepositoryBackend(object):
 
     Example::
 
-        >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
-        >>> isinstance(backend, _RepositoryBackend)
+        >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
+        >>> isinstance(backend, RepositoryBackend)
         True
     """
 
@@ -705,7 +710,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
             >>> backend._repo_path.as_posix().endswith("demo-repo")
             True
         """
@@ -722,7 +727,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
             >>> backend._repo_lock_path.name
             'repo.lock'
         """
@@ -759,6 +764,7 @@ class _RepositoryBackend(object):
         self,
         default_branch: str = DEFAULT_BRANCH,
         exist_ok: bool = False,
+        large_file_threshold: int = LARGE_FILE_THRESHOLD,
     ) -> RepoInfo:
         """
         Create a repository at the configured root path.
@@ -773,24 +779,33 @@ class _RepositoryBackend(object):
         :param exist_ok: Whether an existing repository may be reused,
             defaults to ``False``
         :type exist_ok: bool, optional
+        :param large_file_threshold: File size threshold in bytes at or above
+            which newly added files switch to chunked storage, defaults to
+            :data:`LARGE_FILE_THRESHOLD`
+        :type large_file_threshold: int, optional
         :return: Public metadata for the created or reused repository
         :rtype: RepoInfo
         :raises RepositoryAlreadyExistsError: Raised when the target path already
             contains a repository or any non-empty directory.
         :raises UnsupportedPathError: Raised when ``default_branch`` violates
             repository ref naming rules.
+        :raises ValueError: Raised when ``large_file_threshold`` is not
+            positive.
 
         Example::
 
             >>> import tempfile
             >>> with tempfile.TemporaryDirectory() as tmpdir:
-            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     backend = RepositoryBackend(Path(tmpdir) / "repo")
             ...     info = backend.create_repo()
             ...     info.default_branch
             'main'
         """
 
         default_branch = _validate_ref_name(default_branch)
+        large_file_threshold = int(large_file_threshold)
+        if large_file_threshold <= 0:
+            raise ValueError("large_file_threshold must be > 0")
         if not self._repo_path.exists():
             self._repo_path.mkdir(parents=True)
             _fsync_directory(self._repo_path.parent)
@@ -823,10 +838,11 @@ class _RepositoryBackend(object):
                     "default_branch": default_branch,
                     "object_hash": OBJECT_HASH,
                     "file_mode": "whole-blob-first",
-                    "large_file_threshold": LARGE_FILE_THRESHOLD,
+                    "large_file_threshold": large_file_threshold,
                     "metadata": {},
                 },
             )
+            IndexStore(self._repo_path / "chunks" / "index").write_manifest(IndexManifest.empty())
             self._write_ref(default_branch, None)
             return self._repo_info_unlocked(revision=None)
 
@@ -852,7 +868,7 @@ class _RepositoryBackend(object):
 
             >>> import tempfile
             >>> with tempfile.TemporaryDirectory() as tmpdir:
-            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     backend = RepositoryBackend(Path(tmpdir) / "repo")
             ...     _ = backend.create_repo()
             ...     backend.repo_info().default_branch
             'main'
@@ -931,7 +947,7 @@ class _RepositoryBackend(object):
 
             >>> import tempfile
             >>> with tempfile.TemporaryDirectory() as tmpdir:
-            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     backend = RepositoryBackend(Path(tmpdir) / "repo")
             ...     _ = backend.create_repo()
             ...     commit = backend.create_commit(
             ...         operations=[CommitOperationAdd("demo.txt", b"hello")],
@@ -1006,6 +1022,7 @@ class _RepositoryBackend(object):
                     "metadata": {},
                 }
                 commit_id = self._stage_json_object(txdir, "commits", commit_payload)
+                self._stage_chunk_manifest(txdir)
 
                 self._write_tx_state(txdir, "STAGED")
                 self._publish_staged_objects(txdir)
@@ -1061,7 +1078,7 @@ class _RepositoryBackend(object):
 
             >>> import tempfile
             >>> with tempfile.TemporaryDirectory() as tmpdir:
-            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     backend = RepositoryBackend(Path(tmpdir) / "repo")
             ...     _ = backend.create_repo()
             ...     _ = backend.create_commit(
             ...         revision="main",
@@ -1124,7 +1141,7 @@ class _RepositoryBackend(object):
 
             >>> import tempfile
             >>> with tempfile.TemporaryDirectory() as tmpdir:
-            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     backend = RepositoryBackend(Path(tmpdir) / "repo")
             ...     _ = backend.create_repo()
             ...     _ = backend.create_commit(
             ...         revision="main",
@@ -1173,7 +1190,7 @@ class _RepositoryBackend(object):
 
             >>> import tempfile
             >>> with tempfile.TemporaryDirectory() as tmpdir:
-            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     backend = RepositoryBackend(Path(tmpdir) / "repo")
             ...     _ = backend.create_repo()
             ...     _ = backend.create_commit(
             ...         revision="main",
@@ -1225,7 +1242,7 @@ class _RepositoryBackend(object):
 
             >>> import tempfile
             >>> with tempfile.TemporaryDirectory() as tmpdir:
-            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     backend = RepositoryBackend(Path(tmpdir) / "repo")
             ...     _ = backend.create_repo()
             ...     commit = backend.create_commit(
             ...         revision="main",
@@ -1277,7 +1294,7 @@ class _RepositoryBackend(object):
 
             >>> import tempfile
             >>> with tempfile.TemporaryDirectory() as tmpdir:
-            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     backend = RepositoryBackend(Path(tmpdir) / "repo")
             ...     _ = backend.create_repo()
             ...     backend.list_repo_refs().branches[0].ref
             'refs/heads/main'
@@ -1342,7 +1359,7 @@ class _RepositoryBackend(object):
 
             >>> import tempfile
             >>> with tempfile.TemporaryDirectory() as tmpdir:
-            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     backend = RepositoryBackend(Path(tmpdir) / "repo")
             ...     _ = backend.create_repo()
             ...     backend.create_branch(branch="dev")
             ...     sorted(ref.name for ref in backend.list_repo_refs().branches)
@@ -1408,7 +1425,7 @@ class _RepositoryBackend(object):
 
             >>> import tempfile
             >>> with tempfile.TemporaryDirectory() as tmpdir:
-            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     backend = RepositoryBackend(Path(tmpdir) / "repo")
             ...     _ = backend.create_repo()
             ...     backend.create_branch(branch="dev")
             ...     backend.delete_branch(branch="dev")
@@ -1482,7 +1499,7 @@ class _RepositoryBackend(object):
 
             >>> import tempfile
             >>> with tempfile.TemporaryDirectory() as tmpdir:
-            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     backend = RepositoryBackend(Path(tmpdir) / "repo")
             ...     _ = backend.create_repo()
             ...     _ = backend.create_commit(
             ...         operations=[CommitOperationAdd("demo.txt", b"hello")],
@@ -1547,7 +1564,7 @@ class _RepositoryBackend(object):
 
             >>> import tempfile
             >>> with tempfile.TemporaryDirectory() as tmpdir:
-            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     backend = RepositoryBackend(Path(tmpdir) / "repo")
             ...     _ = backend.create_repo()
             ...     _ = backend.create_commit(
             ...         operations=[CommitOperationAdd("demo.txt", b"hello")],
@@ -1618,7 +1635,7 @@ class _RepositoryBackend(object):
 
             >>> import tempfile
             >>> with tempfile.TemporaryDirectory() as tmpdir:
-            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     backend = RepositoryBackend(Path(tmpdir) / "repo")
             ...     _ = backend.create_repo()
             ...     _ = backend.create_commit(
             ...         operations=[CommitOperationAdd("demo.txt", b"hello")],
@@ -1682,7 +1699,7 @@ class _RepositoryBackend(object):
 
             >>> import tempfile
             >>> with tempfile.TemporaryDirectory() as tmpdir:
-            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     backend = RepositoryBackend(Path(tmpdir) / "repo")
             ...     _ = backend.create_repo()
             ...     _ = backend.create_commit(
             ...         revision="main",
@@ -1721,7 +1738,7 @@ class _RepositoryBackend(object):
 
             >>> import tempfile
             >>> with tempfile.TemporaryDirectory() as tmpdir:
-            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     backend = RepositoryBackend(Path(tmpdir) / "repo")
             ...     _ = backend.create_repo()
             ...     _ = backend.create_commit(
             ...         revision="main",
@@ -1743,6 +1760,74 @@ class _RepositoryBackend(object):
                 raise EntryNotFoundError("path not found: %s" % normalized_path)
             return self._read_file_bytes_by_object_id(file_object_id)
 
+    def read_range(
+        self,
+        path_in_repo: str,
+        start: int,
+        length: int,
+        revision: str = DEFAULT_BRANCH,
+    ) -> bytes:
+        """
+        Read a byte range from a file in a revision.
+
+        For chunked files the backend resolves only the overlapping chunks and
+        avoids reconstructing unrelated file regions.
+
+        :param path_in_repo: Repo-relative file path to read
+        :type path_in_repo: str
+        :param start: Starting byte offset in the logical file
+        :type start: int
+        :param length: Number of bytes to read
+        :type length: int
+        :param revision: Revision to inspect, defaults to
+            :data:`DEFAULT_BRANCH`
+        :type revision: str, optional
+        :return: Requested byte range, clamped to the file end
+        :rtype: bytes
+        :raises IntegrityError: Raised when persisted blob or pack content does
+            not match recorded checksums.
+        :raises EntryNotFoundError: Raised when the requested file is absent.
+        :raises RevisionNotFoundError: Raised when ``revision`` cannot be
+            resolved.
+        :raises ValueError: Raised when ``start`` or ``length`` is negative.
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     backend = RepositoryBackend(Path(tmpdir) / "repo")
+            ...     _ = backend.create_repo()
+            ...     _ = backend.create_commit(
+            ...         revision="main",
+            ...         operations=[CommitOperationAdd("demo.txt", b"hello")],
+            ...         commit_message="seed",
+            ...     )
+            ...     backend.read_range("demo.txt", start=1, length=3)
+            b'ell'
+        """
+
+        start = int(start)
+        length = int(length)
+        if start < 0 or length < 0:
+            raise ValueError("start and length must be >= 0")
+
+        self._ensure_repo()
+        self._rollback_interrupted_ref_updates_if_needed()
+        with self._read_locked():
+            snapshot = self._snapshot_for_revision(revision)
+            normalized_path = _normalize_repo_path(path_in_repo)
+            try:
+                file_object_id = snapshot[normalized_path]
+            except KeyError:
+                raise EntryNotFoundError("path not found: %s" % normalized_path)
+            file_payload = self._read_object_payload("files", file_object_id)
+            logical_size = int(file_payload["logical_size"])
+            if start >= logical_size or length == 0:
+                return b""
+            if str(file_payload.get("storage_kind")) == "chunked":
+                return self._read_chunked_file_range(file_payload, start=start, length=length)
+            return self._read_file_bytes_by_object_id(file_object_id)[start:start + length]
+
     def _read_file_bytes_by_object_id(self, file_object_id: str) -> bytes:
         """
         Read verified file bytes while the caller already holds a repo lock.
@@ -1754,6 +1839,9 @@ class _RepositoryBackend(object):
         """
 
         file_payload = self._read_object_payload("files", file_object_id)
+        if str(file_payload.get("storage_kind")) == "chunked":
+            return self._read_chunked_file_bytes(file_payload)
+
         blob_object_id = str(file_payload["content_object_id"])
         blob_meta = self._read_object_payload("blobs", blob_object_id)
         blob_data_path = self._blob_data_path(blob_object_id)
@@ -1762,6 +1850,101 @@ class _RepositoryBackend(object):
         if data_sha256 != blob_meta["payload_sha256"]:
             raise IntegrityError("blob payload checksum mismatch")
         return data
+
+    def _read_chunked_file_bytes(self, file_payload: Dict[str, object]) -> bytes:
+        """
+        Reconstruct a chunked file from pack storage.
+
+        :param file_payload: File object payload with ``storage_kind="chunked"``
+        :type file_payload: Dict[str, object]
+        :return: Verified logical file bytes
+        :rtype: bytes
+        :raises IntegrityError: Raised when chunk metadata, pack content, or
+            file-level checksums do not match.
+        """
+
+        data = self._read_chunked_file_range(
+            file_payload,
+            start=0,
+            length=int(file_payload["logical_size"]),
+        )
+        data_sha256 = _sha256_hex(data)
+        if data_sha256 != _public_sha256_hex(str(file_payload["sha256"])):
+            raise IntegrityError("file sha256 mismatch")
+        expected_oid = chunk_git_blob_oid(canonical_lfs_pointer(data_sha256, len(data)))
+        if expected_oid != str(file_payload["oid"]):
+            raise IntegrityError("file oid mismatch")
+        if str(file_payload["etag"]) != data_sha256:
+            raise IntegrityError("file etag mismatch")
+        return data
+
+    def _read_chunked_file_range(
+        self,
+        file_payload: Dict[str, object],
+        start: int,
+        length: int,
+    ) -> bytes:
+        """
+        Read and verify only the overlapping chunks for a requested byte range.
+
+        :param file_payload: File object payload with ``storage_kind="chunked"``
+        :type file_payload: Dict[str, object]
+        :param start: Starting byte offset in the logical file
+        :type start: int
+        :param length: Number of bytes to read
+        :type length: int
+        :return: Requested byte range, clamped to the file end
+        :rtype: bytes
+        :raises IntegrityError: Raised when chunk metadata or pack content is
+            inconsistent.
+        """
+
+        logical_size = int(file_payload["logical_size"])
+        if start >= logical_size or length == 0:
+            return b""
+
+        end = min(logical_size, start + length)
+        manifest = IndexStore(self._repo_path / "chunks" / "index").read_manifest()
+        index_store = IndexStore(self._repo_path / "chunks" / "index")
+        pack_store = PackStore(self._repo_path / "chunks" / "packs")
+
+        parts = []
+        for raw_chunk in file_payload.get("chunks", []):
+            chunk_offset = int(raw_chunk["logical_offset"])
+            chunk_size = int(raw_chunk["logical_size"])
+            chunk_end = chunk_offset + chunk_size
+            if chunk_end <= start or chunk_offset >= end:
+                continue
+
+            chunk_id = str(raw_chunk["chunk_id"])
+            entry = index_store.lookup(chunk_id, manifest=manifest)
+            if entry is None:
+                raise IntegrityError("chunk missing from index: %s" % chunk_id)
+            if entry.logical_size != chunk_size:
+                raise IntegrityError("chunk logical size mismatch")
+            chunk_data = pack_store.read_chunk(
+                PackChunkLocation(
+                    pack_id=entry.pack_id,
+                    offset=entry.offset,
+                    stored_size=entry.stored_size,
+                    logical_size=entry.logical_size,
+                )
+            )
+            if entry.compression != "none":
+                raise IntegrityError("unsupported chunk compression: %s" % entry.compression)
+            if len(chunk_data) != chunk_size:
+                raise IntegrityError("chunk size mismatch")
+            chunk_checksum = OBJECT_HASH + ":" + _sha256_hex(chunk_data)
+            if chunk_checksum != _integrity_sha256(str(raw_chunk["checksum"])):
+                raise IntegrityError("chunk checksum mismatch")
+            if entry.checksum != _integrity_sha256(str(raw_chunk["checksum"])):
+                raise IntegrityError("chunk index checksum mismatch")
+
+            local_start = max(start, chunk_offset) - chunk_offset
+            local_end = min(end, chunk_end) - chunk_offset
+            parts.append(chunk_data[local_start:local_end])
+
+        return b"".join(parts)
 
     def hf_hub_download(
         self,
@@ -1794,7 +1977,7 @@ class _RepositoryBackend(object):
 
             >>> import tempfile
             >>> with tempfile.TemporaryDirectory() as tmpdir:
-            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     backend = RepositoryBackend(Path(tmpdir) / "repo")
             ...     _ = backend.create_repo()
             ...     _ = backend.create_commit(
             ...         revision="main",
@@ -1882,7 +2065,7 @@ class _RepositoryBackend(object):
 
             >>> import tempfile
             >>> with tempfile.TemporaryDirectory() as tmpdir:
-            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     backend = RepositoryBackend(Path(tmpdir) / "repo")
             ...     _ = backend.create_repo()
             ...     _ = backend.create_commit(
             ...         operations=[CommitOperationAdd("nested/demo.txt", b"hello")],
@@ -2017,7 +2200,7 @@ class _RepositoryBackend(object):
 
             >>> import tempfile
             >>> with tempfile.TemporaryDirectory() as tmpdir:
-            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     backend = RepositoryBackend(Path(tmpdir) / "repo")
             ...     _ = backend.create_repo()
             ...     info = backend.upload_file(path_or_fileobj=b"hello", path_in_repo="demo.txt")
             ...     info.commit_message
@@ -2095,7 +2278,7 @@ class _RepositoryBackend(object):
             ...     source = repo_root / "source"
             ...     source.mkdir()
             ...     (source / "demo.txt").write_text("hello", encoding="utf-8")
-            ...     backend = _RepositoryBackend(repo_root / "repo")
+            ...     backend = RepositoryBackend(repo_root / "repo")
             ...     _ = backend.create_repo()
             ...     info = backend.upload_folder(folder_path=source)
             ...     info.commit_message
@@ -2174,6 +2357,63 @@ class _RepositoryBackend(object):
             oid=commit_info.oid,
             pr_url=commit_info.pr_url,
             _url=self._tree_url(selected_revision, base_path),
+        )
+
+    def upload_large_folder(
+        self,
+        *,
+        folder_path: Union[str, Path],
+        revision: Optional[str] = None,
+        allow_patterns: Optional[Union[Sequence[str], str]] = None,
+        ignore_patterns: Optional[Union[Sequence[str], str]] = None,
+    ) -> CommitInfo:
+        """
+        Upload a large local folder through one atomic local commit.
+
+        The method name intentionally follows
+        :meth:`huggingface_hub.HfApi.upload_large_folder`, but the local
+        repository keeps the operation atomic and therefore returns a single
+        :class:`CommitInfo` instead of spreading the upload across multiple
+        commits.
+
+        :param folder_path: Local folder to upload
+        :type folder_path: Union[str, pathlib.Path]
+        :param revision: Target branch name, defaults to the default branch
+        :type revision: Optional[str], optional
+        :param allow_patterns: Optional allowlist for local relative paths
+        :type allow_patterns: Optional[Union[Sequence[str], str]], optional
+        :param ignore_patterns: Optional denylist for local relative paths
+        :type ignore_patterns: Optional[Union[Sequence[str], str]], optional
+        :return: Public commit metadata for the created commit
+        :rtype: CommitInfo
+        :raises ValueError: Raised when ``folder_path`` is not a local
+            directory.
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     repo_root = Path(tmpdir)
+            ...     source = repo_root / "source"
+            ...     source.mkdir()
+            ...     (source / "demo.txt").write_text("hello", encoding="utf-8")
+            ...     backend = RepositoryBackend(repo_root / "repo")
+            ...     _ = backend.create_repo()
+            ...     info = backend.upload_large_folder(folder_path=source)
+            ...     info.commit_message
+            'Upload large folder using hubvault'
+        """
+
+        return self.upload_folder(
+            folder_path=folder_path,
+            path_in_repo=None,
+            commit_message="Upload large folder using hubvault",
+            commit_description=None,
+            revision=revision,
+            parent_commit=None,
+            allow_patterns=allow_patterns,
+            ignore_patterns=ignore_patterns,
+            delete_patterns=None,
         )
 
     def delete_file(
@@ -2270,7 +2510,7 @@ class _RepositoryBackend(object):
 
             >>> import tempfile
             >>> with tempfile.TemporaryDirectory() as tmpdir:
-            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     backend = RepositoryBackend(Path(tmpdir) / "repo")
             ...     _ = backend.create_repo()
             ...     commit = backend.create_commit(
             ...         revision="main",
@@ -2323,7 +2563,7 @@ class _RepositoryBackend(object):
 
             >>> import tempfile
             >>> with tempfile.TemporaryDirectory() as tmpdir:
-            ...     backend = _RepositoryBackend(Path(tmpdir) / "repo")
+            ...     backend = RepositoryBackend(Path(tmpdir) / "repo")
             ...     _ = backend.create_repo()
             ...     backend.quick_verify().ok
             True
@@ -2427,7 +2667,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
             >>> backend._format_path.name
             'FORMAT'
         """
@@ -2444,7 +2684,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
             >>> backend._repo_config_path.name
             'repo.json'
         """
@@ -2460,7 +2700,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
             >>> backend._is_repo()
             False
         """
@@ -2476,7 +2716,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._ensure_layout()  # doctest: +SKIP
         """
 
@@ -2500,8 +2740,15 @@ class _RepositoryBackend(object):
             "quarantine/objects",
             "quarantine/packs",
             "quarantine/manifests",
+            "chunks/packs",
+            "chunks/index/L0",
+            "chunks/index/L1",
+            "chunks/index/L2",
         ]:
             (self._repo_path / relative).mkdir(parents=True, exist_ok=True)
+        manifest_path = self._repo_path / "chunks" / "index" / "MANIFEST"
+        if not manifest_path.exists():
+            IndexStore(self._repo_path / "chunks" / "index").write_manifest(IndexManifest.empty())
 
     def _ensure_repo(self) -> None:
         """
@@ -2514,7 +2761,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._ensure_repo()  # doctest: +SKIP
         """
 
@@ -2531,7 +2778,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> sorted(backend._repo_config())  # doctest: +SKIP
             ['default_branch', 'file_mode', 'format_version', 'large_file_threshold', 'metadata', 'object_hash']
         """
@@ -2547,7 +2794,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._list_refs()  # doctest: +SKIP
             []
         """
@@ -2566,7 +2813,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._list_branch_names()  # doctest: +SKIP
             []
         """
@@ -2585,7 +2832,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._list_tag_names()  # doctest: +SKIP
             []
         """
@@ -2606,7 +2853,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
             >>> backend._list_ref_names_under(Path("/tmp/demo-repo/refs/heads"))  # doctest: +SKIP
             []
         """
@@ -2629,7 +2876,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
             >>> backend._ref_path("main").as_posix().endswith("refs/heads/main")
             True
         """
@@ -2647,7 +2894,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
             >>> backend._tag_ref_path("v1").as_posix().endswith("refs/tags/v1")
             True
         """
@@ -2665,7 +2912,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
             >>> backend._reflog_path("main").name
             'main.log'
         """
@@ -2683,7 +2930,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
             >>> backend._tag_reflog_path("v1").name
             'v1.log'
         """
@@ -2703,7 +2950,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._write_ref("main", None)  # doctest: +SKIP
         """
 
@@ -2724,7 +2971,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._write_tag_ref("v1", "sha256:" + "a" * 64)  # doctest: +SKIP
         """
 
@@ -2744,7 +2991,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._delete_ref_file(Path("/tmp/demo-repo/refs/heads/dev"), Path("/tmp/demo-repo/refs/heads"))  # doctest: +SKIP
         """
 
@@ -2772,7 +3019,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._read_ref("main")  # doctest: +SKIP
         """
 
@@ -2794,7 +3041,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._read_tag_ref("v1")  # doctest: +SKIP
         """
 
@@ -2819,7 +3066,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._resolve_revision("main", allow_empty_ref=True)  # doctest: +SKIP
         """
 
@@ -2858,7 +3105,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
             >>> backend._object_json_path("trees", "sha256:" + "a" * 64).suffix
             '.json'
         """
@@ -2879,7 +3126,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
             >>> backend._blob_meta_path("sha256:" + "a" * 64).name.endswith(".meta.json")
             True
         """
@@ -2900,7 +3147,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
             >>> backend._blob_data_path("sha256:" + "a" * 64).name.endswith(".data")
             True
         """
@@ -2923,7 +3170,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
             >>> backend._object_exists("trees", "sha256:" + "a" * 64)
             False
         """
@@ -2947,7 +3194,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._stage_json_object(Path("/tmp/demo-repo/txn/demo"), "trees", {"entries": []})  # doctest: +SKIP
         """
 
@@ -2972,7 +3219,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._stage_blob_object(Path("/tmp/demo-repo/txn/demo"), {"payload_sha256": "sha256:" + "a" * 64}, b"demo")  # doctest: +SKIP
         """
 
@@ -3000,7 +3247,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
             >>> backend._stage_object_json_path(Path("/tmp/demo-repo/txn/demo"), "trees", "sha256:" + "a" * 64).suffix
             '.json'
         """
@@ -3023,7 +3270,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
             >>> backend._stage_blob_meta_path(Path("/tmp/demo-repo/txn/demo"), "sha256:" + "a" * 64).name.endswith(".meta.json")
             True
         """
@@ -3046,7 +3293,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
             >>> backend._stage_blob_data_path(Path("/tmp/demo-repo/txn/demo"), "sha256:" + "a" * 64).name.endswith(".data")
             True
         """
@@ -3071,7 +3318,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._read_object_payload("trees", "sha256:" + "a" * 64)  # doctest: +SKIP
         """
 
@@ -3097,7 +3344,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._snapshot_for_revision("main")  # doctest: +SKIP
         """
 
@@ -3115,7 +3362,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
             >>> backend._snapshot_for_commit(None)
             {}
         """
@@ -3140,7 +3387,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._snapshot_for_tree("sha256:" + "a" * 64, prefix="")  # doctest: +SKIP
         """
 
@@ -3170,7 +3417,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
             >>> backend._compose_commit_text("seed", "body")
             'seed\\n\\nbody'
         """
@@ -3188,7 +3435,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
             >>> backend._repo_url().startswith("file:")
             True
         """
@@ -3206,7 +3453,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
             >>> backend._commit_url("sha256:" + "a" * 64).endswith("#commit=sha256:" + "a" * 64)
             True
         """
@@ -3226,7 +3473,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
             >>> backend._blob_url("main", "demo.txt").endswith("#blob=main:demo.txt")
             True
         """
@@ -3247,7 +3494,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
             >>> backend._tree_url("main", "nested").endswith("#tree=main:nested")
             True
         """
@@ -3268,18 +3515,28 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._repo_file_info("demo.txt", "sha256:" + "a" * 64)  # doctest: +SKIP
         """
 
         payload = self._read_object_payload("files", file_object_id)
         sha256_hex = _public_sha256_hex(str(payload["sha256"]))
         logical_size = int(payload["logical_size"])
+        lfs_info = None
+        if str(payload.get("storage_kind")) == "chunked":
+            pointer_size = payload.get("pointer_size")
+            if pointer_size is None:
+                pointer_size = len(canonical_lfs_pointer(sha256_hex, logical_size))
+            lfs_info = BlobLfsInfo(
+                size=logical_size,
+                sha256=sha256_hex,
+                pointer_size=int(pointer_size),
+            )
         return RepoFile(
             path=path,
             size=logical_size,
             blob_id=str(payload["oid"]),
-            lfs=None,
+            lfs=lfs_info,
             last_commit=None,
             security=None,
             oid=str(payload["oid"]),
@@ -3300,7 +3557,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._repo_folder_info("main", "nested")  # doctest: +SKIP
         """
 
@@ -3324,7 +3581,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._tree_id_for_directory("sha256:" + "a" * 64, "nested")  # doctest: +SKIP
         """
 
@@ -3365,7 +3622,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._list_tree_entries("sha256:" + "a" * 64, "", False)  # doctest: +SKIP
         """
 
@@ -3389,7 +3646,7 @@ class _RepositoryBackend(object):
         self,
         txdir: Path,
         operation: CommitOperationAdd,
-    ) -> Tuple[str, str, Dict[str, object]]:
+    ) -> Tuple[Optional[str], str, Dict[str, object]]:
         """
         Stage the storage objects needed for an add operation.
 
@@ -3397,12 +3654,13 @@ class _RepositoryBackend(object):
         :type txdir: pathlib.Path
         :param operation: Public add operation
         :type operation: CommitOperationAdd
-        :return: Tuple of blob ID, file ID, and file payload
-        :rtype: Tuple[str, str, Dict[str, object]]
+        :return: Tuple of content object ID when applicable, file ID, and file
+            payload
+        :rtype: Tuple[Optional[str], str, Dict[str, object]]
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> operation = CommitOperationAdd("demo.txt", b"hello")
             >>> backend._stage_add_operation(Path("/tmp/demo-repo/txn/demo"), operation)  # doctest: +SKIP
         """
@@ -3411,6 +3669,29 @@ class _RepositoryBackend(object):
         del normalized_path
         with operation.as_file() as fileobj:
             data = fileobj.read()
+        repo_config = self._repo_config()
+        threshold = int(repo_config.get("large_file_threshold", LARGE_FILE_THRESHOLD))
+        if len(data) >= threshold:
+            return self._stage_chunked_add_operation(txdir, data)
+
+        return self._stage_blob_add_operation(txdir, data)
+
+    def _stage_blob_add_operation(
+        self,
+        txdir: Path,
+        data: bytes,
+    ) -> Tuple[str, str, Dict[str, object]]:
+        """
+        Stage a whole-blob file payload.
+
+        :param txdir: Transaction working directory
+        :type txdir: pathlib.Path
+        :param data: Logical file payload bytes
+        :type data: bytes
+        :return: Tuple of blob ID, file ID, and file payload
+        :rtype: Tuple[str, str, Dict[str, object]]
+        """
+
         file_sha256_hex = _sha256_hex(data)
         file_sha256 = OBJECT_HASH + ":" + file_sha256_hex
         oid = _git_blob_oid(data)
@@ -3437,6 +3718,114 @@ class _RepositoryBackend(object):
         file_object_id = self._stage_json_object(txdir, "files", file_payload)
         return blob_object_id, file_object_id, file_payload
 
+    def _next_pack_id(self, txdir: Path) -> str:
+        """
+        Build the next staged pack identifier for a transaction.
+
+        :param txdir: Transaction working directory
+        :type txdir: pathlib.Path
+        :return: Unique pack identifier
+        :rtype: str
+        """
+
+        pack_dir = txdir / "chunks" / "packs"
+        existing = sorted(pack_dir.glob("*.pack")) if pack_dir.exists() else []
+        return "%s-%06d" % (txdir.name, len(existing) + 1)
+
+    def _stage_chunked_add_operation(
+        self,
+        txdir: Path,
+        data: bytes,
+    ) -> Tuple[None, str, Dict[str, object]]:
+        """
+        Stage a chunked file payload together with pack and index data.
+
+        :param txdir: Transaction working directory
+        :type txdir: pathlib.Path
+        :param data: Logical file payload bytes
+        :type data: bytes
+        :return: Tuple of ``None``, file ID, and file payload
+        :rtype: Tuple[None, str, Dict[str, object]]
+        """
+
+        chunk_plan = ChunkStore().plan_bytes(data)
+        pack_id = self._next_pack_id(txdir)
+        pack_store = PackStore(txdir / "chunks" / "packs")
+        pack_result = pack_store.write_pack(pack_id, [part.data for part in chunk_plan.parts])
+
+        index_entries = []
+        file_chunks = []
+        for part, location in zip(chunk_plan.parts, pack_result.chunks):
+            descriptor = part.descriptor
+            index_entries.append(
+                IndexEntry(
+                    chunk_id=descriptor.chunk_id,
+                    pack_id=location.pack_id,
+                    offset=location.offset,
+                    stored_size=location.stored_size,
+                    logical_size=descriptor.logical_size,
+                    compression=descriptor.compression,
+                    checksum=descriptor.checksum,
+                )
+            )
+            file_chunks.append(
+                {
+                    "chunk_id": descriptor.chunk_id,
+                    "checksum": descriptor.checksum,
+                    "logical_offset": descriptor.logical_offset,
+                    "logical_size": descriptor.logical_size,
+                    "stored_size": descriptor.stored_size,
+                    "compression": descriptor.compression,
+                }
+            )
+
+        IndexStore(txdir / "chunks" / "index").write_segment(
+            "L0",
+            "seg-%s.idx" % pack_id,
+            index_entries,
+        )
+        file_payload = {
+            "format_version": FORMAT_VERSION,
+            "storage_kind": "chunked",
+            "logical_size": chunk_plan.logical_size,
+            "sha256": chunk_plan.sha256,
+            "oid": chunk_plan.oid,
+            "etag": chunk_plan.etag,
+            "pointer_size": chunk_plan.pointer_size,
+            "content_type_hint": None,
+            "content_object_id": None,
+            "chunks": file_chunks,
+        }
+        file_object_id = self._stage_json_object(txdir, "files", file_payload)
+        return None, file_object_id, file_payload
+
+    def _stage_chunk_manifest(self, txdir: Path) -> None:
+        """
+        Stage an updated visible chunk-index manifest for a transaction.
+
+        :param txdir: Transaction working directory
+        :type txdir: pathlib.Path
+        :return: ``None``.
+        :rtype: None
+        """
+
+        staged_index = IndexStore(txdir / "chunks" / "index")
+        discovered = []
+        for level in ("L0", "L1", "L2"):
+            level_root = staged_index.segment_path(level, "placeholder").parent
+            if not level_root.exists():
+                continue
+            for path in sorted(level_root.glob("*.idx")):
+                discovered.append((level, path.name))
+
+        if not discovered:
+            return
+
+        manifest = IndexStore(self._repo_path / "chunks" / "index").read_manifest()
+        for level, segment_name in discovered:
+            manifest = manifest.add_segment(level, segment_name)
+        staged_index.write_manifest(manifest)
+
     def _apply_delete(self, snapshot: Dict[str, str], path_in_repo: str, is_folder: bool) -> None:
         """
         Apply a delete operation to a staged snapshot.
@@ -3453,7 +3842,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
             >>> snapshot = {"demo.txt": "sha256:" + "a" * 64}
             >>> backend._apply_delete(snapshot, "demo.txt", False)
             >>> snapshot
@@ -3503,7 +3892,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
             >>> snapshot = {"demo.txt": "sha256:" + "a" * 64}
             >>> backend._apply_copy(snapshot, snapshot, "demo.txt", "copy.txt")
             >>> sorted(snapshot)
@@ -3538,7 +3927,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
             >>> backend._validate_snapshot({"demo.txt": "sha256:" + "a" * 64})
         """
 
@@ -3572,7 +3961,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._stage_tree_objects(Path("/tmp/demo-repo/txn/demo"), {"demo.txt": "sha256:" + "a" * 64})  # doctest: +SKIP
         """
 
@@ -3599,7 +3988,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._stage_tree_node(Path("/tmp/demo-repo/txn/demo"), {"nested": {}, "demo.txt": "sha256:" + "a" * 64})  # doctest: +SKIP
         """
 
@@ -3647,7 +4036,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._read_staged_or_published_file_payload(Path("/tmp/demo-repo/txn/demo"), "sha256:" + "a" * 64)  # doctest: +SKIP
         """
 
@@ -3658,7 +4047,7 @@ class _RepositoryBackend(object):
 
     def _publish_staged_objects(self, txdir: Path) -> None:
         """
-        Publish staged transaction objects into the repository object store.
+        Publish staged transaction data into the repository stores.
 
         :param txdir: Transaction working directory
         :type txdir: pathlib.Path
@@ -3669,27 +4058,65 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._publish_staged_objects(Path("/tmp/demo-repo/txn/demo"))  # doctest: +SKIP
         """
 
         staged_root = txdir / "objects"
-        if not staged_root.exists():
-            return
-        for path in sorted(staged_root.rglob("*")):
-            if path.is_dir():
-                continue
-            relative = path.relative_to(staged_root)
-            target = self._repo_path / "objects" / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if target.exists():
-                if path.read_bytes() != target.read_bytes():
-                    raise IntegrityError("staged object does not match existing object")
-                path.unlink()
-                _fsync_directory(path.parent)
-                continue
-            os.replace(str(path), str(target))
-            _fsync_directory(target.parent)
+        if staged_root.exists():
+            for path in sorted(staged_root.rglob("*")):
+                if path.is_dir():
+                    continue
+                relative = path.relative_to(staged_root)
+                target = self._repo_path / "objects" / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if target.exists():
+                    if path.read_bytes() != target.read_bytes():
+                        raise IntegrityError("staged object does not match existing object")
+                    path.unlink()
+                    _fsync_directory(path.parent)
+                    continue
+                os.replace(str(path), str(target))
+                _fsync_directory(target.parent)
+
+        staged_packs = txdir / "chunks" / "packs"
+        if staged_packs.exists():
+            for path in sorted(staged_packs.glob("*.pack")):
+                target = self._repo_path / "chunks" / "packs" / path.name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if target.exists():
+                    if path.read_bytes() != target.read_bytes():
+                        raise IntegrityError("staged pack does not match existing pack")
+                    path.unlink()
+                    _fsync_directory(path.parent)
+                    continue
+                os.replace(str(path), str(target))
+                _fsync_directory(target.parent)
+
+        staged_index = txdir / "chunks" / "index"
+        if staged_index.exists():
+            for level in ("L0", "L1", "L2"):
+                staged_level_root = staged_index / level
+                if not staged_level_root.exists():
+                    continue
+                for path in sorted(staged_level_root.glob("*.idx")):
+                    target = self._repo_path / "chunks" / "index" / level / path.name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    if target.exists():
+                        if path.read_bytes() != target.read_bytes():
+                            raise IntegrityError("staged index segment does not match existing segment")
+                        path.unlink()
+                        _fsync_directory(path.parent)
+                        continue
+                    os.replace(str(path), str(target))
+                    _fsync_directory(target.parent)
+
+            manifest_path = staged_index / "MANIFEST"
+            if manifest_path.exists():
+                target_manifest = self._repo_path / "chunks" / "index" / "MANIFEST"
+                target_manifest.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(str(manifest_path), str(target_manifest))
+                _fsync_directory(target_manifest.parent)
 
     def _commit_info(self, commit_id: str, revision: str) -> CommitInfo:
         """
@@ -3704,7 +4131,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._commit_info("sha256:" + "a" * 64, "main")  # doctest: +SKIP
         """
 
@@ -3735,7 +4162,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._git_commit_info("sha256:" + "a" * 64)  # doctest: +SKIP
         """
 
@@ -3779,7 +4206,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._resolve_reflog_query("refs/heads/main")  # doctest: +SKIP
         """
 
@@ -3823,7 +4250,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> _RepositoryBackend._split_commit_message("title\\n\\nbody")
+            >>> RepositoryBackend._split_commit_message("title\\n\\nbody")
             ('title', 'body')
         """
 
@@ -3847,7 +4274,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._verify_commit_closure("sha256:" + "a" * 64)  # doctest: +SKIP
         """
 
@@ -3880,7 +4307,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._verify_tree("sha256:" + "a" * 64)  # doctest: +SKIP
         """
 
@@ -3900,7 +4327,7 @@ class _RepositoryBackend(object):
 
     def _verify_file_object(self, file_object_id: str) -> None:
         """
-        Verify a file object and its referenced blob content.
+        Verify a file object and its referenced content.
 
         :param file_object_id: File object identifier
         :type file_object_id: str
@@ -3911,12 +4338,28 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._verify_file_object("sha256:" + "a" * 64)  # doctest: +SKIP
         """
 
         try:
             payload = self._read_object_payload("files", file_object_id)
+            if str(payload.get("storage_kind")) == "chunked":
+                data = self._read_chunked_file_bytes(payload)
+                if len(data) != int(payload["logical_size"]):
+                    raise IntegrityError("file logical size mismatch")
+                stored_pointer_size = payload.get("pointer_size")
+                if stored_pointer_size is not None:
+                    expected_pointer_size = len(
+                        canonical_lfs_pointer(
+                            _public_sha256_hex(str(payload["sha256"])),
+                            int(payload["logical_size"]),
+                        )
+                    )
+                    if int(stored_pointer_size) != expected_pointer_size:
+                        raise IntegrityError("file pointer size mismatch")
+                return
+
             blob_object_id = str(payload["content_object_id"])
             blob_payload = self._read_object_payload("blobs", blob_object_id)
             data_path = self._blob_data_path(blob_object_id)
@@ -3947,7 +4390,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._create_txdir("main", None)  # doctest: +SKIP
         """
 
@@ -3999,7 +4442,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._write_tx_ref_update(Path("/tmp/demo-repo/txn/demo"), "branch", "main", None, None, "seed", True)  # doctest: +SKIP
         """
 
@@ -4029,7 +4472,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._write_tx_state(Path("/tmp/demo-repo/txn/demo"), "PREPARING")  # doctest: +SKIP
         """
 
@@ -4108,7 +4551,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._recover_ref_update_transaction(Path("/tmp/demo-repo/txn/demo"))  # doctest: +SKIP
         """
 
@@ -4158,7 +4601,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._cleanup_txdir(Path("/tmp/demo-repo/txn/demo"))  # doctest: +SKIP
         """
 
@@ -4209,7 +4652,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._recover_transactions()  # doctest: +SKIP
         """
 
@@ -4251,7 +4694,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
             >>> backend._reflog_record("main", None, None, "seed", "branch")[0].name
             'main.log'
         """
@@ -4287,7 +4730,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
             >>> backend._last_jsonl_record(Path("/tmp/missing.jsonl"))
         """
 
@@ -4332,7 +4775,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._append_reflog("main", None, "sha256:" + "a" * 64, "seed")  # doctest: +SKIP
         """
 
@@ -4374,7 +4817,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._materialize_content_pool({"sha256": "a" * 64, "oid": "b" * 40, "logical_size": 4}, b"demo")  # doctest: +SKIP
         """
 
@@ -4411,7 +4854,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
             >>> backend._validate_detached_target_root(Path("/tmp/export"))
         """
 
@@ -4433,7 +4876,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._remove_detached_path(Path("/tmp/demo/file.txt"), Path("/tmp/demo"))  # doctest: +SKIP
         """
 
@@ -4467,7 +4910,7 @@ class _RepositoryBackend(object):
 
         Example::
 
-            >>> backend = _RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
             >>> backend._ensure_detached_view(Path("/tmp/demo-repo/cache/files/demo.txt"), b"demo", {"sha256": "a" * 64})  # doctest: +SKIP
         """
 

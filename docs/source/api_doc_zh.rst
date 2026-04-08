@@ -12,7 +12,8 @@ API 文档
     api_doc/errors
     api_doc/models
     api_doc/operations
-    api_doc/repo
+    api_doc/repo/index
+    api_doc/storage/index
 
 * :doc:`api_doc/api`
 * :doc:`api_doc/config/index`
@@ -20,5 +21,6 @@ API 文档
 * :doc:`api_doc/errors`
 * :doc:`api_doc/models`
 * :doc:`api_doc/operations`
-* :doc:`api_doc/repo`
+* :doc:`api_doc/repo/index`
+* :doc:`api_doc/storage/index`
 
