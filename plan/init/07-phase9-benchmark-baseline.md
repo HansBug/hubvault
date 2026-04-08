@@ -19,6 +19,31 @@
 - `tools/benchmark/run_phase9.py`
 - `tools/benchmark/compare.py`
 
+## 基线锚点提交
+
+当前这套已完成的 Phase 9 benchmark 体系，后续做 Phase 10 技术引入时应以这个提交作为 A/B 对比锚点：
+
+- baseline anchor commit：`edde3cafaaf6f1c99fa4b66912a5b3874132d79d`
+- baseline anchor subject：`feat(benchmark): complete phase9 baseline and pressure suite`
+
+后续建议的对比流程固定为：
+
+```bash
+git checkout edde3cafaaf6f1c99fa4b66912a5b3874132d79d
+make benchmark_phase9_standard
+make benchmark_phase9_pressure
+
+git checkout <candidate-commit>
+make benchmark_phase9_standard
+make benchmark_phase9_pressure
+
+./venv/bin/python -m tools.benchmark.compare \
+  build/benchmark/<baseline-json> \
+  build/benchmark/<candidate-json>
+```
+
+如果后续需要更细的单场景对比，也应沿用同一套 runner / Makefile 入口，不再临时拼脚本。
+
 ## 已实际执行的命令
 
 下面这些命令已经实际跑过并产出了结果文件：
@@ -129,15 +154,15 @@ make benchmark_phase9_standard
 
 ### 时间性能
 
-- 大文件上传：12 MiB `upload_file()` 实测操作耗时约 `0.279s`，吞吐约 `43.05 MiB/s`
-- 大文件范围读取：1 MiB `read_range()` 实测操作耗时约 `0.0296s`，吞吐约 `33.74 MiB/s`
-- 小文件批量读取：128 个 4 KiB 文件共 512 KiB，实测读取耗时约 `0.510s`，吞吐约 `0.98 MiB/s`
-- 冷快照导出：512 KiB 小文件树 `snapshot_download()` 实测操作耗时约 `2.45s`，吞吐约 `0.20 MiB/s`
-- 冷 `hf_hub_download()`：12 MiB chunked 文件 detached view 实测操作耗时约 `0.193s`，吞吐约 `62.10 MiB/s`
+- 大文件上传：12 MiB `upload_file()` 实测操作耗时约 `0.361s`，吞吐约 `33.20 MiB/s`
+- 大文件范围读取：1 MiB `read_range()` 实测操作耗时约 `0.0297s`，吞吐约 `33.66 MiB/s`
+- 小文件批量读取：128 个 4 KiB 文件共 512 KiB，实测读取耗时约 `0.703s`，吞吐约 `0.71 MiB/s`
+- 冷快照导出：512 KiB 小文件树 `snapshot_download()` 实测操作耗时约 `2.30s`，吞吐约 `0.22 MiB/s`
+- 冷 `hf_hub_download()`：12 MiB chunked 文件 detached view 实测操作耗时约 `0.213s`，吞吐约 `56.28 MiB/s`
 - warm `hf_hub_download()`：第二次调用缓存增量约 `0`，并复用既有 detached view 路径
-- 非快进 `merge()`：实测操作耗时约 `0.0896s`，吞吐约 `22.40 MiB/s`
-- `squash_history()`：历史重写 + 跟随 GC 实测操作耗时约 `2.19s`，吞吐约 `5.47 MiB/s`
-- `full_verify()`：maintenance-heavy 仓库约 9 MiB live 数据，实测校验耗时约 `3.63s`，吞吐约 `2.48 MiB/s`
+- 非快进 `merge()`：实测操作耗时约 `0.0822s`，吞吐约 `24.41 MiB/s`
+- `squash_history()`：历史重写 + 跟随 GC 实测操作耗时约 `1.92s`，吞吐约 `6.24 MiB/s`
+- `full_verify()`：maintenance-heavy 仓库约 9 MiB live 数据，实测校验耗时约 `4.04s`，吞吐约 `2.23 MiB/s`
 
 ### 空间与复用
 
@@ -198,9 +223,9 @@ make benchmark_phase9_pressure
 
 ### 时间性能
 
-- 大文件上传：512 MiB `upload_file()` 实测操作耗时约 `5.95s`，吞吐约 `86.01 MiB/s`
-- 大文件范围读取：32 MiB `read_range()` 实测操作耗时约 `0.299s`，吞吐约 `107.10 MiB/s`
-- 冷 `hf_hub_download()`：512 MiB detached file view 实测操作耗时约 `7.32s`，吞吐约 `69.99 MiB/s`
+- 大文件上传：512 MiB `upload_file()` 实测操作耗时约 `6.33s`，吞吐约 `80.93 MiB/s`
+- 大文件范围读取：32 MiB `read_range()` 实测操作耗时约 `0.396s`，吞吐约 `80.80 MiB/s`
+- 冷 `hf_hub_download()`：512 MiB detached file view 实测操作耗时约 `9.36s`，吞吐约 `54.70 MiB/s`
 
 ### 空间与复用
 
@@ -292,6 +317,29 @@ shifted overlap 的结果已经说明：
 - 且写时复用和元数据热点优化后仍然不够
 
 才值得进入 `fastcdc` 一类内容定义分块实验。
+
+## 新技术引入建议
+
+结合当前结果，对前面提到的几类技术建议如下：
+
+### 建议尽快引入
+
+- `blake3`
+  最适合先作为内部快速预哈希与重复候选筛查工具进入写路径。它可以服务于写时 chunk/pack reuse，而不需要改变公开 `sha256` / `oid` 语义，收益与风险比最高。
+- `cProfile` / `py-spy` / opt-in `tracemalloc`
+  这些更适合作为 Phase 10 的分析工具链先落地。当前小文件、快照、历史遍历和 detached view 的热点还需要更细定位，它们能给出下一轮优化的证据。
+- 单遍流式 hash+copy 与调用级 metadata cache
+  这部分不依赖新的磁盘协议，也不需要改变公开行为，应该和上面的 profiling 一起尽快做掉。
+
+### 建议实验性推进
+
+- `fastcdc`
+  它最有希望改善 shifted overlap 的复用退化，但复杂度和格式影响都明显更高。建议只放到实验路径里，等 `blake3` 和写时 reuse 做完后再看是否值得默认化。
+
+### 当前不建议优先引入
+
+- `zstandard`
+  当前主要痛点不是最终静态体积，而是写后立刻膨胀与 metadata 热点。现阶段先引入压缩的边际收益不高，还会带来 CPU 与兼容复杂度。
 
 ## 后续可继续演进的内容
 
