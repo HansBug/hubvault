@@ -1,6 +1,10 @@
+import os
+import stat
+
 import pytest
 
 from hubvault import IntegrityError
+import hubvault.storage.index as index_module
 from hubvault.storage.index import IndexEntry, IndexManifest, IndexStore
 
 
@@ -139,3 +143,29 @@ class TestIndexStore:
         directory_segment_store.segment_path("L0", "segment-dir.idx").mkdir(parents=True)
         with pytest.raises(IntegrityError):
             directory_segment_store.load_segment("L0", "segment-dir.idx")
+
+    def test_index_store_tolerates_directory_fsync_failures(self, tmp_path, monkeypatch):
+        entry = _entry("sha256:dir-fsync", "pack-dir", 16)
+
+        open_failure_store = IndexStore(tmp_path / "open-failure-index")
+        original_open = index_module.os.open
+        monkeypatch.setattr(
+            index_module.os,
+            "open",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("directory open blocked")),
+        )
+        open_failure_store.write_segment("L0", "seg-open.idx", [entry])
+        assert open_failure_store.load_segment("L0", "seg-open.idx") == (entry,)
+
+        monkeypatch.setattr(index_module.os, "open", original_open)
+        original_fsync = index_module.os.fsync
+
+        def selective_fsync(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError("directory fsync blocked")
+            return original_fsync(fd)
+
+        monkeypatch.setattr(index_module.os, "fsync", selective_fsync)
+        fsync_failure_store = IndexStore(tmp_path / "fsync-failure-index")
+        fsync_failure_store.write_manifest(IndexManifest.empty().add_segment("L0", "seg-fsync.idx"))
+        assert fsync_failure_store.read_manifest().levels["L0"] == ("seg-fsync.idx",)

@@ -1,4 +1,5 @@
 import json
+import shutil
 import warnings
 from pathlib import Path
 
@@ -6,10 +7,14 @@ import pytest
 
 from hubvault import (
     CommitOperationAdd,
+    ConflictError,
     EntryNotFoundError,
     HubVaultApi,
     IntegrityError,
     RepositoryAlreadyExistsError,
+    RevisionNotFoundError,
+    UnsupportedPathError,
+    VerificationError,
 )
 from hubvault.storage.chunk import DEFAULT_CHUNK_SIZE
 
@@ -45,6 +50,12 @@ def _chunked_repo(tmp_path, repo_name):
 
 def _file_object_path(repo_dir):
     return _only_path(repo_dir / "objects" / "files" / "sha256", "*.json")
+
+
+def _first_object_path(repo_dir, object_type):
+    matches = sorted((repo_dir / "objects" / object_type / "sha256").rglob("*.json"))
+    assert matches
+    return matches[0]
 
 
 def _mutate_file_payload(repo_dir, mutator):
@@ -407,3 +418,271 @@ class TestRepoBackendPackage:
         assert api.repo_info().head == first_commit.oid
         assert api.read_bytes("bundle/file.bin") == b"v1"
         assert not txdir.exists()
+
+    def test_backend_full_verify_surfaces_corruption_recovery_and_view_warnings(self, tmp_path):
+        api, repo_dir, _ = _chunked_repo(tmp_path, "full-verify")
+        api.create_tag(tag="v1")
+
+        download_path = Path(api.hf_hub_download("artifacts/large.bin"))
+        snapshot_dir = Path(api.snapshot_download())
+        download_path.write_bytes(b"corrupted detached view")
+        (snapshot_dir / "artifacts" / "large.bin").unlink()
+
+        broken_txdir = repo_dir / "txn" / "broken-recovery"
+        broken_txdir.mkdir(parents=True)
+        _write_json(
+            broken_txdir / "REF_UPDATE.json",
+            {
+                "ref_kind": "branch",
+                "ref_name": "main",
+                "old_head": 1,
+                "new_head": None,
+                "message": "broken recovery journal",
+                "ref_existed_before": True,
+            },
+        )
+
+        pending_txdir = repo_dir / "txn" / "pending-dir"
+        pending_txdir.mkdir(parents=True)
+        (repo_dir / "txn" / "manual-note.txt").write_text("leftover", encoding="utf-8")
+        (repo_dir / "locks" / "unexpected.lock").write_text("lock", encoding="utf-8")
+        (repo_dir / "refs" / "heads" / "broken").write_text("sha256:" + ("0" * 64) + "\n", encoding="utf-8")
+
+        repo_config = _read_json(repo_dir / "repo.json")
+        repo_config["format_version"] = 999
+        _write_json(repo_dir / "repo.json", repo_config)
+
+        tree_path = _first_object_path(repo_dir, "trees")
+        tree_container = _read_json(tree_path)
+        tree_container["object_type"] = "unexpected"
+        _write_json(tree_path, tree_container)
+
+        _mutate_first_index_record(
+            repo_dir,
+            lambda record: record.__setitem__("compression", "gzip"),
+        )
+
+        report = api.full_verify()
+
+        assert report.ok is False
+        assert any("unsupported format version" in item for item in report.errors)
+        assert any("transaction recovery:" in item for item in report.errors)
+        assert any("refs/heads/broken:" in item for item in report.errors)
+        assert any("tree " in item and "unexpected object type" in item for item in report.errors)
+        assert any("chunk storage: unsupported chunk compression: gzip" in item for item in report.errors)
+        assert any("stale file view:" in item for item in report.warnings)
+        assert any("stale snapshot view:" in item for item in report.warnings)
+        assert any("unexpected txn entry: manual-note.txt" in item for item in report.warnings)
+        assert any("pending transaction directory: pending-dir" in item for item in report.warnings)
+        assert any("unexpected lock artifact: unexpected.lock" in item for item in report.warnings)
+
+    def test_backend_storage_overview_and_gc_cover_blob_only_and_manual_areas(self, tmp_path):
+        repo_dir = tmp_path / "repo"
+        api = HubVaultApi(repo_dir)
+        api.create_repo()
+        _ = api.upload_file(path_or_fileobj=b"v1", path_in_repo="bundle/file.bin")
+        _ = api.upload_file(path_or_fileobj=b"v2", path_in_repo="bundle/file.bin")
+        _ = api.hf_hub_download("bundle/file.bin")
+
+        shutil.rmtree(repo_dir / "quarantine")
+        shutil.rmtree(repo_dir / "cache")
+        (repo_dir / "txn" / "manual-note.txt").write_text("manual", encoding="utf-8")
+        (repo_dir / "quarantine" / "objects" / "manual" / "old.bin").parent.mkdir(parents=True, exist_ok=True)
+        (repo_dir / "quarantine" / "objects" / "manual" / "old.bin").write_bytes(b"old")
+
+        overview = api.get_storage_overview()
+
+        assert overview.historical_retained_size > 0
+        assert any("squash_history" in item for item in overview.recommendations)
+        assert any("txn/" in item for item in overview.recommendations)
+        assert any("quarantine/" in item for item in overview.recommendations)
+
+        preview = api.gc(dry_run=True, prune_cache=True)
+        assert preview.dry_run is True
+        assert any("Rollback history still retains" in item for item in preview.notes)
+
+        actual = api.gc(dry_run=False, prune_cache=True)
+        assert actual.dry_run is False
+        assert actual.reclaimed_temporary_size > 0
+        assert (repo_dir / "txn" / "manual-note.txt").exists()
+        assert api.full_verify().ok is True
+
+    def test_backend_gc_rejects_corrupted_repositories_before_reclaiming(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        api.upload_file(path_or_fileobj=b"payload", path_in_repo="bundle/file.bin")
+
+        tree_path = _first_object_path(tmp_path / "repo", "trees")
+        tree_container = _read_json(tree_path)
+        tree_container["payload_sha256"] = "sha256:" + ("1" * 64)
+        _write_json(tree_path, tree_container)
+
+        with pytest.raises(VerificationError, match="repository verification failed"):
+            api.gc(dry_run=True)
+
+    def test_backend_squash_history_covers_public_edge_cases_and_custom_root_metadata(self, tmp_path):
+        empty_api = HubVaultApi(tmp_path / "empty-repo")
+        empty_api.create_repo()
+        empty_api.create_branch(branch="empty")
+
+        with pytest.raises(RevisionNotFoundError, match="revision has no commits yet: empty"):
+            empty_api.squash_history("empty", run_gc=False)
+
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        first = api.create_commit(
+            operations=[CommitOperationAdd("bundle/file.bin", b"v1")],
+            commit_message="seed v1",
+        )
+        second = api.create_commit(
+            operations=[CommitOperationAdd("bundle/file.bin", b"v2")],
+            commit_message="seed v2",
+        )
+        third = api.create_commit(
+            operations=[CommitOperationAdd("bundle/file.bin", b"v3")],
+            commit_message="seed v3",
+        )
+        api.create_branch(branch="side", revision=first.oid)
+        side_commit = api.create_commit(
+            revision="side",
+            operations=[CommitOperationAdd("bundle/side.bin", b"side")],
+            commit_message="side branch",
+        )
+        api.create_tag(tag="v1", revision=first.oid)
+
+        with pytest.raises(UnsupportedPathError, match="only supports branch refs"):
+            api.squash_history("refs/tags/v1", run_gc=False)
+
+        with pytest.raises(ConflictError, match="root_revision is not an ancestor"):
+            api.squash_history("main", root_revision=side_commit.oid, run_gc=False)
+
+        report = api.squash_history(
+            "refs/heads/main",
+            root_revision=first.oid,
+            commit_message="squashed root",
+            commit_description="manual body",
+            run_gc=False,
+        )
+
+        history = list(api.list_repo_commits())
+        assert report.ref_name == "refs/heads/main"
+        assert report.old_head == third.oid
+        assert report.new_head != third.oid
+        assert report.root_commit_before == first.oid
+        assert report.rewritten_commit_count == 3
+        assert report.dropped_ancestor_count == 0
+        assert history[-1].title == "squashed root"
+        assert history[-1].message == "manual body"
+        assert api.read_bytes("bundle/file.bin") == b"v3"
+
+    def test_backend_nested_ref_cleanup_and_missing_explicit_reflog_queries(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        api.upload_file(path_or_fileobj=b"payload", path_in_repo="bundle/file.bin")
+        api.create_branch(branch="team/one")
+        api.create_branch(branch="team/two")
+
+        api.delete_branch(branch="team/one")
+
+        assert [ref.name for ref in api.list_repo_refs().branches] == ["main", "team/two"]
+        assert (tmp_path / "repo" / "refs" / "heads" / "team").is_dir()
+
+        with pytest.raises(RevisionNotFoundError, match="reflog not found: refs/heads/missing"):
+            api.list_repo_reflog("refs/heads/missing")
+        with pytest.raises(RevisionNotFoundError, match="reflog not found: refs/tags/missing"):
+            api.list_repo_reflog("refs/tags/missing")
+
+    def test_backend_tag_recovery_restores_previous_tag_head(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        first = api.upload_file(path_or_fileobj=b"v1", path_in_repo="bundle/file.bin")
+        api.create_tag(tag="release", revision=first.oid)
+        second = api.upload_file(path_or_fileobj=b"v2", path_in_repo="bundle/file.bin")
+
+        repo_dir = tmp_path / "repo"
+        (repo_dir / "refs" / "tags" / "release").write_text(second.oid + "\n", encoding="utf-8")
+        txdir = repo_dir / "txn" / "tag-rollback"
+        txdir.mkdir(parents=True)
+        _write_json(
+            txdir / "REF_UPDATE.json",
+            {
+                "ref_kind": "tag",
+                "ref_name": "release",
+                "old_head": first.oid,
+                "new_head": second.oid,
+                "message": "retag release",
+                "ref_existed_before": True,
+            },
+        )
+
+        assert api.read_bytes("bundle/file.bin") == b"v2"
+        assert (repo_dir / "refs" / "tags" / "release").read_text(encoding="utf-8").strip() == first.oid
+        assert not txdir.exists()
+
+    def test_backend_public_pattern_filters_and_blank_reflog_lines_work(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        api.create_commit(
+            operations=[
+                CommitOperationAdd("nested/keep.txt", b"keep"),
+                CommitOperationAdd("nested/ignore.txt", b"ignore"),
+                CommitOperationAdd("root.txt", b"root"),
+            ],
+            commit_message="seed pattern filters",
+        )
+
+        snapshot_dir = Path(
+            api.snapshot_download(
+                allow_patterns="nested/",
+                ignore_patterns="nested/ignore.txt",
+            )
+        )
+        assert (snapshot_dir / "nested" / "keep.txt").read_bytes() == b"keep"
+        assert not (snapshot_dir / "nested" / "ignore.txt").exists()
+        assert not (snapshot_dir / "root.txt").exists()
+
+        reflog_path = tmp_path / "repo" / "logs" / "refs" / "heads" / "main.log"
+        reflog_path.write_text(
+            reflog_path.read_text(encoding="utf-8") + "\n\n",
+            encoding="utf-8",
+        )
+        assert api.list_repo_reflog("main")[0].message == "seed pattern filters"
+
+    def test_backend_full_verify_handles_empty_heads_and_stale_snapshot_content(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        api.create_branch(branch="empty")
+
+        empty_report = api.full_verify()
+        assert empty_report.ok is True
+        assert "refs/heads/empty" in empty_report.checked_refs
+
+        api.upload_file(path_or_fileobj=b"payload", path_in_repo="bundle/file.bin")
+        snapshot_dir = Path(api.snapshot_download())
+        (snapshot_dir / "bundle" / "file.bin").write_bytes(b"mutated snapshot")
+
+        stale_report = api.full_verify()
+        assert stale_report.ok is True
+        assert any("stale snapshot view:" in item for item in stale_report.warnings)
+
+    def test_backend_missing_ref_and_txn_roots_do_not_break_public_operations(self, tmp_path):
+        empty_repo_dir = tmp_path / "empty-repo"
+        empty_api = HubVaultApi(empty_repo_dir)
+        empty_api.create_repo()
+        shutil.rmtree(empty_repo_dir / "refs" / "heads")
+        shutil.rmtree(empty_repo_dir / "refs" / "tags")
+
+        refs = empty_api.list_repo_refs()
+        assert refs.branches == []
+        assert refs.tags == []
+
+        repo_dir = tmp_path / "repo"
+        api = HubVaultApi(repo_dir)
+        api.create_repo()
+        api.upload_file(path_or_fileobj=b"payload-v1", path_in_repo="bundle/file.bin")
+        shutil.rmtree(repo_dir / "txn")
+
+        assert api.read_bytes("bundle/file.bin") == b"payload-v1"
+        second = api.upload_file(path_or_fileobj=b"payload-v2", path_in_repo="bundle/second.bin")
+        assert second.commit_message == "Upload bundle/second.bin with hubvault"
+        assert sorted(api.list_repo_files()) == ["bundle/file.bin", "bundle/second.bin"]

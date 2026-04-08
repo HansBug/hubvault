@@ -1,8 +1,11 @@
+import os
+import stat
 from pathlib import Path
 
 import pytest
 
 from hubvault import IntegrityError
+import hubvault.storage.pack as pack_module
 from hubvault.storage.pack import PACK_MAGIC, PackStore
 
 
@@ -62,3 +65,69 @@ class TestPackStore:
 
         with pytest.raises(IntegrityError):
             store.read_range("demo", len(PACK_MAGIC), 1)
+
+    def test_pack_store_tolerates_directory_fsync_failures_and_short_reads(self, tmp_path, monkeypatch):
+        open_failure_store = PackStore(tmp_path / "open-failure-packs")
+        original_open = pack_module.os.open
+        monkeypatch.setattr(
+            pack_module.os,
+            "open",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("directory open blocked")),
+        )
+        open_result = open_failure_store.write_pack("open-failure", [b"abc"])
+        assert open_failure_store.read_chunk(open_result.chunks[0]) == b"abc"
+
+        monkeypatch.setattr(pack_module.os, "open", original_open)
+        original_fsync = pack_module.os.fsync
+
+        def selective_fsync(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError("directory fsync blocked")
+            return original_fsync(fd)
+
+        monkeypatch.setattr(pack_module.os, "fsync", selective_fsync)
+        fsync_failure_store = PackStore(tmp_path / "fsync-failure-packs")
+        fsync_result = fsync_failure_store.write_pack("fsync-failure", [b"abcdef"])
+        assert fsync_failure_store.read_chunk(fsync_result.chunks[0]) == b"abcdef"
+
+        monkeypatch.setattr(pack_module.os, "fsync", original_fsync)
+        original_path_open = pack_module.Path.open
+        short_read_pack_path = fsync_failure_store.pack_path("fsync-failure")
+
+        class _ShortReadWrapper:
+            def __init__(self, file_):
+                self._file = file_
+                self._payload_reads = 0
+
+            def __enter__(self):
+                self._file.__enter__()
+                return self
+
+            def __exit__(self, exc_type, exc_val, exc_tb):
+                return self._file.__exit__(exc_type, exc_val, exc_tb)
+
+            def read(self, size=-1):
+                data = self._file.read(size)
+                if size > 0:
+                    self._payload_reads += 1
+                    if self._payload_reads >= 2 and len(data) == size and size > 0:
+                        return data[:-1]
+                return data
+
+            def __getattr__(self, item):
+                return getattr(self._file, item)
+
+        def fake_open(path_obj, *args, **kwargs):
+            file_ = original_path_open(path_obj, *args, **kwargs)
+            mode = args[0] if args else kwargs.get("mode", "r")
+            if path_obj == short_read_pack_path and "rb" in mode:
+                return _ShortReadWrapper(file_)
+            return file_
+
+        monkeypatch.setattr(pack_module.Path, "open", fake_open)
+        with pytest.raises(IntegrityError, match="pack truncated"):
+            fsync_failure_store.read_range(
+                "fsync-failure",
+                fsync_result.chunks[0].offset,
+                fsync_result.chunks[0].stored_size,
+            )
