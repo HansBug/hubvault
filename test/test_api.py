@@ -7,6 +7,7 @@ import pytest
 
 from hubvault import (
     CommitOperationAdd,
+    CommitOperationDelete,
     ConflictError,
     EntryNotFoundError,
     GcReport,
@@ -356,6 +357,199 @@ class TestApi:
 
         with pytest.raises(ConflictError):
             api.merge("feature", parent_commit=seed_commit.oid)
+
+    def test_merge_public_api_treats_empty_source_branch_as_already_up_to_date(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        api.create_branch(branch="feature")
+
+        empty_result = api.merge("feature")
+        assert empty_result.status == "already-up-to-date"
+        assert empty_result.target_head_before is None
+        assert empty_result.source_head is None
+        assert empty_result.head_after is None
+        assert empty_result.commit is None
+
+        main_commit = api.create_commit(
+            operations=[CommitOperationAdd("main.txt", b"main")],
+            commit_message="seed main",
+        )
+
+        result = api.merge("feature")
+
+        assert result.status == "already-up-to-date"
+        assert result.base_commit is None
+        assert result.target_head_before == main_commit.oid
+        assert result.source_head is None
+        assert result.head_after == main_commit.oid
+        assert result.commit is not None
+        assert result.commit.oid == main_commit.oid
+        assert result.conflicts == []
+        assert api.repo_info().head == main_commit.oid
+
+    def test_merge_public_api_fast_forwards_empty_target_branch_via_full_ref_name(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        api.create_branch(branch="archive")
+        source_commit = api.create_commit(
+            operations=[CommitOperationAdd("notes.txt", b"seed")],
+            commit_message="seed main",
+        )
+
+        result = api.merge("main", target_revision="refs/heads/archive")
+
+        assert result.status == "fast-forward"
+        assert result.base_commit is None
+        assert result.target_revision == "archive"
+        assert result.target_head_before is None
+        assert result.source_head == source_commit.oid
+        assert result.head_after == source_commit.oid
+        assert result.commit is not None
+        assert result.commit.oid == source_commit.oid
+        assert api.list_repo_files(revision="archive") == ["notes.txt"]
+
+    def test_merge_public_api_handles_same_head_and_ancestor_source_without_new_commit(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        seed_commit = api.create_commit(
+            operations=[CommitOperationAdd("notes.txt", b"seed")],
+            commit_message="seed",
+        )
+        api.create_branch(branch="feature")
+        main_commit = api.create_commit(
+            operations=[CommitOperationAdd("main.txt", b"main")],
+            commit_message="main work",
+        )
+
+        same_head = api.merge("main")
+        assert same_head.status == "already-up-to-date"
+        assert same_head.base_commit == main_commit.oid
+        assert same_head.target_head_before == main_commit.oid
+        assert same_head.source_head == main_commit.oid
+        assert same_head.head_after == main_commit.oid
+        assert same_head.commit is not None
+        assert same_head.commit.oid == main_commit.oid
+
+        ancestor_source = api.merge("feature")
+        assert ancestor_source.status == "already-up-to-date"
+        assert ancestor_source.base_commit == seed_commit.oid
+        assert ancestor_source.target_head_before == main_commit.oid
+        assert ancestor_source.source_head == seed_commit.oid
+        assert ancestor_source.head_after == main_commit.oid
+        assert ancestor_source.commit is not None
+        assert ancestor_source.commit.oid == main_commit.oid
+
+    def test_merge_public_api_supports_explicit_message_and_description(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        _ = api.create_commit(
+            operations=[CommitOperationAdd("shared.txt", b"base")],
+            commit_message="seed",
+        )
+        api.create_branch(branch="feature")
+        _ = api.create_commit(
+            operations=[CommitOperationAdd("main.txt", b"main")],
+            commit_message="main work",
+        )
+        _ = api.create_commit(
+            revision="feature",
+            operations=[CommitOperationAdd("feature.txt", b"feature")],
+            commit_message="feature work",
+        )
+
+        result = api.merge(
+            "feature",
+            commit_message="merge feature branch",
+            commit_description="explicit merge body",
+        )
+
+        assert result.status == "merged"
+        assert result.commit is not None
+        assert result.commit.commit_message == "merge feature branch"
+        assert result.commit.commit_description == "explicit merge body"
+        history = api.list_repo_commits()
+        assert history[0].title == "merge feature branch"
+        assert history[0].message == "explicit merge body"
+
+    def test_merge_public_api_reports_add_add_conflicts(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        _ = api.create_commit(
+            operations=[CommitOperationAdd("seed.txt", b"seed")],
+            commit_message="seed",
+        )
+        api.create_branch(branch="feature")
+        _ = api.create_commit(
+            operations=[CommitOperationAdd("shared.txt", b"main")],
+            commit_message="main add",
+        )
+        _ = api.create_commit(
+            revision="feature",
+            operations=[CommitOperationAdd("shared.txt", b"feature")],
+            commit_message="feature add",
+        )
+
+        result = api.merge("feature")
+
+        assert result.status == "conflict"
+        assert result.commit is None
+        assert len(result.conflicts) == 1
+        assert result.conflicts[0].conflict_type == "add/add"
+        assert result.conflicts[0].path == "shared.txt"
+
+    def test_merge_public_api_reports_delete_modify_conflicts(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        _ = api.create_commit(
+            operations=[CommitOperationAdd("shared.txt", b"seed")],
+            commit_message="seed",
+        )
+        api.create_branch(branch="feature")
+        _ = api.create_commit(
+            operations=[CommitOperationAdd("shared.txt", b"main")],
+            commit_message="main modify",
+        )
+        _ = api.create_commit(
+            revision="feature",
+            operations=[CommitOperationDelete("shared.txt")],
+            commit_message="feature delete",
+        )
+
+        result = api.merge("feature")
+
+        assert result.status == "conflict"
+        assert result.commit is None
+        assert len(result.conflicts) == 1
+        assert result.conflicts[0].conflict_type == "delete/modify"
+        assert result.conflicts[0].path == "shared.txt"
+
+    def test_merge_public_api_rejects_invalid_target_revision_and_empty_message(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        commit = api.create_commit(
+            operations=[CommitOperationAdd("shared.txt", b"base")],
+            commit_message="seed",
+        )
+        api.create_branch(branch="feature")
+        api.create_tag(tag="v1", revision="main")
+        _ = api.create_commit(
+            operations=[CommitOperationAdd("main.txt", b"main")],
+            commit_message="main work",
+        )
+        _ = api.create_commit(
+            revision="feature",
+            operations=[CommitOperationAdd("feature.txt", b"feature")],
+            commit_message="feature work",
+        )
+
+        with pytest.raises(UnsupportedPathError):
+            api.merge("feature", target_revision=commit.oid)
+
+        with pytest.raises(UnsupportedPathError):
+            api.merge("feature", target_revision="refs/tags/v1")
+
+        with pytest.raises(ValueError):
+            api.merge("feature", commit_message="")
 
     def test_phase2_public_refs_upload_delete_snapshot_and_reflog_methods(self, tmp_path):
         repo_dir = tmp_path / "repo"
