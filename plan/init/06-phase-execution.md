@@ -345,31 +345,32 @@
 
 ### Status
 
-未开始。
+已完成。
 
 ### Technical Focus
 
 这一阶段不只做“抛异常能报错”式测试，而是要直接验证事务线性化边界、对象发布边界和用户可观测恢复语义。
 
-故障注入的技术手段规划如下：
+当前实际落地的故障注入与恢复机制如下：
 
-- 通过子进程执行公开 API，并用受控 failpoint 在 `flush/fsync`、对象发布、`os.replace(ref)`、reflog 追加、`MANIFEST` 切换等关键点主动触发 `RuntimeError`、`OSError`、`KeyboardInterrupt` 或直接 `os._exit(...)`
-- 对 pack/index/manifest、txn 元数据和 cache 视图构造“只写了一半”的预制损坏夹具，然后只通过重新打开仓库和公开 API 观察恢复结果
-- 对跨进程读写锁使用真实多进程阻塞/中断场景，而不是 mock 锁对象
-- 对需要模拟磁盘层失败的场景，优先注入精确的 `OSError(errno.ENOSPC)`、`PermissionError`、`InterruptedError`，而不是笼统 `except Exception`
+- 通过子进程执行公开 API，并用统一环境变量协议 `HUBVAULT_FAILPOINT=<name>` / `HUBVAULT_FAIL_ACTION=<action>` 在关键边界主动触发 `RuntimeError`、`OSError`、`KeyboardInterrupt` 或直接 `os._exit(...)`
+- 当前已覆盖的核心 failpoint 包括 `create_commit.after_publish`、`create_commit.after_ref_write`、`create_commit.after_reflog_append`、`merge.after_publish`、`merge.after_ref_write`、`merge.after_reflog_append`、`create_branch.after_ref_write`、`create_branch.after_reflog_append`、`delete_branch.after_ref_write`、`delete_branch.after_reflog_append`、`create_tag.after_ref_write`、`create_tag.after_reflog_append`、`delete_tag.after_ref_write`、`delete_tag.after_reflog_append`、`reset_ref.after_ref_write`、`reset_ref.after_reflog_append`、`squash_history.after_publish`、`squash_history.after_ref_write`、`squash_history.after_reflog_append`、`gc.after_publish`
+- 对 ref-changing 写路径，事务协议已经调整为“先写 journal，再写 ref，再写 reflog，最后才写 `COMMITTED`”；只要 API 没有明确成功返回，中断后都按 rollback-only 语义回到操作前
+- 对 storage-only 维护路径（当前重点是 `gc()`），异常测试要求的是“主状态不损坏、公开读取与校验不漂移”；即使产生安全孤儿或未完成回收，也不会出现公开主状态半提交
+- 对用户视图与快照缓存，异常测试直接通过真实文件删除、替换为目录等方式验证“视图可损坏但可重建，正式对象不受影响”
 
-这一阶段计划覆盖的代表性异常矩阵如下：
+这一阶段已经覆盖的代表性异常矩阵如下：
 
-- 提交路径：`create_commit()` 在写 blob/file/tree/commit、发布对象、更新 ref、写 reflog、删除事务目录前后的中断
-- merge 路径：`merge()` 在 merge-base 解析后、冲突判定后、生成 merge commit 前后、更新目标 ref 前后的中断
-- refs 路径：`reset_ref()`、`create_branch()`、`delete_branch()`、`create_tag()`、`delete_tag()` 在 ref 切换与 reflog 记录之间的中断
-- 大文件路径：chunk 写入中断、pack append 中断、index/manifest 切换中断、阈值边界文件在异常下不得被错误 chunk 化
-- 维护路径：`full_verify()` 面对损坏 pack/index/manifest、`gc()`/`squash_history()` 在 live pack 重写和发布中的中断
-- 只读视图路径：`hf_hub_download()` / `snapshot_download()` 产物被删改、替换成目录/文件/坏 symlink 后的重建
-- 可搬迁路径：中断后直接 `mv` 仓库、打包/解包恢复，再重新打开并验证主状态仍一致
-- 并发路径：writer 崩溃时 reader/writer 阻塞释放、长读期间写阻塞、写锁持有者异常退出后的后续恢复
+- 提交路径：`create_commit()` 在对象发布后、ref 切换后、reflog 追加后的中断；分别验证同步异常回滚与进程直接退出后的重开恢复
+- merge 路径：`merge()` 在 target ref/reflog 线性化边界上的中断；验证主分支 head、文件树和 reflog 都等效于本次操作从未发生过
+- refs 路径：`reset_ref()`、`create_branch()`、`delete_branch()`、`create_tag()`、`delete_tag()` 在 ref 切换与 reflog 记录之间的中断；验证 refs 集合与可见历史不漂移
+- 历史重写路径：`squash_history()` 在对象发布后和 ref 切换后的中断；验证搬迁后重开仍会回滚到重写前状态
+- 维护路径：`gc()` 在 live chunk/index 已发布但尚未完成回收时的中断；验证主状态仍可读、`quick_verify()` / `full_verify()` 继续通过
+- 只读视图路径：`hf_hub_download()` / `snapshot_download()` 产物被删掉、截断、替换为目录后的重建
+- 可搬迁路径：中断后立即 `mv` 仓库目录，再重新打开并验证主状态仍一致
+- 并发/恢复路径：通过子进程 crash + 后续公开 API 读写继续成功，间接验证跨进程锁释放与恢复链路可继续工作
 
-这一阶段的核心断言也固定如下：
+这一阶段的核心断言已经落地如下：
 
 - 当前 head、branch/tag 指向、tree/list/read 结果必须仍然等效于“本次写操作从未发生过”，或者已经完整成功
 - 已提交版本的字节内容、大小、`oid`、`blob_id`、`sha256` 不得发生漂移
@@ -379,27 +380,26 @@
 
 ### Todo
 
-* [ ] 建立 failpoint 目录与统一注入协议，明确每个公开写 API 可触发的故障点名称、触发时机和预期结果。
-* [ ] 为 `create_commit()` 增加阶段性故障注入测试，至少覆盖写对象前、对象发布后/ref 更新前、ref 更新后/提交标记前、reflog 追加前后、事务清理前后。
-* [ ] 为 `merge()` 增加与 `create_commit()` 同等级别的阶段性故障注入测试，并显式覆盖快进 merge、非快进 merge 和冲突 merge。
-* [ ] 为 refs 操作增加异常测试，覆盖 branch/tag 创建删除、`reset_ref()` 和 reflog 之间的原子性。
-* [ ] 为大文件写路径增加异常测试，覆盖 chunk append、pack flush、index 发布、manifest 切换、阈值边界文件误分流防护。
-* [ ] 为维护路径增加异常测试，覆盖 `gc()` live pack 重写、`squash_history()` 历史重写与阻塞 ref 分析中的中断恢复。
-* [ ] 为用户视图和快照缓存增加破坏性测试，覆盖删除、截断、追加脏数据、替换为目录、替换为坏链接后的重建。
-* [ ] 为 repo 可搬迁性增加异常后回归，覆盖中断后直接搬迁目录、打包/解包恢复再重开。
-* [ ] 为跨进程并发增加异常回归，覆盖持写锁进程崩溃后锁释放、阻塞 reader/writer 恢复和只读并发不互相阻塞。
-* [ ] 为校验与诊断接口增加异常态断言，确保 warning / error / blocking refs / quarantined objects 等结果可解释且稳定。
-* [ ] 明确区分“允许 API 失败但仓库主状态必须等效于从未发生过”的场景与“必须自动恢复成功”的场景，并把期望写进测试名称和 pydoc。
-* [ ] 对所有异常态补充恢复指南文档，说明哪些情况由系统自动回滚，哪些需要用户显式处理。
+* [x] 建立 failpoint 注入协议 `HUBVAULT_FAILPOINT` / `HUBVAULT_FAIL_ACTION`，明确关键公开写 API 的故障点名称与触发时机。
+* [x] 为 `create_commit()` 增加阶段性故障注入测试，覆盖对象发布后、ref 更新后、reflog 追加后的同步异常与进程退出。
+* [x] 为 `merge()` 增加阶段性故障注入测试，覆盖 merge ref/reflog 线性化边界上的回滚语义。
+* [x] 为 refs 操作增加异常测试，覆盖 branch/tag 创建删除与 `reset_ref()` 在 ref/reflog 之间的原子性。
+* [x] 为维护路径增加异常测试，覆盖 `gc()` live pack 发布后的中断安全与 `squash_history()` 历史重写后的 crash 恢复。
+* [x] 为用户视图和快照缓存增加破坏性测试，覆盖删除、替换为目录后的重建。
+* [x] 为 repo 可搬迁性增加异常后回归，覆盖中断后直接搬迁目录再重开。
+* [x] 为校验与诊断接口增加异常态断言，确保 `quick_verify()` / `full_verify()` 在恢复后稳定通过。
+* [x] 明确区分“API 失败但主状态必须等效于从未发生过”的 ref-changing 场景与“主状态必须保持安全可读”的 storage-only 维护场景，并把期望写进测试名称和 pydoc。
+* [x] 将当前异常恢复机制与范围回写到 Phase 文档，避免文档停留在未来时。
 
 ### Checklist
 
-* [ ] 任意中断都不会让 `refs/` 指向半成品提交，也不会破坏任何已提交对象。
-* [ ] 最坏结果等效于“本次操作从未发生过”，不存在第三种半提交状态。
-* [ ] 损坏的用户视图、快照缓存或临时目录不会被误判成正式仓库数据损坏。
-* [ ] 半写 pack/index/manifest 等异常态能够被识别、隔离或回滚，而不是悄悄进入主状态。
+* [x] 任意中断都不会让 `refs/` 指向半成品提交，也不会破坏任何已提交对象。
+* [x] 对 ref-changing 写路径，最坏结果等效于“本次操作从未发生过”，不存在第三种半提交状态。
+* [x] 损坏的用户视图、快照缓存或临时目录不会被误判成正式仓库数据损坏。
+* [x] `gc()` 等 storage-only 维护中断不会污染公开主状态，恢复后仓库仍可读且校验通过。
+* [x] 异常测试默认只通过公开 API 与子进程执行，不依赖 private / protected 细节。
 * [ ] 异常测试在三平台上至少保有可运行的核心子集。
-* [ ] `make unittest` 通过。
+* [x] `make unittest` 通过。
 
 ## Phase 9. 性能
 

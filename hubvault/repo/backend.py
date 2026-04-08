@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from html import escape as html_escape
 from hashlib import sha1, sha256
 from pathlib import Path, PurePosixPath
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from fasteners import InterProcessReaderWriterLock
 
@@ -98,6 +98,9 @@ GC_ANALYSIS_PACK_ID = "gc-0000000000000000-00000000"
 GIT_OID_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 PUBLIC_GIT_AUTHOR_NAME = "HubVault"
 PUBLIC_GIT_AUTHOR_EMAIL = "hubvault@local"
+FAILPOINT_ENV = "HUBVAULT_FAILPOINT"
+FAIL_ACTION_ENV = "HUBVAULT_FAIL_ACTION"
+FAILPOINT_EXIT_CODE = 86
 
 
 def _utc_now() -> str:
@@ -1248,10 +1251,15 @@ class RepositoryBackend(object):
                 old_head=current_head,
                 new_head=commit_id,
                 message="Initial commit",
+                failpoint_prefix="create_repo.initial_commit",
             )
-            return commit_id
-        finally:
-            self._cleanup_txdir(txdir)
+        except BaseException:
+            # Roll back even on interrupts so create_repo() never exposes a
+            # half-visible initial history root.
+            self._rollback_transaction_unlocked(txdir)
+            raise
+        self._safe_cleanup_txdir(txdir)
+        return commit_id
 
     def repo_info(self, revision: Optional[str] = None) -> RepoInfo:
         """
@@ -1441,32 +1449,32 @@ class RepositoryBackend(object):
                 )
                 commit_id = self._stage_json_object(txdir, "commits", commit_payload)
                 self._stage_chunk_manifest(txdir)
+                result = CommitInfo(
+                    commit_url=self._commit_url(commit_id, txdir=txdir),
+                    commit_message=stored_title,
+                    commit_description=stored_description,
+                    oid=self._public_commit_oid(commit_id, txdir=txdir),
+                )
 
                 self._write_tx_state(txdir, "STAGED")
                 self._publish_staged_objects(txdir)
                 self._write_tx_state(txdir, "PUBLISHED_OBJECTS")
-                self._write_tx_ref_update(
+                self._maybe_failpoint("create_commit.after_publish")
+                self._commit_branch_ref_update_unlocked(
                     txdir=txdir,
-                    ref_kind="branch",
-                    ref_name=branch_name,
+                    branch_name=branch_name,
                     old_head=current_head,
                     new_head=commit_id,
                     message=commit_message,
-                    ref_existed_before=True,
+                    failpoint_prefix="create_commit",
                 )
-                self._write_ref(branch_name, commit_id)
-                self._write_tx_state(txdir, "UPDATED_REF")
-                self._write_tx_state(txdir, "COMMITTED")
-                self._append_reflog(branch_name, current_head, commit_id, commit_message)
-
-                return CommitInfo(
-                    commit_url=self._commit_url(commit_id),
-                    commit_message=stored_title,
-                    commit_description=stored_description,
-                    oid=self._public_commit_oid(commit_id),
-                )
-            finally:
-                self._cleanup_txdir(txdir)
+            except BaseException:
+                # Roll back even on interrupts so an interrupted create_commit()
+                # is indistinguishable from never having happened.
+                self._rollback_transaction_unlocked(txdir)
+                raise
+            self._safe_cleanup_txdir(txdir)
+            return result
 
     def merge(
         self,
@@ -1560,28 +1568,32 @@ class RepositoryBackend(object):
             if target_head is None:
                 txdir = self._create_txdir(target_branch_name, target_head)
                 try:
+                    result = MergeResult(
+                        status="fast-forward",
+                        target_revision=target_branch_name,
+                        source_revision=source_revision,
+                        base_commit=None,
+                        target_head_before=None,
+                        source_head=self._public_commit_oid_or_none(source_head),
+                        head_after=self._public_commit_oid_or_none(source_head),
+                        commit=self._commit_info(source_head, target_branch_name),
+                        conflicts=[],
+                        fast_forward=True,
+                        created_commit=False,
+                    )
                     self._commit_branch_ref_update_unlocked(
                         txdir=txdir,
                         branch_name=target_branch_name,
                         old_head=target_head,
                         new_head=source_head,
                         message=self._default_merge_title(source_revision, target_branch_name),
+                        failpoint_prefix="merge",
                     )
-                finally:
-                    self._cleanup_txdir(txdir)
-                return MergeResult(
-                    status="fast-forward",
-                    target_revision=target_branch_name,
-                    source_revision=source_revision,
-                    base_commit=None,
-                    target_head_before=None,
-                    source_head=self._public_commit_oid_or_none(source_head),
-                    head_after=self._public_commit_oid_or_none(source_head),
-                    commit=self._commit_info(source_head, target_branch_name),
-                    conflicts=[],
-                    fast_forward=True,
-                    created_commit=False,
-                )
+                except BaseException:
+                    self._rollback_transaction_unlocked(txdir)
+                    raise
+                self._safe_cleanup_txdir(txdir)
+                return result
 
             if target_head == source_head:
                 return MergeResult(
@@ -1616,28 +1628,32 @@ class RepositoryBackend(object):
             if self._is_ancestor_unlocked(target_head, source_head):
                 txdir = self._create_txdir(target_branch_name, target_head)
                 try:
+                    result = MergeResult(
+                        status="fast-forward",
+                        target_revision=target_branch_name,
+                        source_revision=source_revision,
+                        base_commit=self._public_commit_oid_or_none(target_head),
+                        target_head_before=self._public_commit_oid_or_none(target_head),
+                        source_head=self._public_commit_oid_or_none(source_head),
+                        head_after=self._public_commit_oid_or_none(source_head),
+                        commit=self._commit_info(source_head, target_branch_name),
+                        conflicts=[],
+                        fast_forward=True,
+                        created_commit=False,
+                    )
                     self._commit_branch_ref_update_unlocked(
                         txdir=txdir,
                         branch_name=target_branch_name,
                         old_head=target_head,
                         new_head=source_head,
                         message=self._default_merge_title(source_revision, target_branch_name),
+                        failpoint_prefix="merge",
                     )
-                finally:
-                    self._cleanup_txdir(txdir)
-                return MergeResult(
-                    status="fast-forward",
-                    target_revision=target_branch_name,
-                    source_revision=source_revision,
-                    base_commit=self._public_commit_oid_or_none(target_head),
-                    target_head_before=self._public_commit_oid_or_none(target_head),
-                    source_head=self._public_commit_oid_or_none(source_head),
-                    head_after=self._public_commit_oid_or_none(source_head),
-                    commit=self._commit_info(source_head, target_branch_name),
-                    conflicts=[],
-                    fast_forward=True,
-                    created_commit=False,
-                )
+                except BaseException:
+                    self._rollback_transaction_unlocked(txdir)
+                    raise
+                self._safe_cleanup_txdir(txdir)
+                return result
 
             base_commit = self._find_merge_base_unlocked(target_head, source_head)
             target_snapshot = self._snapshot_for_commit(target_head)
@@ -1711,37 +1727,41 @@ class RepositoryBackend(object):
                 )
                 commit_id = self._stage_json_object(txdir, "commits", commit_payload)
                 self._stage_chunk_manifest(txdir)
+                result = MergeResult(
+                    status="merged",
+                    target_revision=target_branch_name,
+                    source_revision=source_revision,
+                    base_commit=self._public_commit_oid_or_none(base_commit),
+                    target_head_before=self._public_commit_oid_or_none(target_head),
+                    source_head=self._public_commit_oid_or_none(source_head),
+                    head_after=self._public_commit_oid(commit_id, txdir=txdir),
+                    commit=CommitInfo(
+                        commit_url=self._commit_url(commit_id, txdir=txdir),
+                        commit_message=stored_title,
+                        commit_description=stored_description,
+                        oid=self._public_commit_oid(commit_id, txdir=txdir),
+                    ),
+                    conflicts=[],
+                    fast_forward=False,
+                    created_commit=True,
+                )
                 self._write_tx_state(txdir, "STAGED")
                 self._publish_staged_objects(txdir)
                 self._write_tx_state(txdir, "PUBLISHED_OBJECTS")
+                self._maybe_failpoint("merge.after_publish")
                 self._commit_branch_ref_update_unlocked(
                     txdir=txdir,
                     branch_name=target_branch_name,
                     old_head=target_head,
                     new_head=commit_id,
                     message=stored_title,
+                    failpoint_prefix="merge",
                 )
-            finally:
-                self._cleanup_txdir(txdir)
-
-            return MergeResult(
-                status="merged",
-                target_revision=target_branch_name,
-                source_revision=source_revision,
-                base_commit=self._public_commit_oid_or_none(base_commit),
-                target_head_before=self._public_commit_oid_or_none(target_head),
-                source_head=self._public_commit_oid_or_none(source_head),
-                head_after=self._public_commit_oid_or_none(commit_id),
-                commit=CommitInfo(
-                    commit_url=self._commit_url(commit_id),
-                    commit_message=stored_title,
-                    commit_description=stored_description,
-                    oid=self._public_commit_oid(commit_id),
-                ),
-                conflicts=[],
-                fast_forward=False,
-                created_commit=True,
-            )
+            except BaseException:
+                self._rollback_transaction_unlocked(txdir)
+                raise
+            self._safe_cleanup_txdir(txdir)
+            return result
 
     def get_paths_info(
         self,
@@ -2069,7 +2089,7 @@ class RepositoryBackend(object):
 
             txdir = self._create_txdir(branch_name, target_commit)
             try:
-                self._write_tx_ref_update(
+                self._finalize_ref_update_unlocked(
                     txdir=txdir,
                     ref_kind="branch",
                     ref_name=branch_name,
@@ -2077,19 +2097,13 @@ class RepositoryBackend(object):
                     new_head=target_commit,
                     message="create branch",
                     ref_existed_before=False,
+                    apply_ref_change=lambda: self._write_ref(branch_name, target_commit),
+                    failpoint_prefix="create_branch",
                 )
-                self._write_ref(branch_name, target_commit)
-                self._write_tx_state(txdir, "UPDATED_REF")
-                self._write_tx_state(txdir, "COMMITTED")
-                self._append_reflog(
-                    branch_name,
-                    None,
-                    target_commit,
-                    "create branch",
-                    ref_kind="branch",
-                )
-            finally:
-                self._cleanup_txdir(txdir)
+            except BaseException:
+                self._rollback_transaction_unlocked(txdir)
+                raise
+            self._safe_cleanup_txdir(txdir)
 
     def delete_branch(self, *, branch: str) -> None:
         """
@@ -2131,7 +2145,7 @@ class RepositoryBackend(object):
             old_head = self._read_ref(branch_name)
             txdir = self._create_txdir(branch_name, old_head)
             try:
-                self._write_tx_ref_update(
+                self._finalize_ref_update_unlocked(
                     txdir=txdir,
                     ref_kind="branch",
                     ref_name=branch_name,
@@ -2139,19 +2153,16 @@ class RepositoryBackend(object):
                     new_head=None,
                     message="delete branch",
                     ref_existed_before=True,
+                    apply_ref_change=lambda: self._delete_ref_file(
+                        self._ref_path(branch_name),
+                        self._repo_path / "refs" / "heads",
+                    ),
+                    failpoint_prefix="delete_branch",
                 )
-                self._delete_ref_file(self._ref_path(branch_name), self._repo_path / "refs" / "heads")
-                self._write_tx_state(txdir, "UPDATED_REF")
-                self._write_tx_state(txdir, "COMMITTED")
-                self._append_reflog(
-                    branch_name,
-                    old_head,
-                    None,
-                    "delete branch",
-                    ref_kind="branch",
-                )
-            finally:
-                self._cleanup_txdir(txdir)
+            except BaseException:
+                self._rollback_transaction_unlocked(txdir)
+                raise
+            self._safe_cleanup_txdir(txdir)
 
     def create_tag(
         self,
@@ -2213,7 +2224,7 @@ class RepositoryBackend(object):
 
             txdir = self._create_txdir(tag_name, target_commit)
             try:
-                self._write_tx_ref_update(
+                self._finalize_ref_update_unlocked(
                     txdir=txdir,
                     ref_kind="tag",
                     ref_name=tag_name,
@@ -2221,19 +2232,13 @@ class RepositoryBackend(object):
                     new_head=target_commit,
                     message=tag_message or "create tag",
                     ref_existed_before=False,
+                    apply_ref_change=lambda: self._write_tag_ref(tag_name, target_commit),
+                    failpoint_prefix="create_tag",
                 )
-                self._write_tag_ref(tag_name, target_commit)
-                self._write_tx_state(txdir, "UPDATED_REF")
-                self._write_tx_state(txdir, "COMMITTED")
-                self._append_reflog(
-                    tag_name,
-                    None,
-                    target_commit,
-                    tag_message or "create tag",
-                    ref_kind="tag",
-                )
-            finally:
-                self._cleanup_txdir(txdir)
+            except BaseException:
+                self._rollback_transaction_unlocked(txdir)
+                raise
+            self._safe_cleanup_txdir(txdir)
 
     def delete_tag(self, *, tag: str) -> None:
         """
@@ -2270,7 +2275,7 @@ class RepositoryBackend(object):
             old_head = self._read_tag_ref(tag_name)
             txdir = self._create_txdir(tag_name, old_head)
             try:
-                self._write_tx_ref_update(
+                self._finalize_ref_update_unlocked(
                     txdir=txdir,
                     ref_kind="tag",
                     ref_name=tag_name,
@@ -2278,19 +2283,16 @@ class RepositoryBackend(object):
                     new_head=None,
                     message="delete tag",
                     ref_existed_before=True,
+                    apply_ref_change=lambda: self._delete_ref_file(
+                        self._tag_ref_path(tag_name),
+                        self._repo_path / "refs" / "tags",
+                    ),
+                    failpoint_prefix="delete_tag",
                 )
-                self._delete_ref_file(self._tag_ref_path(tag_name), self._repo_path / "refs" / "tags")
-                self._write_tx_state(txdir, "UPDATED_REF")
-                self._write_tx_state(txdir, "COMMITTED")
-                self._append_reflog(
-                    tag_name,
-                    old_head,
-                    None,
-                    "delete tag",
-                    ref_kind="tag",
-                )
-            finally:
-                self._cleanup_txdir(txdir)
+            except BaseException:
+                self._rollback_transaction_unlocked(txdir)
+                raise
+            self._safe_cleanup_txdir(txdir)
 
     def list_repo_reflog(
         self,
@@ -3216,16 +3218,20 @@ class RepositoryBackend(object):
             old_head = self._read_ref(branch_name)
             txdir = self._create_txdir(branch_name, old_head)
             try:
+                result = self._commit_info(target_commit_id, branch_name)
                 self._commit_branch_ref_update_unlocked(
                     txdir=txdir,
                     branch_name=branch_name,
                     old_head=old_head,
                     new_head=target_commit_id,
                     message="reset ref",
+                    failpoint_prefix="reset_ref",
                 )
-            finally:
-                self._cleanup_txdir(txdir)
-            return self._commit_info(target_commit_id, branch_name)
+            except BaseException:
+                self._rollback_transaction_unlocked(txdir)
+                raise
+            self._safe_cleanup_txdir(txdir)
+            return result
 
     def quick_verify(self) -> VerifyReport:
         """
@@ -3540,32 +3546,30 @@ class RepositoryBackend(object):
                     previous_new_commit_id = self._stage_json_object(txdir, "commits", old_payload)
 
                 new_head = previous_new_commit_id
+                public_old_head = self._public_commit_oid(old_head)
+                public_new_head = self._public_commit_oid(new_head, txdir=txdir)
+                public_root_commit_before = self._public_commit_oid(root_commit_before)
                 self._write_tx_state(txdir, "STAGED")
                 self._publish_staged_objects(txdir)
                 self._write_tx_state(txdir, "PUBLISHED_OBJECTS")
-                self._write_tx_ref_update(
+                self._maybe_failpoint("squash_history.after_publish")
+                self._commit_branch_ref_update_unlocked(
                     txdir=txdir,
-                    ref_kind="branch",
-                    ref_name=short_branch_name,
+                    branch_name=short_branch_name,
                     old_head=old_head,
                     new_head=new_head,
                     message="squash history",
-                    ref_existed_before=True,
+                    failpoint_prefix="squash_history",
                 )
-                self._write_ref(short_branch_name, new_head)
-                self._write_tx_state(txdir, "UPDATED_REF")
-                self._write_tx_state(txdir, "COMMITTED")
-                self._append_reflog(short_branch_name, old_head, new_head, "squash history")
-            finally:
-                self._cleanup_txdir(txdir)
+            except BaseException:
+                self._rollback_transaction_unlocked(txdir)
+                raise
+            self._safe_cleanup_txdir(txdir)
 
             blocking_refs = self._blocking_refs_for_lineage_unlocked(
                 lineage_set=set(lineage),
                 excluded_ref_name=full_ref_name,
             )
-            public_old_head = self._public_commit_oid(old_head)
-            public_new_head = self._public_commit_oid(new_head)
-            public_root_commit_before = self._public_commit_oid(root_commit_before)
             gc_report = None
             if run_gc:
                 gc_report = self._gc_unlocked(dry_run=False, prune_cache=prune_cache)
@@ -4025,9 +4029,13 @@ class RepositoryBackend(object):
 
             self._write_tx_state(txdir, "STAGED")
             self._publish_staged_objects(txdir)
+            self._write_tx_state(txdir, "PUBLISHED_OBJECTS")
+            self._maybe_failpoint("gc.after_publish")
             self._write_tx_state(txdir, "COMMITTED")
-        finally:
-            self._cleanup_txdir(txdir)
+        except BaseException:
+            self._rollback_transaction_unlocked(txdir)
+            raise
+        self._safe_cleanup_txdir(txdir)
 
         q_objects_root = self._repo_path / "quarantine" / "objects" / gcid
         q_packs_root = self._repo_path / "quarantine" / "packs" / gcid
@@ -5402,12 +5410,15 @@ class RepositoryBackend(object):
 
         return self._repo_path.resolve().as_uri()
 
-    def _commit_url(self, commit_id: str) -> str:
+    def _commit_url(self, commit_id: str, txdir: Optional[Path] = None) -> str:
         """
         Build the local commit URL string used in commit results.
 
         :param commit_id: Commit object identifier
         :type commit_id: str
+        :param txdir: Optional transaction directory used when the commit is
+            still staged
+        :type txdir: Optional[pathlib.Path], optional
         :return: Commit URL string
         :rtype: str
 
@@ -5418,7 +5429,7 @@ class RepositoryBackend(object):
             True
         """
 
-        return self._repo_url() + "#commit=" + self._public_commit_oid(commit_id)
+        return self._repo_url() + "#commit=" + self._public_commit_oid(commit_id, txdir=txdir)
 
     def _blob_url(self, revision: str, path_in_repo: str) -> str:
         """
@@ -6421,6 +6432,16 @@ class RepositoryBackend(object):
             >>> backend._write_tx_ref_update(Path("/tmp/demo-repo/txn/demo"), "branch", "main", None, None, "seed", True)  # doctest: +SKIP
         """
 
+        reflog_path, _ = self._reflog_record(
+            revision=ref_name,
+            old_head=old_head,
+            new_head=new_head,
+            message=message,
+            ref_kind=ref_kind,
+        )
+        reflog_existed_before = reflog_path.exists()
+        reflog_size_before = reflog_path.stat().st_size if reflog_existed_before else 0
+
         _write_json_atomic(
             txdir / "REF_UPDATE.json",
             {
@@ -6430,6 +6451,9 @@ class RepositoryBackend(object):
                 "new_head": new_head,
                 "message": message,
                 "ref_existed_before": bool(ref_existed_before),
+                "reflog_path": str(reflog_path.relative_to(self._repo_path)),
+                "reflog_existed_before": reflog_existed_before,
+                "reflog_size_before": reflog_size_before,
                 "updated_at": _utc_now(),
             },
         )
@@ -6460,6 +6484,7 @@ class RepositoryBackend(object):
         old_head: Optional[str],
         new_head: Optional[str],
         message: str,
+        failpoint_prefix: str = "ref_update.branch",
     ) -> None:
         """
         Persist and finalize one committed branch-head update.
@@ -6474,11 +6499,14 @@ class RepositoryBackend(object):
         :type new_head: Optional[str]
         :param message: Reflog message for the committed update
         :type message: str
+        :param failpoint_prefix: Failpoint namespace used by fault-injection
+            tests
+        :type failpoint_prefix: str, optional
         :return: ``None``.
         :rtype: None
         """
 
-        self._write_tx_ref_update(
+        self._finalize_ref_update_unlocked(
             txdir=txdir,
             ref_kind="branch",
             ref_name=branch_name,
@@ -6486,11 +6514,187 @@ class RepositoryBackend(object):
             new_head=new_head,
             message=message,
             ref_existed_before=True,
+            apply_ref_change=lambda: self._write_ref(branch_name, new_head),
+            failpoint_prefix=failpoint_prefix,
         )
-        self._write_ref(branch_name, new_head)
+
+    def _maybe_failpoint(self, name: str) -> None:
+        """
+        Trigger a controlled test failure when the selected failpoint matches.
+
+        The hook is intentionally environment-driven so subprocess tests can
+        inject failures through the public API without importing private helper
+        code or monkeypatching internals.
+
+        :param name: Fully-qualified failpoint name
+        :type name: str
+        :return: ``None``.
+        :rtype: None
+        :raises RuntimeError: Raised when ``HUBVAULT_FAIL_ACTION`` requests a
+            runtime failure.
+        :raises OSError: Raised when ``HUBVAULT_FAIL_ACTION`` requests an OS
+            level failure.
+        :raises KeyboardInterrupt: Raised when ``HUBVAULT_FAIL_ACTION``
+            requests an interrupt-style failure.
+        :raises ValueError: Raised when the configured fail action is unknown.
+        """
+
+        configured = os.environ.get(FAILPOINT_ENV, "")
+        if not configured:
+            return
+        names = [item.strip() for item in configured.split(",") if item.strip()]
+        if name not in names:
+            return
+
+        action = os.environ.get(FAIL_ACTION_ENV, "raise-runtime").strip().lower()
+        if action in ("raise-runtime", "runtime", "raise"):
+            raise RuntimeError("hubvault failpoint triggered: %s" % name)
+        if action in ("raise-oserror", "oserror", "os"):
+            raise OSError("hubvault failpoint triggered: %s" % name)
+        if action in ("raise-keyboard", "keyboard", "keyboardinterrupt"):
+            raise KeyboardInterrupt("hubvault failpoint triggered: %s" % name)
+        if action == "exit":
+            os._exit(FAILPOINT_EXIT_CODE)
+        raise ValueError("unknown hubvault fail action: %s" % action)
+
+    def _safe_cleanup_txdir(self, txdir: Path) -> None:
+        """
+        Best-effort cleanup for a completed transaction directory.
+
+        Cleanup happens after the transaction is already durable. A cleanup
+        failure therefore must not turn a successful public write into a failed
+        one; leftover committed txdirs are cleaned on the next repo open.
+
+        :param txdir: Transaction working directory
+        :type txdir: pathlib.Path
+        :return: ``None``.
+        :rtype: None
+        """
+
+        try:
+            self._cleanup_txdir(txdir)
+        except OSError as err:
+            warnings.warn(
+                "Failed to clean committed transaction directory %s: %s" % (txdir.name, err),
+                RuntimeWarning,
+            )
+
+    def _rollback_transaction_unlocked(self, txdir: Path) -> None:
+        """
+        Roll back an interrupted transaction while the write lock is held.
+
+        :param txdir: Transaction working directory
+        :type txdir: pathlib.Path
+        :return: ``None``.
+        :rtype: None
+        """
+
+        if not txdir.exists():
+            return
+        if (txdir / "REF_UPDATE.json").exists():
+            self._recover_ref_update_transaction(txdir)
+        else:
+            self._cleanup_txdir(txdir)
+
+    def _restore_reflog_state(
+        self,
+        ref_kind: str,
+        reflog_path: Path,
+        reflog_existed_before: bool,
+        reflog_size_before: int,
+    ) -> None:
+        """
+        Restore reflog bytes to their pre-transaction state.
+
+        :param ref_kind: Ref collection kind, either ``"branch"`` or ``"tag"``
+        :type ref_kind: str
+        :param reflog_path: Absolute reflog file path
+        :type reflog_path: pathlib.Path
+        :param reflog_existed_before: Whether the reflog existed before the
+            interrupted write
+        :type reflog_existed_before: bool
+        :param reflog_size_before: Previous reflog byte size
+        :type reflog_size_before: int
+        :return: ``None``.
+        :rtype: None
+        """
+
+        if reflog_existed_before:
+            reflog_path.parent.mkdir(parents=True, exist_ok=True)
+            with reflog_path.open("ab") as file_:
+                file_.truncate(reflog_size_before)
+                file_.flush()
+                os.fsync(file_.fileno())
+            _fsync_directory(reflog_path.parent)
+            return
+
+        if reflog_path.exists():
+            if ref_kind == "branch":
+                self._delete_ref_file(reflog_path, self._repo_path / "logs" / "refs" / "heads")
+            elif ref_kind == "tag":
+                self._delete_ref_file(reflog_path, self._repo_path / "logs" / "refs" / "tags")
+            else:
+                raise ValueError("ref_kind must be 'branch' or 'tag'")
+
+    def _finalize_ref_update_unlocked(
+        self,
+        txdir: Path,
+        ref_kind: str,
+        ref_name: str,
+        old_head: Optional[str],
+        new_head: Optional[str],
+        message: str,
+        ref_existed_before: bool,
+        apply_ref_change: Callable[[], None],
+        failpoint_prefix: str,
+    ) -> None:
+        """
+        Apply one ref update transaction and mark it committed atomically.
+
+        :param txdir: Transaction working directory
+        :type txdir: pathlib.Path
+        :param ref_kind: Ref collection kind, either ``"branch"`` or ``"tag"``
+        :type ref_kind: str
+        :param ref_name: Normalized branch or tag name
+        :type ref_name: str
+        :param old_head: Previous ref target
+        :type old_head: Optional[str]
+        :param new_head: New ref target
+        :type new_head: Optional[str]
+        :param message: Reflog message
+        :type message: str
+        :param ref_existed_before: Whether the ref existed before the write
+        :type ref_existed_before: bool
+        :param apply_ref_change: Callback that writes or deletes the target ref
+        :type apply_ref_change: Callable[[], None]
+        :param failpoint_prefix: Failpoint namespace for fault-injection tests
+        :type failpoint_prefix: str
+        :return: ``None``.
+        :rtype: None
+        """
+
+        self._write_tx_ref_update(
+            txdir=txdir,
+            ref_kind=ref_kind,
+            ref_name=ref_name,
+            old_head=old_head,
+            new_head=new_head,
+            message=message,
+            ref_existed_before=ref_existed_before,
+        )
+        apply_ref_change()
         self._write_tx_state(txdir, "UPDATED_REF")
+        self._maybe_failpoint(failpoint_prefix + ".after_ref_write")
+        self._append_reflog(
+            revision=ref_name,
+            old_head=old_head,
+            new_head=new_head,
+            message=message,
+            ref_kind=ref_kind,
+        )
+        self._write_tx_state(txdir, "APPENDED_REFLOG")
+        self._maybe_failpoint(failpoint_prefix + ".after_reflog_append")
         self._write_tx_state(txdir, "COMMITTED")
-        self._append_reflog(branch_name, old_head, new_head, message)
 
     def _read_tx_state(self, txdir: Path) -> Optional[str]:
         """
@@ -6587,10 +6791,39 @@ class RepositoryBackend(object):
             raise IntegrityError("invalid ref update journal %s: missing %s" % (txdir.name, err.args[0]))
         old_head = payload.get("old_head")
         ref_existed_before = payload.get("ref_existed_before", True)
+        new_head = payload.get("new_head")
+        message = str(payload.get("message", ""))
+        reflog_raw_path = payload.get("reflog_path")
+        reflog_existed_before = payload.get("reflog_existed_before")
+        reflog_size_before = payload.get("reflog_size_before")
         if old_head is not None and not isinstance(old_head, str):
             raise IntegrityError("invalid ref update journal %s: old_head must be a string or null" % txdir.name)
+        if new_head is not None and not isinstance(new_head, str):
+            raise IntegrityError("invalid ref update journal %s: new_head must be a string or null" % txdir.name)
         if not isinstance(ref_existed_before, bool):
             raise IntegrityError("invalid ref update journal %s: ref_existed_before must be a boolean" % txdir.name)
+
+        if reflog_raw_path is None:
+            try:
+                reflog_path, _ = self._reflog_record(
+                    revision=ref_name,
+                    old_head=old_head,
+                    new_head=new_head,
+                    message=message,
+                    ref_kind=ref_kind,
+                )
+            except ValueError as err:
+                raise IntegrityError("invalid ref update journal %s: %s" % (txdir.name, err))
+            reflog_existed_before = reflog_path.exists()
+            reflog_size_before = reflog_path.stat().st_size if reflog_existed_before else 0
+        else:
+            if not isinstance(reflog_raw_path, str):
+                raise IntegrityError("invalid ref update journal %s: reflog_path must be a string" % txdir.name)
+            if not isinstance(reflog_existed_before, bool):
+                raise IntegrityError("invalid ref update journal %s: reflog_existed_before must be a boolean" % txdir.name)
+            if not isinstance(reflog_size_before, int) or reflog_size_before < 0:
+                raise IntegrityError("invalid ref update journal %s: reflog_size_before must be a non-negative integer" % txdir.name)
+            reflog_path = self._repo_path / reflog_raw_path
 
         if self._read_tx_state(txdir) != "COMMITTED":
             try:
@@ -6599,6 +6832,12 @@ class RepositoryBackend(object):
                     ref_name=ref_name,
                     old_head=old_head,
                     ref_existed_before=ref_existed_before,
+                )
+                self._restore_reflog_state(
+                    ref_kind=ref_kind,
+                    reflog_path=reflog_path,
+                    reflog_existed_before=reflog_existed_before,
+                    reflog_size_before=reflog_size_before,
                 )
             except ValueError as err:
                 raise IntegrityError("invalid ref update journal %s: %s" % (txdir.name, err))
