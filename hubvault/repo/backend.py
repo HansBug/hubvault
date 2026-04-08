@@ -6859,7 +6859,7 @@ class RepositoryBackend(object):
         """
 
         if txdir.exists():
-            shutil.rmtree(str(txdir))
+            self._remove_tree(txdir)
             _fsync_directory(txdir.parent)
 
     def _has_ref_update_transactions(self) -> bool:
@@ -7134,11 +7134,11 @@ class RepositoryBackend(object):
         """
 
         if target_path.is_symlink() or target_path.is_file():
-            target_path.unlink()
+            self._unlink_path(target_path)
         elif target_path.is_dir():
-            shutil.rmtree(str(target_path))
+            self._remove_tree(target_path)
         elif target_path.exists():
-            target_path.unlink()
+            self._unlink_path(target_path)
 
         parent = target_path.parent
         while parent != root_path and parent.exists():
@@ -7171,14 +7171,84 @@ class RepositoryBackend(object):
         target_path.parent.mkdir(parents=True, exist_ok=True)
         if target_path.exists():
             if target_path.is_symlink():
-                target_path.unlink()
+                self._unlink_path(target_path)
             elif target_path.is_dir():
-                shutil.rmtree(str(target_path))
+                self._remove_tree(target_path)
             elif target_path.is_file():
                 current_sha256 = _sha256_hex(target_path.read_bytes())
                 if current_sha256 == expected_sha256:
                     return
-                target_path.unlink()
+                self._unlink_path(target_path)
             else:  # pragma: no cover - defensive path for unusual filesystem nodes
-                target_path.unlink()
+                self._unlink_path(target_path)
         _write_bytes_atomic(target_path, data)
+
+    @staticmethod
+    def _chmod_writable(path: Path) -> None:
+        """
+        Best-effort removal of a filesystem read-only attribute.
+
+        :param path: File or directory path to adjust
+        :type path: pathlib.Path
+        :return: ``None``.
+        :rtype: None
+        """
+
+        try:
+            mode = stat.S_IWRITE | stat.S_IREAD
+            if path.is_dir():
+                mode |= stat.S_IEXEC
+            path.chmod(mode)
+        except OSError:
+            pass
+
+    def _unlink_path(self, path: Path) -> None:
+        """
+        Remove one filesystem entry, retrying after clearing read-only bits.
+
+        :param path: File-system path to unlink
+        :type path: pathlib.Path
+        :return: ``None``.
+        :rtype: None
+        """
+
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            self._chmod_writable(path)
+            path.unlink()
+
+    def _rmtree_onerror(self, func, path, exc_info) -> None:
+        """
+        Retry tree deletion after clearing read-only attributes.
+
+        :param func: Filesystem callable that raised the original error
+        :type func: object
+        :param path: Path passed to ``func``
+        :type path: object
+        :param exc_info: Exception tuple from :func:`shutil.rmtree`
+        :type exc_info: object
+        :return: ``None``.
+        :rtype: None
+        """
+
+        err = exc_info[1]
+        if isinstance(err, FileNotFoundError):
+            return
+        retry_path = Path(path)
+        self._chmod_writable(retry_path)
+        func(path)
+
+    def _remove_tree(self, path: Path) -> None:
+        """
+        Remove a directory tree while tolerating Windows read-only files.
+
+        :param path: Directory tree root
+        :type path: pathlib.Path
+        :return: ``None``.
+        :rtype: None
+        """
+
+        shutil.rmtree(str(path), onerror=self._rmtree_onerror)
