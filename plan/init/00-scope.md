@@ -2,7 +2,7 @@
 
 ## 1. 当前仓库基线
 
-当前仓库已经具备 Phase 0-1 的本地 repo/storage MVP，不再只是“工程骨架”：
+当前仓库已经具备 Phase 0-4 的本地 repo/storage/maintenance 基线，不再只是“工程骨架”：
 
 | 领域 | 当前状态 | 备注 |
 | --- | --- | --- |
@@ -10,11 +10,12 @@
 | CLI 壳层 | 已有 | `hubvault.entry` 能输出版本与帮助 |
 | 打包/测试基础设施 | 已有 | `Makefile`、`pytest.ini`、`setup.py` 已就位 |
 | 公开仓库 API | 已有 | `HubVaultApi`、`CommitOperation*`、`RepoFile/RepoFolder`、异常模型已落地 |
-| 存储引擎 | MVP 已有 | whole-file commit/tree/blob 已落地，chunk/pack 尚未实现 |
-| 事务协议 | MVP 已有 | 锁、事务目录、恢复、回滚、快速校验已落地 |
-| GC/verify/merge | 部分缺失 | `quick_verify()` 已有，GC/full verify/merge 仍在后续 phase |
+| 存储引擎 | Phase 3 已有 | whole-file commit/tree/blob 与 chunk/pack 已落地 |
+| 事务协议 | Phase 2 已有 | 跨进程 RW 锁、事务目录、恢复、回滚、快速校验已落地 |
+| 维护与空间治理 | Phase 4 已有 | `full_verify()`、空间画像、`gc()`、`squash_history()` 已落地 |
+| merge | 后续 phase | 仍未实现，继续后延 |
 
-因此，当前初始化规划的重点已经从“如何从 0 到 1 做出 MVP”转成“如何在不破坏已落地 MVP 的前提下，继续补齐 HF 风格兼容和后续 phase”。
+因此，当前初始化规划的重点已经从“如何从 0 到 1 做出 MVP”转成“如何在不破坏已落地协议与公开兼容语义的前提下，继续推进 merge、性能优化与发布收尾”。
 
 ## 2. 项目目标
 

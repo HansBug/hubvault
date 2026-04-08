@@ -28,12 +28,15 @@ from typing import BinaryIO, List, Optional, Sequence, Union
 
 from .models import (
     CommitInfo,
+    GcReport,
     GitCommitInfo,
     GitRefs,
     ReflogEntry,
     RepoFile,
     RepoFolder,
     RepoInfo,
+    SquashReport,
+    StorageOverview,
     VerifyReport,
 )
 from .repo import LARGE_FILE_THRESHOLD
@@ -994,3 +997,149 @@ class HubVaultApi:
         """
 
         return self._backend.quick_verify()
+
+    def full_verify(self) -> VerifyReport:
+        """
+        Perform a complete repository verification pass.
+
+        Unlike :meth:`quick_verify`, this method validates all live commit,
+        tree, file, blob, chunk, pack, and manifest relationships reachable
+        from the current refs and also scans the published storage layout for
+        malformed persisted objects.
+
+        :return: Verification result
+        :rtype: VerifyReport
+        :raises hubvault.errors.RepositoryNotFoundError: Raised when the repository
+            root does not contain a valid ``hubvault`` repository.
+
+        Example::
+
+            >>> api = HubVaultApi("/tmp/demo-repo")
+            >>> _ = api.create_repo(exist_ok=True)
+            >>> api.full_verify().ok
+            True
+        """
+
+        return self._backend.full_verify()
+
+    def get_storage_overview(self) -> StorageOverview:
+        """
+        Analyze repository disk usage and safe reclamation options.
+
+        The returned model separates space that is immediately reclaimable via
+        :meth:`gc`, space held only for detached caches, and space retained for
+        rollback/history that would require an explicit rewrite such as
+        :meth:`squash_history`.
+
+        :return: Repository storage analysis report
+        :rtype: StorageOverview
+        :raises hubvault.errors.RepositoryNotFoundError: Raised when the repository
+            root does not contain a valid ``hubvault`` repository.
+        :raises hubvault.errors.IntegrityError: Raised when persisted storage is
+            too inconsistent to analyze safely.
+
+        Example::
+
+            >>> api = HubVaultApi("/tmp/demo-repo")
+            >>> _ = api.create_repo(exist_ok=True)
+            >>> api.get_storage_overview().total_size >= 0
+            True
+        """
+
+        return self._backend.get_storage_overview()
+
+    def gc(
+        self,
+        *,
+        dry_run: bool = False,
+        prune_cache: bool = True,
+    ) -> GcReport:
+        """
+        Reclaim unreachable repository data and rebuild detachable caches.
+
+        The local GC pass keeps all currently reachable refs intact, rewrites
+        chunk storage into a compact live pack/index view, and optionally
+        removes rebuildable detached caches under ``cache/``.
+
+        :param dry_run: Whether to compute the result without mutating storage
+        :type dry_run: bool, optional
+        :param prune_cache: Whether rebuildable managed caches should also be
+            removed
+        :type prune_cache: bool, optional
+        :return: Garbage-collection report
+        :rtype: GcReport
+        :raises hubvault.errors.RepositoryNotFoundError: Raised when the repository
+            root does not contain a valid ``hubvault`` repository.
+        :raises hubvault.errors.IntegrityError: Raised when persisted storage is
+            inconsistent and cannot be reclaimed safely.
+
+        Example::
+
+            >>> api = HubVaultApi("/tmp/demo-repo")
+            >>> _ = api.create_repo(exist_ok=True)
+            >>> api.gc(dry_run=True).dry_run
+            True
+        """
+
+        return self._backend.gc(dry_run=dry_run, prune_cache=prune_cache)
+
+    def squash_history(
+        self,
+        ref_name: str,
+        *,
+        root_revision: Optional[str] = None,
+        commit_message: Optional[str] = None,
+        commit_description: Optional[str] = None,
+        run_gc: bool = True,
+        prune_cache: bool = False,
+    ) -> SquashReport:
+        """
+        Rewrite a branch so older history becomes reclaimable.
+
+        The selected branch keeps the same visible file contents at its tip, but
+        commits older than the rewritten root become unreachable from that ref.
+        When ``run_gc`` is enabled, the method immediately follows the rewrite
+        with a maintenance GC pass so now-unreachable data can be reclaimed.
+
+        :param ref_name: Branch name or full branch ref to rewrite
+        :type ref_name: str
+        :param root_revision: Oldest commit to preserve on the rewritten branch.
+            When omitted, the current branch head is collapsed into a single new
+            root commit.
+        :type root_revision: Optional[str]
+        :param commit_message: Optional replacement title for the rewritten root
+            commit
+        :type commit_message: Optional[str]
+        :param commit_description: Optional replacement description/body for the
+            rewritten root commit
+        :type commit_description: Optional[str]
+        :param run_gc: Whether to run :meth:`gc` immediately after rewriting
+        :type run_gc: bool, optional
+        :param prune_cache: Whether the follow-up GC pass should also prune
+            managed caches
+        :type prune_cache: bool, optional
+        :return: History-squash report
+        :rtype: SquashReport
+        :raises hubvault.errors.ConflictError: Raised when ``root_revision`` is
+            not an ancestor of the selected branch head.
+        :raises hubvault.errors.RevisionNotFoundError: Raised when the branch or
+            selected revision does not exist.
+        :raises hubvault.errors.UnsupportedPathError: Raised when ``ref_name``
+            is not a valid branch name.
+
+        Example::
+
+            >>> api = HubVaultApi("/tmp/demo-repo")
+            >>> _ = api.create_repo(exist_ok=True)
+            >>> # See :meth:`hubvault.repo.backend.RepositoryBackend.squash_history`
+            >>> # for a full filesystem example.
+        """
+
+        return self._backend.squash_history(
+            ref_name=ref_name,
+            root_revision=root_revision,
+            commit_message=commit_message,
+            commit_description=commit_description,
+            run_gc=run_gc,
+            prune_cache=prune_cache,
+        )

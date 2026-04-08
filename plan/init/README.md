@@ -24,10 +24,12 @@
 - 已落地的 Phase 2 refs / reflog / 便捷 upload-delete / `snapshot_download()` 能力，以及对应的 `test/test_phase2.py` 全周期集成回归
 - 已落地的 Phase 3 chunked file / pack / index / `read_range()` / `upload_large_folder()` 能力，以及对应的 `test/test_phase3.py` 全周期集成回归
 - 已落地的 Phase 3 阈值边界回归，明确验证只有满足 `large_file_threshold` 条件的文件才进入 chunked storage
+- 已落地的 Phase 4 `full_verify()` / `get_storage_overview()` / `gc()` / `squash_history()` 能力，以及对应的 `test/test_phase4.py` 全周期维护回归
 
 尚未落地的核心能力包括：
 
-- full verify、空间画像、gc、历史压缩/compact 等长期维护能力
+- merge
+- 更进一步的性能优化与发布收尾能力
 
 因此，这组初始化方案既要记录已经实现的 MVP 基线，也要继续约束后续 phase，避免把已经落地的格式和公开语义重新漂移回“抽象设想”。
 
@@ -73,8 +75,6 @@
 
 更重的能力放到后续 phase：
 
-- full verify
-- GC / 历史压缩 / 空间画像
 - merge
 - 原生加速模块
 

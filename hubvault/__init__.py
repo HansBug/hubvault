@@ -20,6 +20,10 @@ The package contains:
 * :class:`RepoFile` - HF-style file metadata model
 * :class:`RepoFolder` - HF-style folder metadata model
 * :class:`VerifyReport` - Verification result model
+* :class:`StorageSectionInfo` - Storage breakdown entry model
+* :class:`StorageOverview` - Storage analysis model
+* :class:`GcReport` - Garbage-collection report model
+* :class:`SquashReport` - History-squash report model
 
 Example::
 
@@ -52,11 +56,15 @@ from .models import (
     GitCommitInfo,
     GitRefInfo,
     GitRefs,
+    GcReport,
     LastCommitInfo,
     ReflogEntry,
     RepoFile,
     RepoFolder,
     RepoInfo,
+    SquashReport,
+    StorageOverview,
+    StorageSectionInfo,
     VerifyReport,
 )
 from .operations import CommitOperationAdd, CommitOperationCopy, CommitOperationDelete
@@ -73,6 +81,7 @@ __all__ = [
     "GitCommitInfo",
     "GitRefInfo",
     "GitRefs",
+    "GcReport",
     "HubVaultApi",
     "HubVaultError",
     "HubVaultValidationError",
@@ -85,6 +94,9 @@ __all__ = [
     "RepositoryAlreadyExistsError",
     "RepositoryNotFoundError",
     "RevisionNotFoundError",
+    "SquashReport",
+    "StorageOverview",
+    "StorageSectionInfo",
     "UnsupportedPathError",
     "VerificationError",
     "VerifyReport",

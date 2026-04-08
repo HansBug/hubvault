@@ -36,10 +36,12 @@ from ..errors import (
     RepositoryNotFoundError,
     RevisionNotFoundError,
     UnsupportedPathError,
+    VerificationError,
 )
 from ..models import (
     BlobLfsInfo,
     CommitInfo,
+    GcReport,
     GitCommitInfo,
     GitRefInfo,
     GitRefs,
@@ -47,6 +49,9 @@ from ..models import (
     RepoFile,
     RepoFolder,
     RepoInfo,
+    SquashReport,
+    StorageOverview,
+    StorageSectionInfo,
     VerifyReport,
 )
 from ..operations import CommitOperationAdd, CommitOperationCopy, CommitOperationDelete
@@ -87,6 +92,7 @@ WINDOWS_RESERVED_NAMES = {
 }
 REF_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 DRIVE_PATTERN = re.compile(r"^[A-Za-z]:")
+GC_ANALYSIS_PACK_ID = "gc-0000000000000000-00000000"
 
 
 def _utc_now() -> str:
@@ -682,6 +688,63 @@ def _build_object_container(object_type: str, payload: object) -> Tuple[str, byt
         "payload": payload,
     }
     return _object_id_from_container(container)
+
+
+def _path_metrics(path: Path) -> Tuple[int, int]:
+    """
+    Sum file bytes and file count beneath a path.
+
+    :param path: File or directory path to inspect
+    :type path: pathlib.Path
+    :return: Two-tuple of total bytes and file count
+    :rtype: Tuple[int, int]
+
+    Example::
+
+        >>> import tempfile
+        >>> with tempfile.TemporaryDirectory() as tmpdir:
+        ...     root = Path(tmpdir)
+        ...     (root / "demo.txt").write_text("hello", encoding="utf-8")
+        ...     _path_metrics(root)
+        (5, 1)
+    """
+
+    if not path.exists():
+        return 0, 0
+    if path.is_symlink() or path.is_file():
+        return path.stat().st_size, 1
+
+    total_size = 0
+    file_count = 0
+    for current in path.rglob("*"):
+        if current.is_symlink() or current.is_file():
+            total_size += current.stat().st_size
+            file_count += 1
+    return total_size, file_count
+
+
+def _format_bytes(value: int) -> str:
+    """
+    Render a byte count using a short human-readable unit.
+
+    :param value: Byte count
+    :type value: int
+    :return: Human-readable size string
+    :rtype: str
+
+    Example::
+
+        >>> _format_bytes(1536)
+        '1.5 KiB'
+    """
+
+    size = float(int(value))
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if size < 1024.0 or unit == "TiB":
+            if unit == "B":
+                return "%d %s" % (int(size), unit)
+            return "%.1f %s" % (size, unit)
+        size /= 1024.0
 
 
 class RepositoryBackend(object):
@@ -2656,6 +2719,1016 @@ class RepositoryBackend(object):
                 warnings=warnings,
                 errors=errors,
             )
+
+    def full_verify(self) -> VerifyReport:
+        """
+        Perform a complete repository verification pass.
+
+        The full pass verifies the live ref graph, validates published object
+        containers, inspects visible chunk index segments, and reads chunk
+        payloads through pack storage so corruption can be localized before
+        space-management operations are attempted.
+
+        :return: Verification summary for the current repository state
+        :rtype: VerifyReport
+        :raises RepositoryNotFoundError: Raised when the configured root is not
+            a valid repository.
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     backend = RepositoryBackend(Path(tmpdir) / "repo")
+            ...     _ = backend.create_repo()
+            ...     backend.full_verify().ok
+            True
+        """
+
+        self._ensure_repo()
+        recovery_error = None
+        try:
+            self._rollback_interrupted_ref_updates_if_needed()
+        except IntegrityError as err:
+            recovery_error = err
+        with self._read_locked():
+            return self._full_verify_unlocked(recovery_error=recovery_error)
+
+    def get_storage_overview(self) -> StorageOverview:
+        """
+        Analyze repository disk usage and safe reclamation opportunities.
+
+        The report separates immediately reclaimable space from space that is
+        still retained for rollback history and therefore requires an explicit
+        rewrite such as :meth:`squash_history` before :meth:`gc` can release it.
+
+        :return: Repository storage overview
+        :rtype: StorageOverview
+        :raises RepositoryNotFoundError: Raised when the configured root is not
+            a valid repository.
+        :raises IntegrityError: Raised when persisted storage cannot be analyzed
+            safely because the live graph is inconsistent.
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     backend = RepositoryBackend(Path(tmpdir) / "repo")
+            ...     _ = backend.create_repo()
+            ...     backend.get_storage_overview().total_size >= 0
+            True
+        """
+
+        self._ensure_repo()
+        self._rollback_interrupted_ref_updates_if_needed()
+        with self._read_locked():
+            return self._storage_overview_unlocked()["overview"]
+
+    def gc(self, dry_run: bool = False, prune_cache: bool = True) -> GcReport:
+        """
+        Reclaim unreachable objects and compact live chunk storage.
+
+        The maintenance pass preserves all currently visible refs, rewrites the
+        live chunk set into a compact pack/index view, and optionally prunes the
+        rebuildable managed cache directories under ``cache/``.
+
+        :param dry_run: Whether to compute the result without mutating storage
+        :type dry_run: bool, optional
+        :param prune_cache: Whether rebuildable managed caches should also be
+            removed
+        :type prune_cache: bool, optional
+        :return: Garbage-collection summary
+        :rtype: GcReport
+        :raises RepositoryNotFoundError: Raised when the configured root is not
+            a valid repository.
+        :raises VerificationError: Raised when the repository fails full
+            verification and therefore cannot be reclaimed safely.
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     backend = RepositoryBackend(Path(tmpdir) / "repo")
+            ...     _ = backend.create_repo()
+            ...     backend.gc(dry_run=True).dry_run
+            True
+        """
+
+        self._ensure_repo()
+        with self._write_locked():
+            self._recover_transactions()
+            return self._gc_unlocked(dry_run=bool(dry_run), prune_cache=bool(prune_cache))
+
+    def squash_history(
+        self,
+        ref_name: str,
+        root_revision: Optional[str] = None,
+        commit_message: Optional[str] = None,
+        commit_description: Optional[str] = None,
+        run_gc: bool = True,
+        prune_cache: bool = False,
+    ) -> SquashReport:
+        """
+        Rewrite a branch so older history becomes reclaimable.
+
+        The rewritten branch keeps the same visible tip snapshot but the chosen
+        root commit becomes a new parentless starting point. Older ancestors on
+        that branch therefore become unreachable from the rewritten ref and can
+        be reclaimed by a follow-up GC pass.
+
+        :param ref_name: Branch name or full branch ref to rewrite
+        :type ref_name: str
+        :param root_revision: Oldest commit to preserve on the rewritten branch.
+            When omitted, the current branch head is collapsed into a single new
+            root commit.
+        :type root_revision: Optional[str], optional
+        :param commit_message: Optional replacement title for the rewritten root
+            commit
+        :type commit_message: Optional[str], optional
+        :param commit_description: Optional replacement body for the rewritten
+            root commit
+        :type commit_description: Optional[str], optional
+        :param run_gc: Whether to run :meth:`gc` immediately after rewriting
+        :type run_gc: bool, optional
+        :param prune_cache: Whether the follow-up GC pass should also prune
+            managed caches
+        :type prune_cache: bool, optional
+        :return: History rewrite summary
+        :rtype: SquashReport
+        :raises ConflictError: Raised when ``root_revision`` is not an ancestor
+            of the selected branch head.
+        :raises RevisionNotFoundError: Raised when the selected branch or
+            revision does not exist.
+        :raises UnsupportedPathError: Raised when ``ref_name`` is not a valid
+            branch ref.
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     backend = RepositoryBackend(Path(tmpdir) / "repo")
+            ...     _ = backend.create_repo()
+            ...     commit = backend.create_commit(
+            ...         operations=[CommitOperationAdd("demo.txt", b"hello")],
+            ...         commit_message="seed",
+            ...     )
+            ...     report = backend.squash_history("main", root_revision=commit.oid, run_gc=False)
+            ...     report.ref_name
+            'refs/heads/main'
+        """
+
+        self._ensure_repo()
+        with self._write_locked():
+            self._recover_transactions()
+            short_branch_name, full_ref_name, old_head = self._resolve_branch_ref_for_squash_unlocked(ref_name)
+            lineage = self._commit_lineage_unlocked(old_head)
+            if root_revision is None:
+                root_commit_before = old_head
+                rewrite_lineage = [old_head]
+                dropped_ancestor_count = len(lineage) - 1
+            else:
+                root_commit_before = self._resolve_revision(root_revision)
+                if root_commit_before not in lineage:
+                    raise ConflictError("root_revision is not an ancestor of the selected branch head")
+                index = lineage.index(root_commit_before)
+                rewrite_lineage = list(reversed(lineage[:index + 1]))
+                dropped_ancestor_count = len(lineage) - (index + 1)
+
+            txdir = self._create_txdir(short_branch_name, old_head)
+            try:
+                previous_new_commit_id = None
+                for position, old_commit_id in enumerate(rewrite_lineage):
+                    old_payload = self._read_object_payload("commits", old_commit_id)
+                    title, description = self._commit_title_and_description(old_payload)
+                    if position == 0:
+                        if commit_message is not None:
+                            title = str(commit_message)
+                        if commit_description is not None:
+                            description = str(commit_description)
+                        old_payload["title"] = title
+                        old_payload["description"] = description
+                        old_payload["message"] = self._compose_commit_text(title, description)
+                        old_payload["parents"] = []
+                    else:
+                        old_payload["parents"] = [previous_new_commit_id]
+                    previous_new_commit_id = self._stage_json_object(txdir, "commits", old_payload)
+
+                new_head = previous_new_commit_id
+                self._write_tx_state(txdir, "STAGED")
+                self._publish_staged_objects(txdir)
+                self._write_tx_state(txdir, "PUBLISHED_OBJECTS")
+                self._write_tx_ref_update(
+                    txdir=txdir,
+                    ref_kind="branch",
+                    ref_name=short_branch_name,
+                    old_head=old_head,
+                    new_head=new_head,
+                    message="squash history",
+                    ref_existed_before=True,
+                )
+                self._write_ref(short_branch_name, new_head)
+                self._write_tx_state(txdir, "UPDATED_REF")
+                self._write_tx_state(txdir, "COMMITTED")
+                self._append_reflog(short_branch_name, old_head, new_head, "squash history")
+            finally:
+                self._cleanup_txdir(txdir)
+
+            blocking_refs = self._blocking_refs_for_lineage_unlocked(
+                lineage_set=set(lineage),
+                excluded_ref_name=full_ref_name,
+            )
+            gc_report = None
+            if run_gc:
+                gc_report = self._gc_unlocked(dry_run=False, prune_cache=prune_cache)
+
+            return SquashReport(
+                ref_name=full_ref_name,
+                old_head=old_head,
+                new_head=new_head,
+                root_commit_before=root_commit_before,
+                rewritten_commit_count=len(rewrite_lineage),
+                dropped_ancestor_count=dropped_ancestor_count,
+                blocking_refs=blocking_refs,
+                gc_report=gc_report,
+            )
+
+    def _full_verify_unlocked(self, recovery_error: Optional[IntegrityError] = None) -> VerifyReport:
+        """Build a full verification report while a repo lock is already held."""
+
+        warnings = []
+        errors = []
+        checked_refs = []
+        config = self._repo_config()
+
+        if config.get("format_version") != FORMAT_VERSION:
+            errors.append("unsupported format version")
+        if recovery_error is not None:
+            errors.append("transaction recovery: %s" % recovery_error)
+
+        ref_targets = self._ref_targets_unlocked()
+        checked_refs.extend(sorted(ref_targets))
+        for ref_name, head in sorted(ref_targets.items()):
+            if head is None:
+                continue
+            try:
+                self._verify_commit_closure(head)
+            except IntegrityError as err:
+                errors.append("%s: %s" % (ref_name, err))
+
+        for object_type in ("commits", "trees", "files", "blobs"):
+            for object_id in self._iter_object_ids_unlocked(object_type):
+                try:
+                    self._verify_object_container_unlocked(object_type, object_id)
+                except IntegrityError as err:
+                    errors.append("%s %s: %s" % (object_type[:-1], object_id, err))
+
+        try:
+            manifest = IndexStore(self._repo_path / "chunks" / "index").read_manifest()
+            pack_store = PackStore(self._repo_path / "chunks" / "packs")
+            index_store = IndexStore(self._repo_path / "chunks" / "index")
+            for level in ("L0", "L1", "L2"):
+                for segment_name in manifest.levels.get(level, tuple()):
+                    entries = index_store.load_segment(level, segment_name)
+                    for entry in entries:
+                        chunk_data = pack_store.read_chunk(
+                            PackChunkLocation(
+                                pack_id=entry.pack_id,
+                                offset=entry.offset,
+                                stored_size=entry.stored_size,
+                                logical_size=entry.logical_size,
+                            )
+                        )
+                        if entry.compression != "none":
+                            raise IntegrityError("unsupported chunk compression: %s" % entry.compression)
+                        if len(chunk_data) != entry.logical_size:
+                            raise IntegrityError("chunk size mismatch")
+                        checksum = OBJECT_HASH + ":" + _sha256_hex(chunk_data)
+                        if checksum != entry.checksum:
+                            raise IntegrityError("chunk checksum mismatch")
+        except IntegrityError as err:
+            errors.append("chunk storage: %s" % err)
+
+        for view_meta_path in sorted((self._repo_path / "cache" / "views" / "files").glob("*.json")):
+            try:
+                view_meta = _read_json(view_meta_path)
+                target_path = self._repo_path / str(view_meta["target_path"])
+                if target_path.exists():
+                    data_sha256 = _sha256_hex(target_path.read_bytes())
+                    if data_sha256 != _public_sha256_hex(str(view_meta["sha256"])):
+                        warnings.append("stale file view: %s" % view_meta_path.name)
+            except (AttributeError, KeyError, OSError, TypeError, ValueError) as err:  # pragma: no cover
+                warnings.append("failed to inspect file view %s: %s" % (view_meta_path.name, err))
+
+        for view_meta_path in sorted((self._repo_path / "cache" / "views" / "snapshots").glob("*.json")):
+            try:
+                view_meta = _read_json(view_meta_path)
+                target_root = self._repo_path / str(view_meta["target_path"])
+                for file_info in view_meta.get("files", []):
+                    target_path = target_root / str(file_info["path"])
+                    if not target_path.exists():
+                        warnings.append("stale snapshot view: %s" % view_meta_path.name)
+                        break
+                    data_sha256 = _sha256_hex(target_path.read_bytes())
+                    if data_sha256 != str(file_info["sha256"]):
+                        warnings.append("stale snapshot view: %s" % view_meta_path.name)
+                        break
+            except (AttributeError, KeyError, OSError, TypeError, ValueError) as err:  # pragma: no cover
+                warnings.append("failed to inspect snapshot view %s: %s" % (view_meta_path.name, err))
+
+        txn_root = self._repo_path / "txn"
+        if txn_root.exists():
+            for txn_entry in sorted(txn_root.iterdir()):
+                if not txn_entry.is_dir():
+                    warnings.append("unexpected txn entry: %s" % txn_entry.name)
+                else:
+                    warnings.append("pending transaction directory: %s" % txn_entry.name)
+
+        lock_root = self._repo_path / "locks"
+        if lock_root.exists():
+            for lock_entry in sorted(lock_root.iterdir()):
+                if lock_entry.name == REPO_LOCK_FILENAME and lock_entry.is_file():
+                    continue
+                warnings.append("unexpected lock artifact: %s" % lock_entry.name)
+
+        return VerifyReport(
+            ok=not errors,
+            checked_refs=checked_refs,
+            warnings=warnings,
+            errors=errors,
+        )
+
+    def _storage_overview_unlocked(self) -> Dict[str, object]:
+        """Build storage-analysis data while a repo lock is already held."""
+
+        ref_targets = self._ref_targets_unlocked()
+        live_heads = [head for head in ref_targets.values() if head is not None]
+        live_state = self._collect_graph_state_unlocked(live_heads, include_parents=True)
+        tip_state = self._collect_graph_state_unlocked(live_heads, include_parents=False)
+
+        object_type_to_state_key = {
+            "commits": "commits",
+            "trees": "trees",
+            "files": "files",
+            "blobs": "blobs",
+        }
+        object_sizes = {}
+        live_object_bytes = {}
+        tip_object_bytes = {}
+        unreachable_object_bytes = {}
+        actual_object_bytes = {}
+        for object_type, state_key in object_type_to_state_key.items():
+            all_ids = set(self._iter_object_ids_unlocked(object_type))
+            size_map = dict((object_id, self._object_disk_size_unlocked(object_type, object_id)) for object_id in all_ids)
+            object_sizes[object_type] = size_map
+            live_ids = live_state[state_key]
+            tip_ids = tip_state[state_key]
+            live_object_bytes[object_type] = sum(size_map.get(object_id, 0) for object_id in live_ids)
+            tip_object_bytes[object_type] = sum(size_map.get(object_id, 0) for object_id in tip_ids)
+            unreachable_object_bytes[object_type] = sum(
+                size_map.get(object_id, 0) for object_id in (all_ids - live_ids)
+            )
+            actual_object_bytes[object_type] = sum(size_map.values())
+
+        live_chunk_plan = self._chunk_storage_plan_unlocked(
+            live_state["chunk_ids"],
+            pack_id=GC_ANALYSIS_PACK_ID,
+            with_data=False,
+        )
+        tip_chunk_plan = self._chunk_storage_plan_unlocked(
+            tip_state["chunk_ids"],
+            pack_id=GC_ANALYSIS_PACK_ID,
+            with_data=False,
+        )
+        live_chunk_bytes = int(live_chunk_plan["pack_size"]) + int(live_chunk_plan["index_total_size"])
+        tip_chunk_bytes = int(tip_chunk_plan["pack_size"]) + int(tip_chunk_plan["index_total_size"])
+
+        metadata_size = (
+            _path_metrics(self._format_path)[0]
+            + _path_metrics(self._repo_config_path)[0]
+            + _path_metrics(self._repo_path / "refs")[0]
+            + _path_metrics(self._repo_path / "logs" / "refs")[0]
+            + _path_metrics(self._repo_path / "locks")[0]
+        )
+        actual_pack_bytes, actual_pack_files = _path_metrics(self._repo_path / "chunks" / "packs")
+        actual_index_bytes, actual_index_files = _path_metrics(self._repo_path / "chunks" / "index")
+        cache_size, cache_files = _path_metrics(self._repo_path / "cache")
+        quarantine_size, quarantine_files = _path_metrics(self._repo_path / "quarantine")
+        txn_size, txn_files = _path_metrics(self._repo_path / "txn")
+        total_size, _ = _path_metrics(self._repo_path)
+
+        historical_object_bytes = sum(
+            max(0, int(live_object_bytes[object_type]) - int(tip_object_bytes[object_type]))
+            for object_type in object_type_to_state_key
+        )
+        historical_chunk_bytes = max(0, live_chunk_bytes - tip_chunk_bytes)
+        reclaimable_gc_size = (
+            sum(unreachable_object_bytes.values())
+            + max(0, actual_pack_bytes + actual_index_bytes - live_chunk_bytes)
+        )
+        reachable_size = metadata_size + sum(live_object_bytes.values()) + live_chunk_bytes
+        historical_retained_size = historical_object_bytes + historical_chunk_bytes
+
+        recommendations = []
+        if reclaimable_gc_size > 0:
+            recommendations.append(
+                "Run gc() to reclaim about %s of unreachable objects and stale chunk storage."
+                % _format_bytes(reclaimable_gc_size)
+            )
+        if cache_size > 0:
+            recommendations.append(
+                "Managed cache directories account for about %s; run gc(prune_cache=True) to rebuild them on demand."
+                % _format_bytes(cache_size)
+            )
+        if historical_retained_size > 0:
+            recommendations.append(
+                "About %s is retained only for rollback/history; use squash_history(...) before gc() if you want to free it."
+                % _format_bytes(historical_retained_size)
+            )
+        if txn_size > 0:
+            recommendations.append(
+                "The txn/ area still contains %s of leftovers; inspect it before deleting because it may include unexpected manual files."
+                % _format_bytes(txn_size)
+            )
+        if quarantine_size > 0:
+            recommendations.append(
+                "The quarantine/ area already contains %s of previously isolated data and can be cleaned by gc()."
+                % _format_bytes(quarantine_size)
+            )
+        if not recommendations:
+            recommendations.append("No immediate storage maintenance action is needed.")
+
+        sections = [
+            StorageSectionInfo(
+                name="repo.metadata",
+                path="FORMAT + repo.json + refs/ + logs/refs/ + locks/",
+                total_size=metadata_size,
+                file_count=(
+                    _path_metrics(self._format_path)[1]
+                    + _path_metrics(self._repo_config_path)[1]
+                    + _path_metrics(self._repo_path / "refs")[1]
+                    + _path_metrics(self._repo_path / "logs" / "refs")[1]
+                    + _path_metrics(self._repo_path / "locks")[1]
+                ),
+                reclaimable_size=0,
+                reclaim_strategy="keep",
+                notes="Core repository metadata and lock files required for normal operation.",
+            ),
+            StorageSectionInfo(
+                name="objects.commits",
+                path="objects/commits/",
+                total_size=actual_object_bytes["commits"],
+                file_count=len(object_sizes["commits"]),
+                reclaimable_size=unreachable_object_bytes["commits"],
+                reclaim_strategy="gc",
+                notes="Commit containers; unreachable ones are removed by gc(), while reachable historical ones require squash_history().",
+            ),
+            StorageSectionInfo(
+                name="objects.trees",
+                path="objects/trees/",
+                total_size=actual_object_bytes["trees"],
+                file_count=len(object_sizes["trees"]),
+                reclaimable_size=unreachable_object_bytes["trees"],
+                reclaim_strategy="gc",
+                notes="Tree containers for directory snapshots.",
+            ),
+            StorageSectionInfo(
+                name="objects.files",
+                path="objects/files/",
+                total_size=actual_object_bytes["files"],
+                file_count=len(object_sizes["files"]),
+                reclaimable_size=unreachable_object_bytes["files"],
+                reclaim_strategy="gc",
+                notes="File metadata objects; older live versions are counted under historical_retained_size until history is squashed.",
+            ),
+            StorageSectionInfo(
+                name="objects.blobs.meta",
+                path="objects/blobs/*.meta.json",
+                total_size=sum(
+                    self._blob_meta_path(object_id).stat().st_size
+                    for object_id in object_sizes["blobs"]
+                    if self._blob_meta_path(object_id).exists()
+                ),
+                file_count=len(object_sizes["blobs"]),
+                reclaimable_size=0,
+                reclaim_strategy="gc",
+                notes="Blob metadata sidecars. Their reclaimable bytes are tied to blob payload reclamation below.",
+            ),
+            StorageSectionInfo(
+                name="objects.blobs.data",
+                path="objects/blobs/*.data",
+                total_size=sum(
+                    self._blob_data_path(object_id).stat().st_size
+                    for object_id in object_sizes["blobs"]
+                    if self._blob_data_path(object_id).exists()
+                ),
+                file_count=len(object_sizes["blobs"]),
+                reclaimable_size=unreachable_object_bytes["blobs"],
+                reclaim_strategy="gc",
+                notes="Whole-file blob payloads.",
+            ),
+            StorageSectionInfo(
+                name="chunks.packs",
+                path="chunks/packs/",
+                total_size=actual_pack_bytes,
+                file_count=actual_pack_files,
+                reclaimable_size=max(0, actual_pack_bytes - int(live_chunk_plan["pack_size"])),
+                reclaim_strategy="gc",
+                notes="Chunk pack files. gc() rewrites live chunks into a compact pack layout before deleting old packs.",
+            ),
+            StorageSectionInfo(
+                name="chunks.index",
+                path="chunks/index/",
+                total_size=actual_index_bytes,
+                file_count=actual_index_files,
+                reclaimable_size=max(0, actual_index_bytes - int(live_chunk_plan["index_total_size"])),
+                reclaim_strategy="gc",
+                notes="Visible manifest plus immutable index segments for chunk lookups.",
+            ),
+            StorageSectionInfo(
+                name="cache",
+                path="cache/",
+                total_size=cache_size,
+                file_count=cache_files,
+                reclaimable_size=cache_size,
+                reclaim_strategy="prune-cache",
+                notes="Managed detached downloads and snapshots that can be rebuilt without changing committed data.",
+            ),
+            StorageSectionInfo(
+                name="txn",
+                path="txn/",
+                total_size=txn_size,
+                file_count=txn_files,
+                reclaimable_size=0,
+                reclaim_strategy="manual-review",
+                notes="Transaction leftovers should normally be empty after recovery; inspect before manual removal.",
+            ),
+            StorageSectionInfo(
+                name="quarantine",
+                path="quarantine/",
+                total_size=quarantine_size,
+                file_count=quarantine_files,
+                reclaimable_size=quarantine_size,
+                reclaim_strategy="gc",
+                notes="Previously isolated files awaiting final deletion.",
+            ),
+        ]
+
+        overview = StorageOverview(
+            total_size=total_size,
+            reachable_size=reachable_size,
+            historical_retained_size=historical_retained_size,
+            reclaimable_gc_size=reclaimable_gc_size,
+            reclaimable_cache_size=cache_size,
+            reclaimable_temporary_size=quarantine_size,
+            sections=sections,
+            recommendations=recommendations,
+        )
+        return {
+            "overview": overview,
+            "checked_refs": sorted(ref_targets),
+            "live_chunk_plan": live_chunk_plan,
+            "object_sizes": object_sizes,
+            "live_state": live_state,
+            "tip_state": tip_state,
+            "unreachable_object_ids": dict(
+                (object_type, set(object_sizes[object_type]) - live_state[state_key])
+                for object_type, state_key in object_type_to_state_key.items()
+            ),
+            "quarantine_size": quarantine_size,
+            "quarantine_file_count": quarantine_files,
+        }
+
+    def _gc_unlocked(self, dry_run: bool, prune_cache: bool) -> GcReport:
+        """Run GC while the exclusive repository lock is already held."""
+
+        verify_report = self._full_verify_unlocked()
+        if not verify_report.ok:
+            raise VerificationError("repository verification failed: %s" % verify_report.errors[0])
+
+        state = self._storage_overview_unlocked()
+        overview = state["overview"]
+        live_chunk_plan = state["live_chunk_plan"]
+        unreachable_object_ids = state["unreachable_object_ids"]
+        object_sizes = state["object_sizes"]
+
+        actual_chunk_reclaimable = (
+            max(0, _path_metrics(self._repo_path / "chunks" / "packs")[0] - int(live_chunk_plan["pack_size"]))
+            + max(0, _path_metrics(self._repo_path / "chunks" / "index")[0] - int(live_chunk_plan["index_total_size"]))
+        )
+        cache_size = overview.reclaimable_cache_size if prune_cache else 0
+        temporary_size = int(state["quarantine_size"])
+        reclaimable_size = overview.reclaimable_gc_size + cache_size + temporary_size
+        reclaimed_object_size_estimate = 0
+        removed_file_count = 0
+        for object_type in ("commits", "trees", "files"):
+            reclaimed_object_size_estimate += sum(
+                object_sizes[object_type].get(object_id, 0) for object_id in unreachable_object_ids[object_type]
+            )
+            removed_file_count += len(unreachable_object_ids[object_type])
+        for object_id in unreachable_object_ids["blobs"]:
+            reclaimed_object_size_estimate += object_sizes["blobs"].get(object_id, 0)
+            if self._blob_meta_path(object_id).exists():
+                removed_file_count += 1
+            if self._blob_data_path(object_id).exists():
+                removed_file_count += 1
+        if prune_cache:
+            removed_file_count += _path_metrics(self._repo_path / "cache")[1]
+        removed_file_count += int(state["quarantine_file_count"])
+        current_pack_file_count = _path_metrics(self._repo_path / "chunks" / "packs")[1]
+        current_index_file_count = _path_metrics(self._repo_path / "chunks" / "index")[1]
+        removed_file_count += max(0, current_pack_file_count - (1 if live_chunk_plan["index_entries"] else 0))
+        removed_file_count += max(0, current_index_file_count - (2 if live_chunk_plan["index_entries"] else 1))
+
+        notes = []
+        if overview.historical_retained_size > 0:
+            notes.append(
+                "Rollback history still retains about %s; use squash_history(...) to make that space reclaimable."
+                % _format_bytes(overview.historical_retained_size)
+            )
+        if dry_run:
+            notes.append("dry-run: no files were modified")
+            return GcReport(
+                dry_run=True,
+                checked_refs=state["checked_refs"],
+                reclaimed_size=reclaimable_size,
+                reclaimed_object_size=reclaimed_object_size_estimate,
+                reclaimed_chunk_size=actual_chunk_reclaimable,
+                reclaimed_cache_size=cache_size,
+                reclaimed_temporary_size=temporary_size,
+                removed_file_count=removed_file_count,
+                notes=notes,
+            )
+
+        txdir = self._create_txdir("gc", None)
+        gcid = txdir.name
+        try:
+            write_chunk_plan = self._chunk_storage_plan_unlocked(
+                state["live_state"]["chunk_ids"],
+                pack_id="gc-%s" % gcid,
+                with_data=True,
+            )
+            live_index_entries = list(write_chunk_plan["index_entries"])
+            if live_index_entries:
+                pack_id = "gc-%s" % gcid
+                pack_payloads = write_chunk_plan["pack_payloads"]
+                PackStore(txdir / "chunks" / "packs").write_pack(pack_id, pack_payloads)
+                segment_name = "seg-%s.idx" % pack_id
+                staged_index = IndexStore(txdir / "chunks" / "index")
+                remapped_entries = []
+                running_offset = len(b"hubvault-pack/v1\n")
+                for entry, payload in zip(live_index_entries, pack_payloads):
+                    remapped_entries.append(
+                        IndexEntry(
+                            chunk_id=entry.chunk_id,
+                            pack_id=pack_id,
+                            offset=running_offset,
+                            stored_size=len(payload),
+                            logical_size=entry.logical_size,
+                            compression=entry.compression,
+                            checksum=entry.checksum,
+                        )
+                    )
+                    running_offset += len(payload)
+                staged_index.write_segment("L0", segment_name, remapped_entries)
+                staged_index.write_manifest(IndexManifest.empty().add_segment("L0", segment_name))
+            else:
+                IndexStore(txdir / "chunks" / "index").write_manifest(IndexManifest.empty())
+
+            self._write_tx_state(txdir, "STAGED")
+            self._publish_staged_objects(txdir)
+            self._write_tx_state(txdir, "COMMITTED")
+        finally:
+            self._cleanup_txdir(txdir)
+
+        q_objects_root = self._repo_path / "quarantine" / "objects" / gcid
+        q_packs_root = self._repo_path / "quarantine" / "packs" / gcid
+        q_index_root = self._repo_path / "quarantine" / "manifests" / gcid
+        reclaimed_object_size = 0
+        reclaimed_chunk_size = 0
+
+        for object_type in ("commits", "trees", "files"):
+            for object_id in sorted(unreachable_object_ids[object_type]):
+                path = self._object_json_path(object_type, object_id)
+                reclaimed_object_size += self._quarantine_move_file_unlocked(
+                    source_path=path,
+                    quarantine_root=q_objects_root,
+                    relative_root=self._repo_path / "objects",
+                )
+
+        for object_id in sorted(unreachable_object_ids["blobs"]):
+            reclaimed_object_size += self._quarantine_move_file_unlocked(
+                source_path=self._blob_meta_path(object_id),
+                quarantine_root=q_objects_root,
+                relative_root=self._repo_path / "objects",
+            )
+            reclaimed_object_size += self._quarantine_move_file_unlocked(
+                source_path=self._blob_data_path(object_id),
+                quarantine_root=q_objects_root,
+                relative_root=self._repo_path / "objects",
+            )
+
+        live_pack_name = None
+        live_segment_name = None
+        if live_chunk_plan["index_entries"]:
+            live_pack_name = "gc-%s.pack" % gcid
+            live_segment_name = "seg-gc-%s.idx" % gcid
+
+        for path in sorted((self._repo_path / "chunks" / "packs").glob("*.pack")):
+            if live_pack_name is not None and path.name == live_pack_name:
+                continue
+            reclaimed_chunk_size += self._quarantine_move_file_unlocked(
+                source_path=path,
+                quarantine_root=q_packs_root,
+                relative_root=self._repo_path / "chunks" / "packs",
+            )
+
+        for level in ("L0", "L1", "L2"):
+            for path in sorted((self._repo_path / "chunks" / "index" / level).glob("*.idx")):
+                if live_segment_name is not None and level == "L0" and path.name == live_segment_name:
+                    continue
+                reclaimed_chunk_size += self._quarantine_move_file_unlocked(
+                    source_path=path,
+                    quarantine_root=q_index_root,
+                    relative_root=self._repo_path / "chunks" / "index",
+                )
+
+        reclaimed_cache_size = 0
+        if prune_cache:
+            reclaimed_cache_size = self._clear_directory_children_unlocked(self._repo_path / "cache")
+
+        self._clear_directory_children_unlocked(self._repo_path / "quarantine" / "objects")
+        self._clear_directory_children_unlocked(self._repo_path / "quarantine" / "packs")
+        self._clear_directory_children_unlocked(self._repo_path / "quarantine" / "manifests")
+
+        return GcReport(
+            dry_run=False,
+            checked_refs=state["checked_refs"],
+            reclaimed_size=reclaimed_object_size + reclaimed_chunk_size + reclaimed_cache_size + temporary_size,
+            reclaimed_object_size=reclaimed_object_size,
+            reclaimed_chunk_size=reclaimed_chunk_size,
+            reclaimed_cache_size=reclaimed_cache_size,
+            reclaimed_temporary_size=temporary_size,
+            removed_file_count=removed_file_count,
+            notes=notes,
+        )
+
+    def _ref_targets_unlocked(self) -> Dict[str, Optional[str]]:
+        """Return all visible branch and tag heads while a repo lock is held."""
+
+        targets = {}
+        for branch_name in self._list_branch_names():
+            targets["refs/heads/" + branch_name] = self._read_ref(branch_name)
+        for tag_name in self._list_tag_names():
+            targets["refs/tags/" + tag_name] = self._read_tag_ref(tag_name)
+        return targets
+
+    def _resolve_branch_ref_for_squash_unlocked(self, ref_name: str) -> Tuple[str, str, str]:
+        """Resolve a branch ref for history rewriting."""
+
+        if ref_name.startswith("refs/tags/"):
+            raise UnsupportedPathError("squash_history only supports branch refs")
+        if ref_name.startswith("refs/heads/"):
+            branch_name = _validate_ref_name(ref_name.split("/", 2)[-1])
+        else:
+            branch_name = _validate_ref_name(ref_name)
+        head = self._read_ref(branch_name)
+        if head is None:
+            raise RevisionNotFoundError("revision has no commits yet: %s" % branch_name)
+        return branch_name, "refs/heads/" + branch_name, head
+
+    def _commit_lineage_unlocked(self, head_commit_id: str) -> List[str]:
+        """Return the first-parent lineage from a head commit back to the root."""
+
+        lineage = []
+        current_commit_id = head_commit_id
+        seen = set()
+        while current_commit_id is not None and current_commit_id not in seen:
+            seen.add(current_commit_id)
+            lineage.append(current_commit_id)
+            commit_payload = self._read_object_payload("commits", current_commit_id)
+            parents = list(commit_payload.get("parents", []))
+            current_commit_id = str(parents[0]) if parents else None
+        return lineage
+
+    def _collect_graph_state_unlocked(self, commit_ids: Sequence[str], include_parents: bool) -> Dict[str, set]:
+        """Collect reachable commit/tree/file/blob/chunk identifiers."""
+
+        state = {
+            "commits": set(),
+            "trees": set(),
+            "files": set(),
+            "blobs": set(),
+            "chunk_ids": set(),
+        }
+        pending = [commit_id for commit_id in commit_ids if commit_id is not None]
+        while pending:
+            commit_id = pending.pop()
+            if commit_id in state["commits"]:
+                continue
+            state["commits"].add(commit_id)
+            payload = self._read_object_payload("commits", commit_id)
+            self._walk_tree_graph_unlocked(str(payload["tree_id"]), state)
+            if include_parents:
+                pending.extend(str(parent_id) for parent_id in payload.get("parents", []))
+        return state
+
+    def _walk_tree_graph_unlocked(self, tree_id: str, state: Dict[str, set]) -> None:
+        """Walk a tree object into the graph state collector."""
+
+        if tree_id in state["trees"]:
+            return
+        state["trees"].add(tree_id)
+        payload = self._read_object_payload("trees", tree_id)
+        for entry in payload.get("entries", []):
+            if entry["entry_type"] == "tree":
+                self._walk_tree_graph_unlocked(str(entry["object_id"]), state)
+                continue
+            if entry["entry_type"] != "file":
+                raise IntegrityError("unknown tree entry type")
+            file_object_id = str(entry["object_id"])
+            if file_object_id in state["files"]:
+                continue
+            state["files"].add(file_object_id)
+            file_payload = self._read_object_payload("files", file_object_id)
+            if str(file_payload.get("storage_kind")) == "chunked":
+                for chunk in file_payload.get("chunks", []):
+                    state["chunk_ids"].add(str(chunk["chunk_id"]))
+            else:
+                state["blobs"].add(str(file_payload["content_object_id"]))
+
+    def _iter_object_ids_unlocked(self, object_type: str) -> List[str]:
+        """List published object identifiers for a logical object type."""
+
+        root = self._repo_path / "objects" / object_type / OBJECT_HASH
+        if not root.exists():
+            return []
+        if object_type == "blobs":
+            suffix = ".meta.json"
+        else:
+            suffix = ".json"
+        object_ids = []
+        for prefix_root in sorted(root.iterdir()):
+            if not prefix_root.is_dir():
+                continue
+            for path in sorted(prefix_root.glob("*" + suffix)):
+                digest = prefix_root.name + path.name[:-len(suffix)]
+                object_ids.append(OBJECT_HASH + ":" + digest)
+        return object_ids
+
+    def _object_disk_size_unlocked(self, object_type: str, object_id: str) -> int:
+        """Return the current on-disk byte size for one published object."""
+
+        if object_type == "blobs":
+            size = 0
+            meta_path = self._blob_meta_path(object_id)
+            data_path = self._blob_data_path(object_id)
+            if meta_path.exists():
+                size += meta_path.stat().st_size
+            if data_path.exists():
+                size += data_path.stat().st_size
+            return size
+        path = self._object_json_path(object_type, object_id)
+        if not path.exists():
+            return 0
+        return path.stat().st_size
+
+    def _verify_object_container_unlocked(self, object_type: str, object_id: str) -> None:
+        """Verify a published object container and its canonical checksum."""
+
+        expected_type = "blob" if object_type == "blobs" else object_type[:-1]
+        if object_type == "blobs":
+            path = self._blob_meta_path(object_id)
+        else:
+            path = self._object_json_path(object_type, object_id)
+        container = _read_json(path)
+        if not isinstance(container, dict) or "payload" not in container:
+            raise IntegrityError("invalid object container")
+        if int(container.get("format_version", 0)) != FORMAT_VERSION:
+            raise IntegrityError("unsupported object format version")
+        if str(container.get("object_type")) != expected_type:
+            raise IntegrityError("unexpected object type")
+        payload_checksum = OBJECT_HASH + ":" + _sha256_hex(_stable_json_bytes(container["payload"]))
+        if str(container.get("payload_sha256")) != payload_checksum:
+            raise IntegrityError("payload checksum mismatch")
+        computed_object_id, _ = _object_id_from_container(container)
+        if computed_object_id != object_id:
+            raise IntegrityError("object id mismatch")
+
+    def _chunk_storage_plan_unlocked(self, chunk_ids: Sequence[str], pack_id: str, with_data: bool) -> Dict[str, object]:
+        """Build a deterministic compacted chunk-storage plan for a chunk-id set."""
+
+        manifest = IndexStore(self._repo_path / "chunks" / "index").read_manifest()
+        index_store = IndexStore(self._repo_path / "chunks" / "index")
+        pack_store = PackStore(self._repo_path / "chunks" / "packs")
+        ordered_chunk_ids = sorted(set(chunk_ids))
+        payloads = []
+        entries = []
+        running_offset = len(b"hubvault-pack/v1\n")
+        for chunk_id in ordered_chunk_ids:
+            entry = index_store.lookup(chunk_id, manifest=manifest)
+            if entry is None:
+                raise IntegrityError("chunk missing from index: %s" % chunk_id)
+            chunk_data = pack_store.read_chunk(
+                PackChunkLocation(
+                    pack_id=entry.pack_id,
+                    offset=entry.offset,
+                    stored_size=entry.stored_size,
+                    logical_size=entry.logical_size,
+                )
+            )
+            if entry.compression != "none":
+                raise IntegrityError("unsupported chunk compression: %s" % entry.compression)
+            if len(chunk_data) != entry.logical_size:
+                raise IntegrityError("chunk size mismatch")
+            checksum = OBJECT_HASH + ":" + _sha256_hex(chunk_data)
+            if checksum != entry.checksum:
+                raise IntegrityError("chunk checksum mismatch")
+            payloads.append(chunk_data)
+            entries.append(
+                IndexEntry(
+                    chunk_id=chunk_id,
+                    pack_id=pack_id,
+                    offset=running_offset,
+                    stored_size=len(chunk_data),
+                    logical_size=entry.logical_size,
+                    compression="none",
+                    checksum=checksum,
+                )
+            )
+            running_offset += len(chunk_data)
+
+        segment_name = "seg-%s.idx" % pack_id
+        segment_lines = [
+            json.dumps(entry.to_dict(), sort_keys=True, ensure_ascii=False).encode("utf-8")
+            for entry in entries
+        ]
+        segment_size = sum(len(line) + 1 for line in segment_lines)
+        manifest_obj = IndexManifest.empty()
+        if entries:
+            manifest_obj = manifest_obj.add_segment("L0", segment_name)
+        manifest_size = len(_stable_json_bytes(manifest_obj.to_dict()))
+        return {
+            "pack_payloads": tuple(payloads) if with_data else tuple(),
+            "index_entries": tuple(entries),
+            "pack_size": (len(b"hubvault-pack/v1\n") + sum(len(item) for item in payloads)) if entries else 0,
+            "index_total_size": segment_size + manifest_size,
+            "segment_name": segment_name,
+            "manifest": manifest_obj,
+        }
+
+    def _commit_title_and_description(self, payload: Dict[str, object]) -> Tuple[str, str]:
+        """Extract title and description fields with HF-style fallback behavior."""
+
+        title = payload.get("title")
+        description = payload.get("description")
+        if title is None or description is None:
+            fallback_title, fallback_description = self._split_commit_message(str(payload.get("message", "")))
+            if title is None:
+                title = fallback_title
+            if description is None:
+                description = fallback_description
+        return str(title), str(description)
+
+    def _blocking_refs_for_lineage_unlocked(self, lineage_set: set, excluded_ref_name: str) -> List[str]:
+        """Find refs whose current lineage still intersects an old rewritten history."""
+
+        blocking_refs = []
+        for ref_name, head in sorted(self._ref_targets_unlocked().items()):
+            if ref_name == excluded_ref_name or head is None:
+                continue
+            current_commit_id = head
+            seen = set()
+            while current_commit_id is not None and current_commit_id not in seen:
+                if current_commit_id in lineage_set:
+                    blocking_refs.append(ref_name)
+                    break
+                seen.add(current_commit_id)
+                payload = self._read_object_payload("commits", current_commit_id)
+                parents = list(payload.get("parents", []))
+                current_commit_id = str(parents[0]) if parents else None
+        return blocking_refs
+
+    def _quarantine_move_file_unlocked(self, source_path: Path, quarantine_root: Path, relative_root: Path) -> int:
+        """Move one file into quarantine while keeping its relative layout."""
+
+        if not source_path.exists():
+            return 0
+        size = source_path.stat().st_size
+        target_path = quarantine_root / source_path.relative_to(relative_root)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(str(source_path), str(target_path))
+        _fsync_directory(target_path.parent)
+        return size
+
+    def _clear_directory_children_unlocked(self, root: Path) -> int:
+        """Delete all children beneath a directory and return reclaimed bytes."""
+
+        if not root.exists():
+            return 0
+        reclaimed_size = 0
+        for entry in sorted(root.iterdir()):
+            reclaimed_size += _path_metrics(entry)[0]
+            self._remove_detached_path(entry, root)
+        return reclaimed_size
 
     @property
     def _format_path(self) -> Path:

@@ -38,9 +38,16 @@ locks/repo.lock
 - `huggingface_hub` 本地缓存层实际使用的是 `filelock`
 - 由于 `hubvault` 明确要求“纯读可并发、写时阻塞全部读写”，因此本地仓库层改用提供跨进程 RW 语义的 `fasteners`
 
-### 2.2 GC 锁
+### 2.2 GC / squash 维护锁
 
-GC 和 compact 目前尚未落地；进入后续 phase 时，也必须复用成熟第三方文件锁，而不是新增手造锁协议。
+当前 `gc()` 与 `squash_history()` 都直接复用 `locks/repo.lock` 对应的独占写锁，而不是再引入第二套锁文件协议。
+
+实现约束：
+
+- 维护操作与普通写事务共享同一条串行化边界
+- 在 `gc()` 或 `squash_history()` 持锁期间，其他读写请求全部阻塞
+- 当前没有单独的 `gc.lock`、`compact.lock` 之类历史遗留锁文件
+- 后续如果把维护逻辑拆分到独立模块，也必须继续复用同一套成熟第三方文件锁语义
 
 ### 2.3 锁失效恢复
 
@@ -210,13 +217,14 @@ MVP 的 `quick_verify()` 重点检查：
 
 ### 8.2 full verify
 
-完整校验在后续阶段增加：
+Phase 4 已实现 `full_verify()`，当前校验范围包括：
 
-- 遍历所有 GC roots 可达对象
-- 重算 chunk hash
-- 重新组合 file 逻辑 hash
-- 验证 tree 和 commit DAG
-- 输出损坏对象与范围
+- 遍历所有可见 branch/tag ref 可达对象
+- 校验 commit/tree/file/blob 容器与 checksum
+- 重算 chunk hash，并通过 pack/index/manifest 真实读取 chunk 载荷
+- 验证 tree 与 commit DAG 引用闭包
+- 扫描 file/snapshot 视图元数据，在用户污染缓存视图时给出 warning
+- 输出损坏对象与范围，供后续 `gc()` 与空间治理使用
 
 ## 9. rollback 与 merge 语义
 
@@ -236,7 +244,7 @@ MVP 的 `quick_verify()` 重点检查：
 
 ### 9.3 `merge()`
 
-首版 merge 建议采用“三方 tree merge + 结构化冲突返回”，但落地时间放到 Phase 4。
+首版 merge 仍建议采用“三方 tree merge + 结构化冲突返回”，但当前尚未落地，已顺延到 Phase 5 及之后的工作。
 
 ## 10. 一致性红线
 

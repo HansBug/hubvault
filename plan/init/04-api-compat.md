@@ -30,7 +30,7 @@
 - `hf_hub_download("gpt2", "config.json")` 返回普通文件路径，并保留
   `.../config.json` 这样的 repo 相对路径后缀
 
-这几条就是 `hubvault` 当前 Phase 0-3 API 对齐的直接行为基准。
+这几条就是 `hubvault` 当前 Phase 0-4 API 对齐的直接行为基准。
 
 ## 3. 当前公开入口
 
@@ -54,6 +54,10 @@ from hubvault import (
     BlobLfsInfo,
     BlobSecurityInfo,
     VerifyReport,
+    StorageSectionInfo,
+    StorageOverview,
+    GcReport,
+    SquashReport,
     RepositoryNotFoundError,
     RepositoryAlreadyExistsError,
     EntryNotFoundError,
@@ -142,8 +146,6 @@ from hubvault import (
 
 二者同时存在不是本地双轨设计，而是直接遵循 HF 本身就存在的两套公开模型。
 
-### 4.4 本地专属模型
-
 ### 4.4 Git refs 与 reflog
 
 当前 Phase 2 已新增：
@@ -160,13 +162,32 @@ from hubvault import (
   empty branch 在第一次 commit 前是合法的，因此 `GitRefInfo.target_commit` 在本地允许为 `None`
 - `ReflogEntry` 没有直接 HF 对标，属于本地审计/恢复模型
 
-### 4.5 本地专属模型
+### 4.5 Phase 4 维护模型
+
+以下模型是本地维护与空间治理公开表面：
+
+- `StorageSectionInfo`
+- `StorageOverview`
+- `GcReport`
+- `SquashReport`
+
+对齐结论：
+
+- HF 没有直接对标这些本地嵌入式维护模型，因此保留本地设计
+- 字段命名仍遵守 HF 风格偏好，尽量使用短、直观、面向结果的公开字段
+- 这些模型只暴露公开维护结果，不暴露内部 pack/object/chunk 路径推导细节
+
+### 4.6 本地专属模型
 
 以下模型当前没有直接 HF 对标，因此保持本地设计：
 
 - `RepoInfo`
 - `ReflogEntry`
 - `VerifyReport`
+- `StorageSectionInfo`
+- `StorageOverview`
+- `GcReport`
+- `SquashReport`
 
 其中：
 
@@ -298,13 +319,27 @@ class HubVaultApi:
     ) -> CommitInfo: ...
     def reset_ref(self, ref_name, *, to_revision) -> CommitInfo: ...
     def quick_verify(self) -> VerifyReport: ...
+    def full_verify(self) -> VerifyReport: ...
+    def get_storage_overview(self) -> StorageOverview: ...
+    def gc(self, *, dry_run=False, prune_cache=True) -> GcReport: ...
+    def squash_history(
+        self,
+        ref_name,
+        *,
+        root_revision=None,
+        commit_message=None,
+        commit_description=None,
+        run_gc=True,
+        prune_cache=False,
+    ) -> SquashReport: ...
 ```
 
-当前 Phase 3 对齐说明：
+当前 Phase 4 对齐说明：
 
 - `read_range()` 是本地嵌入式仓库新增的必要读取 API，没有直接 HF Python 方法对标，但语义遵循“只返回请求范围，不暴露可写别名”
 - `upload_large_folder()` 保留 HF 方法名，但本地实现坚持单事务原子提交，因此返回一个 `CommitInfo`，而不是像远端多 commit 流程那样返回 `None`
 - 对 `storage_kind="chunked"` 的文件，`RepoFile.blob_id` / `RepoFile.oid` 使用 canonical LFS pointer 的 git blob OID，`RepoFile.sha256` 与 `RepoFile.lfs.sha256` 都使用真实文件内容的裸 hex
+- `full_verify()`、`get_storage_overview()`、`gc()`、`squash_history()` 没有 HF 远端对标方法，但命名和返回职责遵循“只公开真实可用行为”的同一原则
 
 ### 6.2 已对齐行为
 
@@ -414,6 +449,52 @@ class HubVaultApi:
 
 - 不保留 `cache_dir`、`local_files_only`、`force_download`、`local_dir_use_symlinks`、`tqdm_class` 等远端/缓存策略参数
 - 为避免把用户读取视图变成 repo 内部可写别名，`local_dir` 不允许指向 repo root 内部
+
+#### `full_verify`
+
+这是本地专属维护 API，没有直接 HF 远端对标。
+
+当前公开语义：
+
+- 返回 `VerifyReport`
+- 在 `quick_verify()` 之上继续检查 pack/index/manifest 和 chunk checksum
+- 允许把缓存视图污染报告为 warning，而不把用户可重建视图直接等同于仓库损坏
+
+#### `get_storage_overview`
+
+这是本地专属维护 API，没有直接 HF 远端对标。
+
+当前公开语义：
+
+- 返回 `StorageOverview`
+- 明确区分总占用、当前 live refs 所需占用、历史保留占用、可立即 GC 的占用、可清缓存占用、临时区域占用
+- 以 `StorageSectionInfo` 列出各主要目录/数据类型的占用与安全释放建议
+
+#### `gc`
+
+这是本地专属维护 API，没有直接 HF 远端对标。
+
+当前公开语义：
+
+- 保留 `dry_run` 与 `prune_cache` 这两个真实有意义的参数
+- 维护 pass 会先完整校验仓库，再重写 live chunk pack/index，之后隔离并删除不可达对象
+- 返回 `GcReport`，显式给出对象、chunk、cache、temporary 各自释放量
+
+#### `squash_history`
+
+这是本地专属维护 API，没有直接 HF 远端对标。
+
+当前公开语义：
+
+- 仅支持 branch ref，不对 tag 做历史重写
+- `root_revision` 指定“最老保留 commit”；省略时会把当前 branch head 折叠成一个新的 root commit
+- `run_gc=True` 时会在重写后直接执行 `gc()`
+- 返回 `SquashReport`，并显式报告仍然阻塞旧历史释放的其他 refs
+
+当前刻意保留的限制：
+
+- 只重写单个 branch，不自动改写其他 refs
+- 阻塞 refs 只报告，不自动处理
 
 #### `list_repo_reflog`
 

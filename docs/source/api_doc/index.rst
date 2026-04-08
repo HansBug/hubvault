@@ -15,7 +15,8 @@ hubvault
     errors
     models
     operations
-    repo
+    repo/index
+    storage/index
 
 \_\_all\_\_
 -----------------------------------------------------

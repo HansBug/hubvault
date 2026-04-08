@@ -9,6 +9,7 @@ from hubvault import (
     CommitOperationAdd,
     ConflictError,
     EntryNotFoundError,
+    GcReport,
     HubVaultApi,
     RepoFile,
     RepoFolder,
@@ -16,6 +17,8 @@ from hubvault import (
     RepositoryAlreadyExistsError,
     RepositoryNotFoundError,
     RevisionNotFoundError,
+    SquashReport,
+    StorageOverview,
     UnsupportedPathError,
 )
 from hubvault.storage.chunk import canonical_lfs_pointer, git_blob_oid as lfs_pointer_oid
@@ -493,3 +496,66 @@ class TestApi:
         assert api.read_bytes("sizes/below.bin") == below_payload
         assert api.read_bytes("sizes/exact.bin") == exact_payload
         assert api.read_bytes("sizes/above.bin") == above_payload
+
+    def test_phase4_public_storage_analysis_gc_and_blocking_refs(self, tmp_path):
+        """
+        Simulate a public maintenance workflow with storage analysis and squash.
+
+        The simulated user story creates two revisions of the same large file,
+        inspects the public storage overview, previews GC, and then verifies
+        that another branch still blocks immediate reclamation after a squash on
+        the main branch.
+        """
+
+        repo_dir = tmp_path / "repo"
+        api = HubVaultApi(repo_dir)
+        api.create_repo(large_file_threshold=64)
+
+        first_commit = api.create_commit(
+            operations=[
+                CommitOperationAdd("artifacts/model.bin", b"A" * 512),
+                CommitOperationAdd("notes.txt", b"v1\n"),
+            ],
+            commit_message="seed v1",
+        )
+        second_commit = api.create_commit(
+            operations=[
+                CommitOperationAdd("artifacts/model.bin", b"B" * 512),
+                CommitOperationAdd("notes.txt", b"v2\n"),
+            ],
+            commit_message="seed v2",
+        )
+        api.create_branch(branch="archive", revision=first_commit.oid)
+
+        _ = api.hf_hub_download("artifacts/model.bin")
+        _ = api.snapshot_download()
+
+        verify_report = api.full_verify()
+        overview = api.get_storage_overview()
+        gc_report = api.gc(dry_run=True, prune_cache=True)
+        squash_report = api.squash_history(
+            "main",
+            root_revision=second_commit.oid,
+            run_gc=False,
+        )
+
+        assert verify_report.ok is True
+        assert isinstance(overview, StorageOverview)
+        assert overview.total_size > 0
+        assert overview.reclaimable_cache_size > 0
+        assert any(section.name == "chunks.packs" for section in overview.sections)
+
+        assert isinstance(gc_report, GcReport)
+        assert gc_report.dry_run is True
+        assert gc_report.reclaimed_cache_size > 0
+        assert "refs/heads/archive" in gc_report.checked_refs
+
+        assert isinstance(squash_report, SquashReport)
+        assert squash_report.ref_name == "refs/heads/main"
+        assert squash_report.old_head == second_commit.oid
+        assert squash_report.new_head != second_commit.oid
+        assert squash_report.root_commit_before == second_commit.oid
+        assert squash_report.rewritten_commit_count == 1
+        assert squash_report.dropped_ancestor_count == 1
+        assert squash_report.blocking_refs == ["refs/heads/archive"]
+        assert squash_report.gc_report is None

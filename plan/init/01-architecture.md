@@ -2,10 +2,10 @@
 
 ## 1. 面向当前仓库的总体思路
 
-当前仓库只有 CLI 壳层和元信息，因此架构设计必须满足两个条件：
+当前仓库已经具备本地嵌入式仓库的 Phase 0-4 基线，因此后续架构演进必须满足两个条件：
 
-- 能够在最短路径上补出可运行的本地版本仓库 MVP
-- 后续引入 chunk / pack / GC / merge 时，不需要推翻第一版磁盘格式和公开 API
+- 不推翻已经落地的磁盘格式、公开 API 和测试制度
+- 后续补 merge、进一步拆分后端模块和发布能力时，不引入协议漂移
 
 推荐采用如下组合：
 
@@ -60,11 +60,11 @@ hubvault/
 - `errors.py`
   公开异常模型，避免调用方依赖内部实现细节。
 - `models.py`
-  公开 `RepoInfo`、`CommitInfo`、`GitCommitInfo`、`GitRefInfo`、`GitRefs`、`ReflogEntry`、`RepoFile`、`RepoFolder`、`BlobLfsInfo`、`VerifyReport`。
+  公开 `RepoInfo`、`CommitInfo`、`GitCommitInfo`、`GitRefInfo`、`GitRefs`、`ReflogEntry`、`RepoFile`、`RepoFolder`、`BlobLfsInfo`、`VerifyReport`、`StorageSectionInfo`、`StorageOverview`、`GcReport`、`SquashReport`。
 - `operations.py`
   公开 `CommitOperationAdd/Delete/Copy`。
 - `repo/`
-  当前本地仓库后端包，`backend.py` 负责主协调逻辑，`constants.py` 固化仓库级常量，`__init__.py` 保持 `hubvault.repo` 导入入口稳定。
+  当前本地仓库后端包，`backend.py` 负责主协调逻辑，包括提交、refs、读取、大文件、校验、空间画像、GC 与历史压缩，`constants.py` 固化仓库级常量，`__init__.py` 保持 `hubvault.repo` 导入入口稳定。
 - `storage/`
   当前 Phase 3 大文件存储包，`chunk.py` 负责分块规划与 canonical LFS pointer 元数据，`pack.py` 负责 append-only pack 读写，`index.py` 负责 manifest 与不可变索引段。
 
@@ -177,10 +177,10 @@ hubvault/
 
 职责：
 
-- quick verify
-- full verify
-- mark-sweep GC
-- pack compaction
+- `quick_verify()` 与 `full_verify()`
+- `get_storage_overview()` 空间画像与安全释放建议
+- `gc()` 的 mark-sweep + live-pack compact + cache prune
+- `squash_history()` 的单分支历史压缩与阻塞 ref 诊断
 - 诊断报告输出
 
 ## 4. 核心对象关系

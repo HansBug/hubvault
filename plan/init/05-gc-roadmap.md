@@ -16,43 +16,58 @@
 
 ## 2. MVP 与 GC 的关系
 
-为了尽快产出 MVP，GC 不应成为第一阶段的阻塞项。
+为了尽快产出 MVP，GC 不应成为第一阶段的阻塞项。当前这部分已经按分阶段路线落地：
 
-推荐分三步推进：
+- Phase 1：落地“残留事务清理 + `quick_verify()`”，先保证不会破坏数据
+- Phase 3：引入 chunk/pack，使大文件空间治理有真实对象基础
+- Phase 4：落地 `full_verify()`、`get_storage_overview()`、`gc()` 与 `squash_history()`
 
-- Phase 1：只做“残留事务清理 + quick verify”，不做真正删除
-- Phase 3：实现 blob/object 级 mark-sweep
-- Phase 4：实现 pack compaction 与保留策略
-
-这意味着 MVP 可以先做到“不会破坏数据”，然后再做到“安全回收空间”。
+这意味着 MVP 先做到“不会破坏数据”，再逐步做到“能解释空间去哪了”和“能安全回收空间”。
 
 ## 3. GC Root 定义
 
-GC 只能从明确的 root 集合出发做可达性分析。
+GC 只能从明确的 root 集合出发做可达性分析。当前实现已经冻结为：
 
-建议 root 包括：
+- 所有可见 branch head
+- 所有可见 tag
 
-- 所有 branch head
-- 所有 tag
-- 用户显式 pin 的 commit
-- 活跃事务引用
-- 活跃快照缓存引用
-- reflog 保留窗口内涉及的 commit
+当前不作为 GC root 的内容：
 
-这些 root 都必须能仅依赖 repo root 内的数据推导出来，不能要求查询仓库外状态源。
+- reflog 记录
+- 用户下载/快照缓存视图
+- 未完成事务目录中的暂存文件
+- 仓库外部任何状态
+
+原因：
+
+- 维护 pass 在进入 `gc()` / `squash_history()` 前会先做恢复或回滚，未完成事务不应继续 pin 住主仓库空间
+- `cache/` 里的用户视图是可重建的 detached 视图，不代表仓库真相
+- 当前没有额外的 pin/retention 元数据协议，因此不能凭空假设这些 root 存在
+
+这组 root 全部只依赖 repo root 内部可见 refs 推导，不查询仓库外状态源。
 
 ## 4. 回收流程
 
-推荐采用 `mark -> quarantine -> sweep -> compact` 的组合流程。
+当前实现采用 `verify -> mark -> rewrite-live-pack -> quarantine -> delete` 的组合流程。
 
 ### 4.1 mark
 
-1. 获取 GC 锁
+1. 获取 repo 独占写锁
 2. 读取全部 roots
 3. 遍历 `commit -> tree -> file -> blob/chunk`
 4. 计算 live set
 
-### 4.2 quarantine
+### 4.2 rewrite-live-pack
+
+当仓库存在 chunked storage 时，`gc()` 会先根据当前 live chunk 集合重写出新的紧凑 pack/index 视图，再原子发布它。
+
+这样做的原因：
+
+- 避免边删旧 pack 边依赖旧 pack 读取 live chunk
+- 保证“要么新 live pack 完整发布，要么什么都没发生”
+- 为后续删除旧 pack/index 留出明确隔离边界
+
+### 4.3 quarantine
 
 将不可达对象先移入 `quarantine/` 或登记到隔离清单，而不是立刻删除。
 
@@ -62,13 +77,9 @@ GC 只能从明确的 root 集合出发做可达性分析。
 - 允许管理员做人工检查
 - 崩溃恢复更简单
 
-### 4.3 sweep
+### 4.4 delete
 
-经过 grace period 后，再删除确定不可达的对象。
-
-### 4.4 compact
-
-当引入 pack 后，再重写 live chunk 稀疏分布的 pack，并原子切换索引。
+当前实现不会保留历史遗留的 quarantine 队列，而是在同一次维护 pass 内把新隔离出的旧对象和旧 pack/index 清掉；对 `txn/` 则保持人工检查策略，不自动删除。
 
 ## 5. 代表性 GC 代码片段
 
@@ -88,24 +99,23 @@ def collect_live_objects(repo):
     return live
 ```
 
-MVP 阶段即使暂时没有真正 `gc()`，也可以先复用这套遍历逻辑来做 `quick_verify()` 的可达性检查。
+当前实现同时复用这套遍历逻辑来做 `get_storage_overview()` 的 live/tip/historical 空间分析。
 
 ## 6. 历史保留策略
 
-建议支持多种保留策略组合：
+当前实现的历史保留策略是显式的，而不是后台自动的：
 
-- 保留所有 tag 指向的历史
-- 每个 branch 保留最近 `N` 个 commit
-- 保留最近 `X` 天内被 reflog 引用的 commit
-- 用户显式 pin 关键版本
+- 所有可见 branch/tag 默认都继续保留其可达历史
+- 需要释放旧历史时，由用户显式调用 `squash_history(...)`
+- `squash_history(...)` 只重写一个 branch，并把其他仍阻塞旧历史回收的 refs 以 `blocking_refs` 明确报告出来
 
-这样可以在“可回滚”和“控制空间”之间取得平衡。
+因此，当前版本在“可回滚”和“控制空间”之间采用的是“默认保守保留，显式重写后再回收”的策略。
 
 ## 7. compact 的必要性
 
 仅删除不可达对象并不足够，因为 chunk 实际位于 pack 中，旧 pack 往往只部分可回收。
 
-compact 负责：
+当前实现里，compact 逻辑已经内嵌在 `gc()` 里，负责：
 
 - 重写含少量 live chunk 的旧 pack
 - 合并小 pack，减少句柄与碎片
@@ -131,16 +141,16 @@ compact 必须遵循与普通提交相同的发布原则：
 
 ### 8.2 Phase 4 的 `full_verify()`
 
-完整校验再补齐：
+Phase 4 当前已补齐：
 
-- 遍历所有 root 可达对象
+- 遍历所有可见 ref 可达对象
 - 重算 chunk/hash
-- 重新组合 logical hash
 - 校验 pack、索引段和 manifest
+- 校验公开 detached 视图是否陈旧，并以 warning 形式返回
 
 ## 9. 测试路线图
 
-如果要把一致性和跨平台作为核心卖点，测试不能只做 happy-path 单元测试。
+如果要把一致性和跨平台作为核心卖点，测试不能只做 happy-path 单元测试。当前已落地回归重点如下。
 
 ### 9.1 单元测试
 
@@ -156,7 +166,7 @@ compact 必须遵循与普通提交相同的发布原则：
 - `create_repo -> create_commit -> list -> read -> reset`
 - branch/tag/reflog
 - snapshot/cache 行为
-- verify / gc / compact 联动
+- full verify / storage overview / gc / squash_history 联动
 - 仓库关闭后整体移动目录、重新打开与继续读取/校验
 - 仓库归档后解压恢复并重新打开
 - `hf_hub_download()` / `snapshot_download()` 返回路径保留 repo 相对路径层级
@@ -186,12 +196,12 @@ compact 必须遵循与普通提交相同的发布原则：
 - 锁目录恢复
 - 长路径与保留名
 
-## 10. 首版建议取舍
+## 10. 当前明确取舍
 
-为了尽快进入可验证状态，首版建议：
+当前维护能力已经落地，但仍保留以下明确取舍：
 
-- 先不实现 rename 检测
-- 先不实现文本内容级自动 merge
-- 先用稳定 JSON 对象编码
-- 先以单写者模型保证正确性
-- 先把 blob 存储和 quick verify 做稳，再逐步引入 chunk/pack/GC
+- 仍未实现 rename 检测
+- 仍未实现文本内容级自动 merge
+- 仍以单写者模型保证正确性
+- `squash_history()` 只重写单个 branch，不自动改写其他 refs
+- `txn/` 残留在空间画像中标记为 `manual-review`，不由 `gc()` 自动清理

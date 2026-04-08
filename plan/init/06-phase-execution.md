@@ -16,6 +16,7 @@
 - 当前仓库并发与恢复基线已经收敛为 `fasteners.InterProcessReaderWriterLock` + rollback-only 恢复：多个 reader 可并发，writer 独占；中断写事务只回滚，不继续补完。
 - 当前 Phase 3 已经落地 `hubvault/storage/` 大文件引擎与 `test/test_phase3.py` 集成回归，并把 `hubvault/repo.py` 包化为 `hubvault/repo/`。
 - 当前 Phase 3 已补齐阈值边界回归，明确验证“只有大小大于等于 `large_file_threshold` 的文件才进入 chunked storage，小文件保持 whole-file blob”。
+- 当前 Phase 4 已经落地 `full_verify()`、`get_storage_overview()`、`gc()`、`squash_history()` 与对应公开模型，并补上 `test/test_phase4.py` 全周期维护回归。
 
 优先级排序如下：
 
@@ -23,8 +24,8 @@
 2. whole-file blob MVP
 3. refs / 历史 / 快照增强
 4. chunk / pack / range read
-5. merge / full verify / GC / compact
-6. 性能优化与发布
+5. full verify / 空间画像 / GC / 历史压缩
+6. merge / 性能优化 / 发布
 
 ## Phase 0. 规范冻结与脚手架
 
@@ -177,32 +178,38 @@
 
 补齐长期运行所需的维护与空间治理能力：完整校验、空间画像、安全 GC、pack/索引清理，以及“把某个 commit 之前的历史压缩后再回收旧数据”的显式历史重写能力。
 
+### Status
+
+已完成。
+
 ### Todo
 
-* [ ] 实现 `full_verify()`，覆盖 refs、commit/tree/file/blob、chunk、pack、manifest 和逻辑 hash。
-* [ ] 实现公开空间画像 API，输出仓库总体占用、各目录/各数据类型占用、可安全释放建议和主要阻塞项。
-* [ ] 实现 mark-sweep `gc()` 与 `quarantine/`，并能输出 dry-run / 实删报告。
-* [ ] 实现受控历史压缩 API，可把指定 commit 之前的历史压缩后再执行回收。
-* [ ] 将 reflog/引用保留策略与 `gc()`、历史压缩联动，避免“看起来压缩了、实际上旧对象仍被保留”。
-* [ ] 增加集成测试，覆盖 full verify、空间画像、历史压缩后回收、以及回收前后读取正确性。
+* [x] 实现 `full_verify()`，覆盖 refs、commit/tree/file/blob、chunk、pack、manifest 和逻辑 hash。
+* [x] 实现公开空间画像 API，输出仓库总体占用、各目录/各数据类型占用、可安全释放建议和主要阻塞项。
+* [x] 实现 mark-sweep `gc()` 与 `quarantine/`，并能输出 dry-run / 实删报告。
+* [x] 实现受控历史压缩 API，可把指定 commit 之前的历史压缩后再执行回收。
+* [x] 将 refs 保留语义与 `gc()`、历史压缩联动，避免“看起来压缩了、实际上旧对象仍被保留”，并把阻塞 refs 明确报告给调用方。
+* [x] 增加集成测试，覆盖 full verify、空间画像、历史压缩后回收、以及回收前后读取正确性。
 
 ### Checklist
 
-* [ ] `full_verify()` 能定位损坏对象、损坏 pack/索引和受影响范围。
-* [ ] 用户可以直接拿到仓库总占用与分项占用，并能据此判断“删缓存、做 GC、做历史压缩”各自能释放什么空间。
-* [ ] GC 不会删除任何可达对象，也不会在中断后留下半删半不删状态。
-* [ ] 历史压缩后，指定边界之前的旧历史可变为不可达并被后续 GC 安全清理。
-* [ ] Phase 4 的空间治理能力不会破坏仓库自包含、可搬迁和公开 API 读取语义。
-* [ ] `make unittest` 通过。
+* [x] `full_verify()` 能定位损坏对象、损坏 pack/索引和受影响范围。
+* [x] 用户可以直接拿到仓库总占用与分项占用，并能据此判断“删缓存、做 GC、做历史压缩”各自能释放什么空间。
+* [x] GC 不会删除任何可达对象，也不会在中断后留下半删半不删状态。
+* [x] 历史压缩后，指定边界之前的旧历史可变为不可达并被后续 GC 安全清理。
+* [x] `squash_history()` 会显式报告仍然阻塞历史释放的其他 refs，避免误判可回收空间。
+* [x] Phase 4 的空间治理能力不会破坏仓库自包含、可搬迁和公开 API 读取语义。
+* [x] `make unittest` 通过。
 
-## Phase 5. 性能、文档与发布
+## Phase 5. merge、性能、文档与发布
 
 ### Goal
 
-在协议正确性稳定后，再做原生加速、构建发布和用户文档完善。
+在协议正确性稳定后，再补 merge，并做原生加速、构建发布和用户文档完善。
 
 ### Todo
 
+* [ ] 设计并实现首版结构化 `merge()`，优先三方 tree merge + 明确冲突返回。
 * [ ] 评估可选原生加速模块，例如 `blake3`、`zstd`、`fastcdc`。
 * [ ] 增加 benchmark 和跨平台性能基线。
 * [ ] 完善公开 API 文档、MVP 教程和恢复/诊断文档。
@@ -211,6 +218,7 @@
 
 ### Checklist
 
+* [ ] merge 结果与冲突模型不破坏现有对象协议和事务发布原则。
 * [ ] 性能优化不改变格式与公开语义。
 * [ ] 文档示例全部走公开 API。
 * [ ] 打包产物和基础安装路径可验证。

@@ -19,6 +19,10 @@ The module contains:
 * :class:`RepoFolder` - HF-style folder metadata entry
 * :class:`BlobLfsInfo` - Future-facing large-file metadata container
 * :class:`VerifyReport` - Result of repository verification
+* :class:`StorageSectionInfo` - Disk-usage breakdown entry for one storage section
+* :class:`StorageOverview` - Repository-wide storage analysis and reclaim guidance
+* :class:`GcReport` - Result of a storage reclamation pass
+* :class:`SquashReport` - Result of a history-squash maintenance operation
 """
 
 from dataclasses import dataclass, field
@@ -494,3 +498,212 @@ class VerifyReport:
     checked_refs: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class StorageSectionInfo:
+    """
+    Describe disk usage for one repository storage section.
+
+    :param name: Stable section name such as ``"objects.blobs.data"``
+    :type name: str
+    :param path: Repo-relative path or descriptive label for the section
+    :type path: str
+    :param total_size: Current bytes occupied by the section
+    :type total_size: int
+    :param file_count: Number of files currently present in the section
+    :type file_count: int
+    :param reclaimable_size: Bytes that can be safely reclaimed now through the
+        recommended action
+    :type reclaimable_size: int
+    :param reclaim_strategy: Recommended safe action such as ``"gc"``,
+        ``"prune-cache"``, ``"keep"``, or ``"manual-review"``
+    :type reclaim_strategy: str
+    :param notes: Practical explanation of what the section stores and how to
+        release its space safely
+    :type notes: str
+
+    Example::
+
+        >>> section = StorageSectionInfo(
+        ...     name="cache",
+        ...     path="cache/",
+        ...     total_size=1024,
+        ...     file_count=3,
+        ...     reclaimable_size=1024,
+        ...     reclaim_strategy="prune-cache",
+        ...     notes="Detached views can be rebuilt.",
+        ... )
+        >>> section.reclaim_strategy
+        'prune-cache'
+    """
+
+    name: str
+    path: str
+    total_size: int
+    file_count: int
+    reclaimable_size: int
+    reclaim_strategy: str
+    notes: str
+
+
+@dataclass(frozen=True)
+class StorageOverview:
+    """
+    Describe repository-wide storage usage and safe reclamation options.
+
+    :param total_size: Total bytes currently occupied by the repository root
+    :type total_size: int
+    :param reachable_size: Bytes currently required to preserve all live refs
+        and their reachable storage after a normal GC pass
+    :type reachable_size: int
+    :param historical_retained_size: Bytes currently kept only for rollback or
+        historical retention and therefore releasable after explicit history
+        rewriting such as :meth:`hubvault.api.HubVaultApi.squash_history`
+    :type historical_retained_size: int
+    :param reclaimable_gc_size: Bytes that :meth:`hubvault.api.HubVaultApi.gc`
+        can safely reclaim immediately without rewriting history
+    :type reclaimable_gc_size: int
+    :param reclaimable_cache_size: Bytes in rebuildable detached caches
+    :type reclaimable_cache_size: int
+    :param reclaimable_temporary_size: Bytes in temporary or quarantine areas
+        that can be cleaned without changing visible repository history
+    :type reclaimable_temporary_size: int
+    :param sections: Per-section usage breakdown
+    :type sections: List[StorageSectionInfo]
+    :param recommendations: Ordered safe-action recommendations for operators
+    :type recommendations: List[str]
+
+    Example::
+
+        >>> overview = StorageOverview(
+        ...     total_size=4096,
+        ...     reachable_size=2048,
+        ...     historical_retained_size=1024,
+        ...     reclaimable_gc_size=256,
+        ...     reclaimable_cache_size=512,
+        ...     reclaimable_temporary_size=256,
+        ...     sections=[],
+        ...     recommendations=["Run gc()."],
+        ... )
+        >>> overview.reclaimable_gc_size
+        256
+    """
+
+    total_size: int
+    reachable_size: int
+    historical_retained_size: int
+    reclaimable_gc_size: int
+    reclaimable_cache_size: int
+    reclaimable_temporary_size: int
+    sections: List[StorageSectionInfo] = field(default_factory=list)
+    recommendations: List[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class GcReport:
+    """
+    Describe the result of one storage reclamation pass.
+
+    :param dry_run: Whether the operation only computed the result without
+        mutating repository storage
+    :type dry_run: bool
+    :param checked_refs: Refs treated as GC roots during the pass
+    :type checked_refs: List[str]
+    :param reclaimed_size: Total bytes reclaimed or reclaimable in dry-run mode
+    :type reclaimed_size: int
+    :param reclaimed_object_size: Bytes reclaimed from JSON/blob object stores
+    :type reclaimed_object_size: int
+    :param reclaimed_chunk_size: Bytes reclaimed from pack/index storage
+    :type reclaimed_chunk_size: int
+    :param reclaimed_cache_size: Bytes reclaimed from rebuildable cache areas
+    :type reclaimed_cache_size: int
+    :param reclaimed_temporary_size: Bytes reclaimed from quarantine or other
+        temporary maintenance areas
+    :type reclaimed_temporary_size: int
+    :param removed_file_count: Number of files deleted or deletable in dry-run
+        mode
+    :type removed_file_count: int
+    :param notes: Additional human-readable notes about blockers or actions
+    :type notes: List[str]
+
+    Example::
+
+        >>> report = GcReport(
+        ...     dry_run=True,
+        ...     checked_refs=["refs/heads/main"],
+        ...     reclaimed_size=1024,
+        ...     reclaimed_object_size=512,
+        ...     reclaimed_chunk_size=256,
+        ...     reclaimed_cache_size=128,
+        ...     reclaimed_temporary_size=128,
+        ...     removed_file_count=4,
+        ...     notes=["dry-run"],
+        ... )
+        >>> report.dry_run
+        True
+    """
+
+    dry_run: bool
+    checked_refs: List[str]
+    reclaimed_size: int
+    reclaimed_object_size: int
+    reclaimed_chunk_size: int
+    reclaimed_cache_size: int
+    reclaimed_temporary_size: int
+    removed_file_count: int
+    notes: List[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class SquashReport:
+    """
+    Describe the result of a history-squash operation.
+
+    :param ref_name: Full ref name updated by the squash operation
+    :type ref_name: str
+    :param old_head: Previous ref target before the rewrite
+    :type old_head: str
+    :param new_head: New ref target after the rewrite
+    :type new_head: str
+    :param root_commit_before: Commit selected as the oldest preserved commit
+        before rewriting, or the previous head when the whole branch history
+        was collapsed into one new root commit
+    :type root_commit_before: str
+    :param rewritten_commit_count: Number of commits rewritten onto the new
+        synthetic history chain
+    :type rewritten_commit_count: int
+    :param dropped_ancestor_count: Number of older ancestor commits made
+        unreachable from the rewritten ref
+    :type dropped_ancestor_count: int
+    :param blocking_refs: Other refs whose retained history still points into
+        the pre-squash lineage and may therefore limit immediate reclamation
+    :type blocking_refs: List[str]
+    :param gc_report: Optional GC result when the squash operation also ran a
+        reclamation pass
+    :type gc_report: Optional[GcReport]
+
+    Example::
+
+        >>> report = SquashReport(
+        ...     ref_name="refs/heads/main",
+        ...     old_head="sha256:old",
+        ...     new_head="sha256:new",
+        ...     root_commit_before="sha256:root",
+        ...     rewritten_commit_count=2,
+        ...     dropped_ancestor_count=3,
+        ...     blocking_refs=[],
+        ...     gc_report=None,
+        ... )
+        >>> report.new_head
+        'sha256:new'
+    """
+
+    ref_name: str
+    old_head: str
+    new_head: str
+    root_commit_before: str
+    rewritten_commit_count: int
+    dropped_ancestor_count: int
+    blocking_refs: List[str] = field(default_factory=list)
+    gc_report: Optional[GcReport] = None

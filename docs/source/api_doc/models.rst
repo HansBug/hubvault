@@ -90,3 +90,31 @@ VerifyReport
     :members: ok,checked_refs,warnings,errors
 
 
+StorageSectionInfo
+-----------------------------------------------------
+
+.. autoclass:: StorageSectionInfo
+    :members: name,path,total_size,file_count,reclaimable_size,reclaim_strategy,notes
+
+
+StorageOverview
+-----------------------------------------------------
+
+.. autoclass:: StorageOverview
+    :members: total_size,reachable_size,historical_retained_size,reclaimable_gc_size,reclaimable_cache_size,reclaimable_temporary_size,sections,recommendations
+
+
+GcReport
+-----------------------------------------------------
+
+.. autoclass:: GcReport
+    :members: dry_run,checked_refs,reclaimed_size,reclaimed_object_size,reclaimed_chunk_size,reclaimed_cache_size,reclaimed_temporary_size,removed_file_count,notes
+
+
+SquashReport
+-----------------------------------------------------
+
+.. autoclass:: SquashReport
+    :members: ref_name,old_head,new_head,root_commit_before,rewritten_commit_count,dropped_ancestor_count,blocking_refs,gc_report
+
+

@@ -7,6 +7,7 @@ from hubvault.models import (
     BlobLfsInfo,
     BlobSecurityInfo,
     CommitInfo,
+    GcReport,
     GitCommitInfo,
     GitRefInfo,
     GitRefs,
@@ -15,6 +16,9 @@ from hubvault.models import (
     RepoFile,
     RepoFolder,
     RepoInfo,
+    SquashReport,
+    StorageOverview,
+    StorageSectionInfo,
     VerifyReport,
 )
 
@@ -97,6 +101,46 @@ class TestModels:
             checksum="sha256:deadbeef",
         )
         report = VerifyReport(ok=True)
+        section = StorageSectionInfo(
+            name="cache",
+            path="cache/",
+            total_size=1024,
+            file_count=3,
+            reclaimable_size=1024,
+            reclaim_strategy="prune-cache",
+            notes="Detached views can be rebuilt.",
+        )
+        overview = StorageOverview(
+            total_size=4096,
+            reachable_size=2048,
+            historical_retained_size=1024,
+            reclaimable_gc_size=512,
+            reclaimable_cache_size=256,
+            reclaimable_temporary_size=128,
+            sections=[section],
+            recommendations=["Run gc()."],
+        )
+        gc_report = GcReport(
+            dry_run=True,
+            checked_refs=["refs/heads/main"],
+            reclaimed_size=768,
+            reclaimed_object_size=512,
+            reclaimed_chunk_size=128,
+            reclaimed_cache_size=64,
+            reclaimed_temporary_size=64,
+            removed_file_count=4,
+            notes=["dry-run"],
+        )
+        squash_report = SquashReport(
+            ref_name="refs/heads/main",
+            old_head="sha256:c1",
+            new_head="sha256:c2",
+            root_commit_before="sha256:c1",
+            rewritten_commit_count=1,
+            dropped_ancestor_count=2,
+            blocking_refs=["refs/tags/v1"],
+            gc_report=gc_report,
+        )
 
         assert commit.oid == "sha256:c1"
         assert commit.commit_message == "hello"
@@ -118,3 +162,10 @@ class TestModels:
         assert report.checked_refs == []
         assert report.warnings == []
         assert report.errors == []
+        assert section.reclaim_strategy == "prune-cache"
+        assert overview.sections[0] == section
+        assert overview.historical_retained_size == 1024
+        assert gc_report.dry_run is True
+        assert gc_report.checked_refs == ["refs/heads/main"]
+        assert squash_report.blocking_refs == ["refs/tags/v1"]
+        assert squash_report.gc_report == gc_report
