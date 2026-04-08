@@ -434,3 +434,62 @@ class TestApi:
             "models/model.bin",
         ]
         assert api.read_bytes("bundle/keep.bin") == b"K" * 96
+
+    def test_phase3_public_threshold_boundary_only_chunks_eligible_files(self, tmp_path):
+        """
+        Simulate a public API upload at the chunk threshold boundary.
+
+        The simulated user flow creates one repository with a small
+        ``large_file_threshold`` and uploads three files whose sizes are below,
+        equal to, and above that threshold. The assertions verify that only the
+        threshold-eligible files switch to Phase 3 chunk storage while the
+        smaller file remains a normal whole-blob object.
+        """
+
+        repo_dir = tmp_path / "repo"
+        api = HubVaultApi(repo_dir)
+        threshold = 64
+        api.create_repo(large_file_threshold=threshold)
+
+        below_payload = b"b" * (threshold - 1)
+        exact_payload = b"e" * threshold
+        above_payload = b"a" * (threshold + 1)
+
+        api.create_commit(
+            operations=[
+                CommitOperationAdd("sizes/below.bin", below_payload),
+                CommitOperationAdd("sizes/exact.bin", exact_payload),
+                CommitOperationAdd("sizes/above.bin", above_payload),
+            ],
+            commit_message="seed threshold boundary files",
+        )
+
+        items = {
+            item.path: item
+            for item in api.get_paths_info(
+                [
+                    "sizes/below.bin",
+                    "sizes/exact.bin",
+                    "sizes/above.bin",
+                ]
+            )
+        }
+
+        assert items["sizes/below.bin"].lfs is None
+        assert items["sizes/below.bin"].oid == _git_blob_oid(below_payload)
+        assert items["sizes/below.bin"].etag == _git_blob_oid(below_payload)
+
+        exact_expected_oid = lfs_pointer_oid(canonical_lfs_pointer(_sha256_value(exact_payload), len(exact_payload)))
+        above_expected_oid = lfs_pointer_oid(canonical_lfs_pointer(_sha256_value(above_payload), len(above_payload)))
+        assert items["sizes/exact.bin"].lfs is not None
+        assert items["sizes/exact.bin"].oid == exact_expected_oid
+        assert items["sizes/exact.bin"].etag == _sha256_value(exact_payload)
+        assert items["sizes/above.bin"].lfs is not None
+        assert items["sizes/above.bin"].oid == above_expected_oid
+        assert items["sizes/above.bin"].etag == _sha256_value(above_payload)
+
+        pack_files = sorted((repo_dir / "chunks" / "packs").glob("*.pack"))
+        assert len(pack_files) == 2
+        assert api.read_bytes("sizes/below.bin") == below_payload
+        assert api.read_bytes("sizes/exact.bin") == exact_payload
+        assert api.read_bytes("sizes/above.bin") == above_payload
