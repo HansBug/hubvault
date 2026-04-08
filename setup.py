@@ -97,7 +97,8 @@ setup(
     ],
     entry_points={
         'console_scripts': [
-            'hubvault=hubvault.entry:hubvaultcli'
+            'hubvault=hubvault.entry:hubvaultcli',
+            'hv=hubvault.entry:hubvaultcli',
         ]
     },
     project_urls={

@@ -15,7 +15,7 @@
 | 维护与空间治理 | Phase 4 已有 | `full_verify()`、空间画像、`gc()`、`squash_history()` 已落地 |
 | merge | Phase 5 已有 | 三方 tree merge、结构化冲突返回、merge DAG 历史遍历与公开集成回归已落地 |
 
-因此，当前初始化规划的重点已经从“如何从 0 到 1 做出 MVP”转成“如何在不破坏已落地协议与公开兼容语义的前提下，继续推进真实对拍、异常安全验证、性能优化和文档交付收尾”。
+因此，当前初始化规划的重点已经从“如何从 0 到 1 做出 MVP”转成“如何在不破坏已落地协议与公开兼容语义的前提下，继续推进 CLI 专题、真实对拍、异常安全验证、性能优化和文档交付收尾”。
 
 ## 2. 项目目标
 
@@ -27,12 +27,13 @@
 - 需要纯 Python 即可运行，不依赖外部服务
 - 需要跨平台支持 Linux、macOS、Windows
 - API 使用手感尽量接近 `huggingface_hub.HfApi`
+- 需要一套本地 CLI，命令名、主要选项和输出手感尽量接近 `git`，但不引入 `git` 的 workspace / index 语义
 
 ## 3. 核心约束
 
 - 不依赖 SQLite、Redis、PostgreSQL 或其他外部数据库
 - 不依赖守护进程、后台服务或额外安装的服务端
-- 不要求兼容 git workspace、git index 或 git CLI
+- 不要求兼容 git workspace、git index 或完整 git CLI；只要求本地 CLI 在命令名、主要选项和输出手感上尽量贴近 git
 - 首版只要求单写者、多读者，不做多写者事务并发
 - 必须兼容 Python 3.7-3.14 与三平台常见文件系统
 - 仓库必须是自包含的，所有持久化状态都位于 repo root 下，不依赖仓库外部路径上的元数据、缓存或 sidecar 文件
@@ -79,6 +80,7 @@ MVP 只要求打通以下最短路径：
 - GC / compact
 - 文本内容级自动 merge
 - 面向远端平台的 token、权限、PR、discussion、webhook、space 等能力
+- Git 式 workspace、staging area 和未提交工作区差异跟踪
 
 ### 5.3 MVP 代表性使用方式
 
@@ -109,7 +111,7 @@ content = api.read_bytes("weights/config.json", revision="main")
 - 多写者高并发事务系统
 - 网络文件系统上的强一致保证
 - 对二进制大文件做内容级自动 merge
-- 把 CLI 做成主入口；前期仍坚持 API-first
+- 完整复刻 git 全量命令集；CLI 仍然是 `hubvault` 语义的公开包装，而不是另一套仓库真相层
 
 ## 7. 成功标准
 
@@ -129,6 +131,7 @@ content = api.read_bytes("weights/config.json", revision="main")
 
 - 支持 branch、tag、merge、verify、GC、compact
 - 支持大文件 chunked / pack 存储和 range read
+- 支持 `hubvault` / `hv` 双命令名的本地 CLI，且核心命令名、主要选项和输出手感尽量接近 git
 - 可以列出历史、refs、文件信息并执行回收策略
 - 已通过真实 `git` / `git-lfs` / `huggingface_hub` 行为对拍验证关键公开语义，并把最小必要偏差文档化
 - 在异常中断、残留事务、半写 pack/index/manifest 和损坏用户视图等极端场景下，仓库真相仍不会损坏，最坏也只允许等效于“本次操作从未发生过”
@@ -153,5 +156,6 @@ content = api.read_bytes("weights/config.json", revision="main")
 - MVP 优先：先 whole-file，后 chunk/pack
 - 全息优先：repo root 本身就是完整仓库，任何持久化元数据都不得把真相散落到仓库外
 - 公开表面优先：测试和示例优先走公开 API，而不是内部 helper
+- CLI 近似而不伪装：CLI 尽量复用 git 用户熟悉的命令名、主要选项和输出形状，但不为了“像 git”强行伪造 workspace/index
 - 显式回收：逻辑回滚与物理删除必须分离
 - 跨平台保守：仅依赖三平台都稳定可用的文件系统语义

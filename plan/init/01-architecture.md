@@ -67,6 +67,8 @@ hubvault/
   当前本地仓库后端包，`backend.py` 负责主协调逻辑，包括提交、refs、读取、大文件、校验、空间画像、GC 与历史压缩，`constants.py` 固化仓库级常量，`__init__.py` 保持 `hubvault.repo` 导入入口稳定。
 - `storage/`
   当前 Phase 3 大文件存储包，`chunk.py` 负责分块规划与 canonical LFS pointer 元数据，`pack.py` 负责 append-only pack 读写，`index.py` 负责 manifest 与不可变索引段。
+- `entry/`
+  当前仍以壳层为主；Phase 6 会在这里补充 Git-like 本地 CLI，但所有命令依旧只调用公开 API，不直接碰内部存储真相，也不会引入 workspace/index 层。
 
 ### 2.2 后续推荐拆分结构
 
@@ -90,6 +92,15 @@ hubvault/
     base.py
     cli.py
     dispatch.py
+    context.py
+    formatters.py
+    commands/
+      __init__.py
+      repo.py
+      refs.py
+      history.py
+      content.py
+      maintenance.py
 
   services/
     repository.py
@@ -114,6 +125,7 @@ hubvault/
 
 - Phase 0-2 已经落地 `api.py`、`errors.py`、`models.py`、`operations.py` 与 `repo/`
 - Phase 3 已经落地 `storage/chunk.py`、`storage/pack.py`、`storage/index.py`
+- Phase 6 期间优先拆出 `entry/context.py`、`entry/formatters.py` 与 `entry/commands/*`
 - 后续再按需要继续拆分 `repo/backend.py`、`services/repository.py`、`services/commit.py`、`storage/object_store.py`、`storage/blob_store.py`
 
 ## 3. 分层职责
@@ -182,6 +194,19 @@ hubvault/
 - `gc()` 的 mark-sweep + live-pack compact + cache prune
 - `squash_history()` 的单分支历史压缩与阻塞 ref 诊断
 - 诊断报告输出
+
+### 3.6 CLI 层
+
+负责把公开 API 暴露成可日常使用的本地命令行。
+
+职责：
+
+- 提供 `hubvault` / `hv` 双入口名，并尽量复用 git 用户熟悉的命令名
+- 统一处理全局 `-C <path>`、版本输出、help 和异常格式化
+- 将 `init`、`status`、`branch`、`tag`、`log`、`ls-tree`、`commit`、`merge`、`reset`、`download`、`snapshot`、`verify` 等命令映射到公开 API
+- 输出尽量接近 git 的人类可读文本，如 `branch` 的 `*` 标记、`log --oneline` 的 `<oid> <title>`、`ls-tree` 的 `mode type oid<TAB>path`
+- 明确保持 `hubvault` 语义，不引入 workspace、index 或 staged/unstaged 差异模型；`status` 只反映仓库 head、分支与本地嵌入式仓库状态，而不是伪造工作区概念
+- 为需要脚本化消费的命令保留稳定输出模式，但不暴露内部路径和私有实现细节
 
 ## 4. 核心对象关系
 
@@ -294,7 +319,7 @@ class HubVaultApi:
 - `api.py` 可以依赖 `errors.py`、`models.py`、`operations.py`、`repo.py`
 - `services/` 可以依赖 `storage/` 与 `txn/`
 - `storage/` 不能依赖 `click` 或 CLI 模块
-- `entry/` 只能依赖公开 API，不应直接操作内部存储实现
+- `entry/` 只能依赖公开 API，不应直接操作内部存储实现，也不应在 CLI 层重新发明一套与 API 脱节的仓库状态模型
 - `models.py` 只定义公开 dataclass / enum，不放业务逻辑
 - 任何持久化实现都不得要求仓库外的 sidecar 目录、外部索引库或绝对路径配置才能工作
 - 内部对象 ID、公开文件 `oid`、以及下载导出路径三者必须显式分层，避免语义混淆

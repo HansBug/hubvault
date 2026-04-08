@@ -1,6 +1,6 @@
 # init 计划说明
 
-`plan/init/` 保存的是 `hubvault` 从当前“轻量 CLI + 元信息骨架”状态走向“可运行的本地嵌入式版本仓库”的初始化设计基线。
+`plan/init/` 保存的是 `hubvault` 从当前“基础 CLI + 元信息骨架”状态走向“可运行的本地嵌入式版本仓库”的初始化设计基线。
 
 这一组文档不再只是抽象蓝图，而是同时承担两类职责：
 
@@ -15,7 +15,7 @@
 
 - Python 包结构、打包脚本和测试基础设施
 - `hubvault.config.meta` 中的公开包元信息
-- `hubvault.entry` 下的 CLI 壳层与版本输出
+- `hubvault.entry` 下的基础 CLI 壳层与版本输出
 - `pytest` / `make unittest` / `make package` 等基础工程能力
 - 已落地的公开仓库 API 与包结构：`hubvault.api`、`hubvault.errors`、`hubvault.models`、`hubvault.operations`、`hubvault.repo/`
 - 已落地的 Phase 3 大文件存储包：`hubvault.storage/`（`chunk.py`、`pack.py`、`index.py`）
@@ -29,12 +29,13 @@
 
 尚未落地的核心能力包括：
 
+- 基于现有公开 API 的 CLI 专题 phase，让 `hubvault` / `hv` 成为可日常使用的本地命令行工具
 - 基于真实 `git` / `git-lfs` / `huggingface_hub` 的行为对拍
 - 面向极端场景的异常测试与故障注入验证
 - 更进一步的性能基线与可选优化
 - 文档、README、教程与最终交付收尾
 
-因此，这组初始化方案既要记录已经实现的 MVP 基线，也要继续约束后续 Phase 6-9，避免把已经落地的格式和公开语义重新漂移回“抽象设想”，也避免把 correctness 验证、性能和文档收尾混成一个模糊的大阶段。
+因此，这组初始化方案既要记录已经实现的 MVP 基线，也要继续约束后续 Phase 6-10，避免把已经落地的格式和公开语义重新漂移回“抽象设想”，也避免把 CLI 交付、correctness 验证、性能和文档收尾混成一个模糊的大阶段。
 
 ## 2. 使用方式
 
@@ -78,6 +79,7 @@
 
 更重的能力放到后续 phase：
 
+- 基于现有公开 API 的 Git-like 本地 CLI
 - `git` / `git-lfs` / `huggingface_hub` 对拍
 - 异常测试与故障注入
 - 原生加速与性能基线
@@ -86,7 +88,7 @@
 ## 5. 执行原则
 
 - 设计先冻结协议，再推进实现，避免边写边改磁盘格式。
-- 公开 API 优先于 CLI；CLI 在前期只保留最薄壳层。
+- 公开 API 仍优先于 CLI；Phase 6 会补齐 Git-like CLI，但 CLI 只包装公开 API，不引入额外 workspace/index 真相层。
 - 所有持久化仓库状态必须位于 repo root 内，且不得依赖绝对路径或仓库外 sidecar 数据。
 - 任何新增能力都必须配套公开表面的单元测试。
 - 每次改动完成后都要跑与改动面匹配的回归；结束前必须通过要求的完整回归集。

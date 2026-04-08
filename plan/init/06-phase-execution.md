@@ -7,10 +7,11 @@
 在当前 Phase 0-4 已经落地的前提下，后半程不再把“功能补齐、对拍、异常安全、性能和文档交付”混成一个大阶段，而是按下面顺序拆开推进：
 
 1. 先补 `merge()` 本体与冲突模型
-2. 再与真实 `git` / `git-lfs` / `huggingface_hub` 做行为对拍
-3. 再补极端场景与故障注入测试，把“最坏等效于本次操作从未发生过”压实
-4. 然后再做性能基线与可选优化
-5. 最后统一收尾文档、README、教程与交付检查
+2. 再补基于公开 API 的 Git-like 本地 CLI
+3. 再与真实 `git` / `git-lfs` / `huggingface_hub` 做行为对拍
+4. 再补极端场景与故障注入测试，把“最坏等效于本次操作从未发生过”压实
+5. 然后再做性能基线与可选优化
+6. 最后统一收尾文档、README、教程与交付检查
 
 ## 当前状态
 
@@ -26,7 +27,7 @@
 - 当前 Phase 3 已补齐阈值边界回归，明确验证“只有大小大于等于 `large_file_threshold` 的文件才进入 chunked storage，小文件保持 whole-file blob”。
 - 当前 Phase 4 已经落地 `full_verify()`、`get_storage_overview()`、`gc()`、`squash_history()` 与对应公开模型，并补上 `test/test_phase4.py` 全周期维护回归。
 - 当前 Phase 5 已经落地 `merge()`、`MergeConflict`、`MergeResult`、merge DAG 历史遍历与 `test/test_phase5.py` 集成回归，并明确把冲突结果收敛成结构化返回而不是半提交异常状态。
-- 当前剩余工作会从原单一 Phase 5 继续拆成后续四个顺序 phase，分别处理真实对拍、异常安全、性能与文档交付，避免把 correctness 验证与性能/文档收尾混做。
+- 当前剩余工作会从原单一 Phase 5 继续拆成后续五个顺序 phase，分别处理 CLI 交付、真实对拍、异常安全、性能与文档交付，避免把用户入口、correctness 验证与性能/文档收尾混做。
 
 优先级排序如下：
 
@@ -36,10 +37,11 @@
 4. chunk / pack / range read
 5. full verify / 空间画像 / GC / 历史压缩
 6. merge / 冲突模型
-7. `git` / `git-lfs` / `huggingface_hub` 对拍
-8. 异常测试 / 故障注入 / 极端场景安全
-9. 性能基线 / 可选优化
-10. 文档 / README / 教程 / 交付收尾
+7. Git-like 本地 CLI
+8. `git` / `git-lfs` / `huggingface_hub` 对拍
+9. 异常测试 / 故障注入 / 极端场景安全
+10. 性能基线 / 可选优化
+11. 文档 / README / 教程 / 交付收尾
 
 ## Phase 0. 规范冻结与脚手架
 
@@ -242,7 +244,69 @@
 * [x] merge 相关回归覆盖普通小文件、chunked 大文件和 branch/tag 组合场景。
 * [x] `make unittest` 通过。
 
-## Phase 6. 对拍
+## Phase 6. CLI 专题
+
+### Goal
+
+基于已经稳定的公开 API，交付一个可日常使用的本地 CLI，让 `hubvault` / `hv` 两个命令名都可用，并在命令名、主要选项和输出手感上尽量贴近 git；同时明确不引入 git 的 workspace / index / staging 概念，CLI 仍然只表达 `hubvault` 当前真实支持的仓库语义。
+
+### Status
+
+未开始。
+
+### Technical Focus
+
+本阶段的 CLI 对齐策略固定如下：
+
+- 对齐真实 git 的优先级只限于命令名、主要选项、帮助结构和常见输出措辞，不为了“更像 git”而发明 workspace、index、staged/unstaged 差异或 checkout 工作树
+- 所有命令只通过 `hubvault.api.HubVaultApi` 和公开模型工作，不直接读取 `repo/`、`storage/`、`txn/` 内部细节
+- 统一支持 `hubvault` 与 `hv` 两个控制台入口，并补充顶层 `-C <path>`，让 `hv -C /path/to/repo status` 的使用方式尽量接近 `git -C ...`
+- 优先实现与当前公开能力直接对标、且 Git 用户最容易预期的命令：`init`、`status`、`branch`、`tag`、`log`、`ls-tree`、`commit`、`merge`、`reset`
+- 对于 `download`、`snapshot`、`verify` 这类 `hubvault` 特有但非常核心的能力，保留直观的本地命令名，并让输出风格继续保持简洁、脚本友好
+
+命令范围与预期手感规划如下：
+
+- `init [path] [-b|--initial-branch <name>] [--large-file-threshold <bytes>]`
+  对齐 `git init` 的基础调用方式，输出“Initialized empty HubVault repository in ...”
+- `status [-s|--short] [-b|--branch]`
+  不伪造工作区状态；默认输出当前分支/head 与“nothing to commit, repository clean”式摘要，`--short --branch` 提供稳定紧凑输出
+- `branch [--show-current] [-v] [name] [start-point] [-d|-D <name>]`
+  复用 git 用户熟悉的分支列举和 `*` 当前分支标记
+- `tag [-l] [name] [revision] [-d <name>]`
+  提供创建、列举、删除标签的最小常用形态
+- `log [revision] [-n|--max-count <n>] [--oneline]`
+  默认展示 commit、作者、时间和消息；`--oneline` 输出 `<short-oid> <title>`
+- `ls-tree [revision] [path] [-r|--recursive]`
+  输出接近 `git ls-tree` 的 `mode type oid<TAB>path`
+- `commit -m|--message <text> [--description <text>] [--revision <branch>] [--add <repo_path=src>] [--delete <repo_path>] [--copy <src=dest>]`
+  保持 `git commit -m` 的主入口手感，但不引入 staging；文件变更直接显式编码为公开 `CommitOperation*`
+- `merge <source> [--target <branch>] [-m|--message <text>] [--description <text>]`
+  输出尽量接近 git merge 成功、快进和冲突提示，但底层仍使用 `hubvault` 的结构化 merge 结果
+- `reset <commit> [--revision <branch>]`
+  直达当前已支持的 ref 重置能力，不引入未实现的 mixed/hard/soft 工作区语义
+- `download <path> [--revision <rev>] [--local-dir <dir>]`、`snapshot [--revision <rev>] [--local-dir <dir>]`、`verify [--full]`
+  作为 `hubvault` 专属补充命令暴露当前公开 API 的核心能力
+
+### Todo
+
+* [ ] 在 `hubvault/entry/` 下补充分层结构，至少拆出命令注册、上下文解析与文本格式化责任，避免所有 CLI 逻辑继续堆在单个模块里。
+* [ ] 增加全局 `-C <path>` 语义，并确保 `hubvault` / `hv` 两个入口都指向同一套 CLI。
+* [ ] 实现 `init`、`status`、`branch`、`tag`、`log`、`ls-tree`、`commit`、`merge`、`reset` 命令。
+* [ ] 实现 `download`、`snapshot`、`verify` 等 `hubvault` 特有但高频的核心命令。
+* [ ] 用真实 `git` 的帮助与典型输出校准 help、选项命名和常见人类可读文案，但不照搬不适用的 workspace/index 语义。
+* [ ] 为新增 `hubvault/entry/*.py` 各自补对应的 `test/entry/test_*.py`，只通过公开 CLI 行为断言，不碰 private / protected 细节。
+* [ ] 为 Phase 6 增加一个端到端 CLI 集成测试，覆盖 init、commit、branch、merge、log、下载/读取和 verify 的全周期真实使用场景。
+
+### Checklist
+
+* [ ] `hubvault --help` 与 `hv --help` 都能展示同一套命令面。
+* [ ] CLI 命令只通过公开 API 工作，没有私自读取内部实现细节。
+* [ ] `status` / `branch` / `tag` / `log` / `ls-tree` 的输出对 Git 用户是熟悉的，但不会伪造 workspace/index 语义。
+* [ ] `commit` / `merge` / `reset` / `download` / `snapshot` / `verify` 能稳定跑通当前已支持的公开能力。
+* [ ] 新增 CLI 测试按 `hubvault/entry` 模块树一一对应拆分。
+* [ ] `make unittest` 通过。
+
+## Phase 7. 对拍
 
 ### Goal
 
@@ -269,7 +333,7 @@
 * [ ] 对拍套件不会回退去依赖 private / protected 内部实现。
 * [ ] `make unittest` 与相应对拍回归通过。
 
-## Phase 7. 异常测试
+## Phase 8. 异常测试
 
 ### Goal
 
@@ -333,7 +397,7 @@
 * [ ] 异常测试在三平台上至少保有可运行的核心子集。
 * [ ] `make unittest` 通过。
 
-## Phase 8. 性能
+## Phase 9. 性能
 
 ### Goal
 
@@ -360,7 +424,7 @@
 * [ ] 小文件路径不会因为追求大文件性能而出现明显回退。
 * [ ] `make unittest` 与性能基线回归通过。
 
-## Phase 9. 文档、README 与教程
+## Phase 10. 文档、README 与教程
 
 ### Goal
 
@@ -372,7 +436,7 @@
 
 ### Todo
 
-* [ ] 重写 README 的定位、快速开始、能力矩阵和与 `huggingface_hub` / `git-lfs` 的关系说明，确保内容与 Phase 0-8 的真实实现一致。
+* [ ] 重写 README 的定位、快速开始、能力矩阵和与 `huggingface_hub` / `git-lfs` 的关系说明，确保内容与 Phase 0-9 的真实实现一致。
 * [ ] 补齐公开 API 文档、docstring 示例、MVP 教程、merge 使用教程、异常恢复与空间治理教程。
 * [ ] 所有示例都直接展示完整流程、真实输出形状和公开返回模型，不再只引用内部说明。
 * [ ] 为常见真实场景编排端到端教程，包括初始化仓库、提交多个版本、分支/merge、下载、校验、GC/历史压缩与异常后恢复。
