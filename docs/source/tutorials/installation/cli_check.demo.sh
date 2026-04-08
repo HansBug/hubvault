@@ -1,1 +1,2 @@
 hubvault -v
+hv -v

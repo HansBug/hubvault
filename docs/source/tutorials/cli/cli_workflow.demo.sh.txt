@@ -1,0 +1,13 @@
+Initialized empty HubVault repository in <tmp>/repo
+[main b222657] add weights
+[feature b2dcc8d] add readme
+Updating b222657..b2dcc8d
+Fast-forward
+ b2dcc8d add readme
+ b222657 add weights
+ 34d6b75 Initial commit
+100644 blob f08332a44cfc0e71216cea64eb6a1821ab3a4fcf	README.md
+040000 tree 4a30fe6589e53f20946968ae9f7c9bc926a2d0c4	artifacts
+100644 blob a1ead3a8f1d51e149830d2e65841d5695ec4d681	artifacts/model.bin
+Quick verification OK
+Checked refs: refs/heads/feature, refs/heads/main

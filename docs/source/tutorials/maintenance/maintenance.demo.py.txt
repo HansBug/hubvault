@@ -1,0 +1,32 @@
+{
+  "actual_gc": {
+    "reclaimed_cache_size": 1346,
+    "reclaimed_size": 2104,
+    "removed_file_count": 8
+  },
+  "after": {
+    "historical_retained_size": 0,
+    "reclaimable_cache_size": 0,
+    "reclaimable_gc_size": 0
+  },
+  "before": {
+    "historical_retained_size": 3072,
+    "reclaimable_cache_size": 1346,
+    "reclaimable_gc_size": 72,
+    "reclaimable_temporary_size": 0
+  },
+  "dry_gc": {
+    "dry_run": true,
+    "notes": [
+      "Rollback history still retains about 3.0 KiB; use squash_history(...) to make that space reclaimable.",
+      "dry-run: no files were modified"
+    ]
+  },
+  "full_verify_ok": true,
+  "quick_verify_ok": true,
+  "squash": {
+    "dropped_ancestor_count": 2,
+    "new_head": "fa02c9238b83",
+    "rewritten_commit_count": 1
+  }
+}

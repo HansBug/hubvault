@@ -409,7 +409,7 @@
 
 ### Status
 
-未开始。
+已完成。
 
 ### Todo
 
@@ -438,19 +438,79 @@
 
 未开始。
 
+### README 组织计划
+
+README 需要从“项目口号 + 状态提示”升级为真正可用的入口文档，至少覆盖以下板块：
+
+* 项目定位：hubvault 是什么、不是什么、适合什么场景。
+* 核心能力：本地可搬运仓库、HF 风格 API、Git 风格 commit/refs、chunked 大文件、校验与恢复。
+* 快速开始：同时给出 Python API 与 CLI 的最短真实工作流。
+* 兼容性边界：哪些公开语义对齐 `huggingface_hub` / `git-lfs` / Git，哪些地方保持 hubvault 自身设计。
+* 数据安全语义：只读 detached view、显式写 API、原子提交、锁与恢复模型。
+* 文档导航：把安装、快速开始、分支合并、维护治理、内部结构教程全部串起来。
+* 交付与开发：支持的平台/Python 版本、常用开发命令、回归入口。
+
+### 教程目录组织计划
+
+参考 `pyfcstm-2` 的 docs 结构，教程统一放在 `docs/source/tutorials/<topic>/` 下，每个主题目录至少包含：
+
+* `index.rst`
+* `index_zh.rst`
+* 至少一个可直接执行的 `.demo.py` 或 `.demo.sh` 示例文件
+* 与示例对应的真实输出快照 `.txt`（必要时）
+
+Phase 10 计划新增并维护以下教程主题：
+
+* `installation`：安装、版本检查、`hubvault` / `hv` CLI 名称、最小安装验证。
+* `quick_start`：从 `create_repo()` 到多次提交、列树、读取、`hf_hub_download()`、`snapshot_download()` 的最短上手路径。
+* `workflow`：围绕 branch/tag/log/list_repo_commits/list_repo_refs/merge 的真实日常协作流。
+* `cli`：围绕 `hubvault` CLI 的 git-like 使用路径，强调“命令形态接近 Git，但没有 workspace”。
+* `maintenance`：`quick_verify()`、`full_verify()`、`get_storage_overview()`、`gc()`、`squash_history()` 的治理路径。
+* `structure`：仓库磁盘布局、对象/refs/chunks/cache/txn/quarantine、detached view、安全模型与 `how it works`。
+
+### 教程逐篇内容计划
+
+`installation`
+    覆盖 PyPI/GitHub 安装、Python 版本要求、Python 导入检查、CLI 帮助输出检查，以及文档入口链接。
+
+`quick_start`
+    覆盖初始化仓库、初始空 commit、上传模型文件、再次提交新版本、列出文件和提交、读取字节、下载单文件与快照，并明确指出下载路径是 detached 视图。
+
+`workflow`
+    覆盖创建功能分支、在分支上做多次 commit、打 tag、查看 log 与 refs、执行 fast-forward merge / merge commit，以及冲突结果的公开返回形状。
+
+`cli`
+    覆盖 `init`、`status`、`commit`、`log`、`branch`、`tag`、`merge`、`download`、`snapshot`、`verify` 的串联工作流，并展示典型输出形状。
+
+`maintenance`
+    覆盖校验仓库、分析空间占用、预览 GC、执行 GC、历史压缩（squash）前后的变化，以及“何时该用哪一个维护命令”的判断建议。
+
+`structure`
+    覆盖 repo 根目录的组织结构、对象 ID / 文件 `oid` / `sha256` 的公开与内部语义区别、chunk 触发条件、事务目录如何实现“本次操作从未发生过”的原子语义。
+
 ### Todo
 
-* [ ] 重写 README 的定位、快速开始、能力矩阵和与 `huggingface_hub` / `git-lfs` 的关系说明，确保内容与 Phase 0-9 的真实实现一致。
-* [ ] 补齐公开 API 文档、docstring 示例、MVP 教程、merge 使用教程、异常恢复与空间治理教程。
-* [ ] 所有示例都直接展示完整流程、真实输出形状和公开返回模型，不再只引用内部说明。
-* [ ] 为常见真实场景编排端到端教程，包括初始化仓库、提交多个版本、分支/merge、下载、校验、GC/历史压缩与异常后恢复。
-* [ ] 同步记录对拍结论、最小必要偏差和已知限制，避免用户误以为与 HF/Git 完全等价。
-* [ ] 在文档收尾阶段跑通 `make rst_auto`、`make package`，必要时补 `make build` 与 `make test_cli`，确保交付面一致。
+* [x] 重写 README 的定位、核心能力、快速开始、兼容性边界、数据安全语义、文档导航和开发入口。
+* [x] 更新 docs 首页与中英双语 landing page，移除“只有脚手架/尚未实现”的过期描述。
+* [x] 扩展 `tutorials/installation/`，明确 `hubvault` / `hv` CLI 名称与最小安装检查流程。
+* [x] 新增 `tutorials/quick_start/`，用真实 Python API 示例串起 init、commit、read、download、snapshot。
+* [x] 新增 `tutorials/workflow/`，覆盖 branch、tag、log、refs、merge 与公开返回结果。
+* [x] 新增 `tutorials/cli/`，覆盖 git-like CLI 的完整工作流与典型输出。
+* [x] 新增 `tutorials/maintenance/`，覆盖 verify、storage overview、GC、squash history 与空间治理建议。
+* [x] 新增 `tutorials/structure/`，解释 repo 磁盘布局、对象模型、chunk 规则、detached view 与事务/锁语义。
+* [x] 为每篇教程补至少一个可直接执行的 `.demo.py` 或 `.demo.sh`，并补齐对应真实输出快照。
+* [x] 所有示例都直接展示完整流程、真实输出形状和公开返回模型，不再只引用内部说明。
+* [x] 同步记录 HF/Git 对齐结论、最小必要偏差和已知限制，避免用户误以为与 HF/Git 完全等价。
+* [x] 在文档收尾阶段跑通 `make docs_en`、`make docs_zh`、`make package`；由于本阶段未修改 API 参考源码与生成结果，`make rst_auto` 无需额外执行。
 
 ### Checklist
 
-* [ ] README、API 文档和教程与当前代码行为一致，没有未来时伪实现。
-* [ ] 文档示例全部走公开 API / 公开 CLI，不依赖 private / protected 内容。
-* [ ] 教程覆盖正常路径、恢复路径和空间治理路径。
-* [ ] 关键示例中的路径、哈希、commit/refs 输出形状与真实实现一致。
-* [ ] `make rst_auto` 和相关交付回归通过。
+* [x] README 与 docs 首页已经成为真实入口文档，而不是阶段性占位说明。
+* [x] 每个教程主题目录都具备中英双语 `index` 页面与至少一个真实可执行示例文件。
+* [x] README、API 文档和教程与当前代码行为一致，没有未来时伪实现。
+* [x] 文档示例全部走公开 API / 公开 CLI，不依赖 private / protected 内容。
+* [x] 教程覆盖正常路径、分支合并路径、恢复路径和空间治理路径。
+* [x] `structure` 教程清楚解释了 repo 组织结构、存储格式和 `how it works`。
+* [x] 关键示例中的路径、哈希、commit/refs 输出形状与真实实现一致。
+* [x] README 与 docs 明确说明与 HF/Git 的对齐点和保留差异。
+* [x] `make docs_en`、`make docs_zh` 和相关交付回归通过；本阶段未涉及 API 参考生成内容，因此未额外执行 `make rst_auto`。
