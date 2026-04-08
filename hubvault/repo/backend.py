@@ -45,6 +45,8 @@ from ..models import (
     GitCommitInfo,
     GitRefInfo,
     GitRefs,
+    MergeConflict,
+    MergeResult,
     ReflogEntry,
     RepoFile,
     RepoFolder,
@@ -1113,6 +1115,269 @@ class RepositoryBackend(object):
             finally:
                 self._cleanup_txdir(txdir)
 
+    def merge(
+        self,
+        source_revision: str,
+        target_revision: str = DEFAULT_BRANCH,
+        parent_commit: Optional[str] = None,
+        commit_message: Optional[str] = None,
+        commit_description: Optional[str] = None,
+    ) -> MergeResult:
+        """
+        Merge a source revision into a target branch.
+
+        The local repository exposes merge as a first-class public write API.
+        Successful merges return a structured result describing whether the
+        operation created a merge commit, fast-forwarded the target branch, or
+        found the branches already up to date. Conflicts are reported in the
+        result instead of mutating repository state.
+
+        :param source_revision: Source branch, tag, or commit ID to merge from
+        :type source_revision: str
+        :param target_revision: Target branch name or full branch ref, defaults
+            to :data:`DEFAULT_BRANCH`
+        :type target_revision: str, optional
+        :param parent_commit: Optional expected current head for optimistic
+            concurrency on the target branch
+        :type parent_commit: Optional[str], optional
+        :param commit_message: Optional merge-commit title
+        :type commit_message: Optional[str], optional
+        :param commit_description: Optional merge-commit description/body
+        :type commit_description: Optional[str], optional
+        :return: Structured merge result
+        :rtype: MergeResult
+        :raises ConflictError: Raised when ``parent_commit`` does not match the
+            current target head.
+        :raises RevisionNotFoundError: Raised when the source revision or
+            target branch does not exist.
+        :raises UnsupportedPathError: Raised when ``target_revision`` is not a
+            branch ref.
+        :raises ValueError: Raised when ``commit_message`` is explicitly empty.
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     backend = RepositoryBackend(Path(tmpdir) / "repo")
+            ...     _ = backend.create_repo()
+            ...     _ = backend.create_commit(
+            ...         operations=[CommitOperationAdd("demo.txt", b"base")],
+            ...         commit_message="seed",
+            ...     )
+            ...     backend.create_branch(branch="feature")
+            ...     _ = backend.create_commit(
+            ...         revision="feature",
+            ...         operations=[CommitOperationAdd("feature.txt", b"hello")],
+            ...         commit_message="feature work",
+            ...     )
+            ...     backend.merge("feature").status
+            'fast-forward'
+        """
+
+        self._ensure_repo()
+        with self._write_locked():
+            self._recover_transactions()
+            repo_config = self._repo_config()
+            target_branch_name = self._resolve_target_branch_name_unlocked(
+                target_revision or str(repo_config["default_branch"])
+            )
+            target_head = self._read_ref(target_branch_name)
+            if parent_commit is not None and parent_commit != target_head:
+                raise ConflictError("expected head does not match current branch head")
+
+            source_head = self._resolve_revision(source_revision, allow_empty_ref=True)
+
+            if source_head is None:
+                return MergeResult(
+                    status="already-up-to-date",
+                    target_revision=target_branch_name,
+                    source_revision=source_revision,
+                    base_commit=None,
+                    target_head_before=target_head,
+                    source_head=None,
+                    head_after=target_head,
+                    commit=self._commit_info(target_head, target_branch_name) if target_head is not None else None,
+                    conflicts=[],
+                    fast_forward=False,
+                    created_commit=False,
+                )
+
+            if target_head is None:
+                txdir = self._create_txdir(target_branch_name, target_head)
+                try:
+                    self._commit_branch_ref_update_unlocked(
+                        txdir=txdir,
+                        branch_name=target_branch_name,
+                        old_head=target_head,
+                        new_head=source_head,
+                        message=self._default_merge_title(source_revision, target_branch_name),
+                    )
+                finally:
+                    self._cleanup_txdir(txdir)
+                return MergeResult(
+                    status="fast-forward",
+                    target_revision=target_branch_name,
+                    source_revision=source_revision,
+                    base_commit=None,
+                    target_head_before=None,
+                    source_head=source_head,
+                    head_after=source_head,
+                    commit=self._commit_info(source_head, target_branch_name),
+                    conflicts=[],
+                    fast_forward=True,
+                    created_commit=False,
+                )
+
+            if target_head == source_head:
+                return MergeResult(
+                    status="already-up-to-date",
+                    target_revision=target_branch_name,
+                    source_revision=source_revision,
+                    base_commit=target_head,
+                    target_head_before=target_head,
+                    source_head=source_head,
+                    head_after=target_head,
+                    commit=self._commit_info(target_head, target_branch_name),
+                    conflicts=[],
+                    fast_forward=False,
+                    created_commit=False,
+                )
+
+            if self._is_ancestor_unlocked(source_head, target_head):
+                return MergeResult(
+                    status="already-up-to-date",
+                    target_revision=target_branch_name,
+                    source_revision=source_revision,
+                    base_commit=source_head,
+                    target_head_before=target_head,
+                    source_head=source_head,
+                    head_after=target_head,
+                    commit=self._commit_info(target_head, target_branch_name),
+                    conflicts=[],
+                    fast_forward=False,
+                    created_commit=False,
+                )
+
+            if self._is_ancestor_unlocked(target_head, source_head):
+                txdir = self._create_txdir(target_branch_name, target_head)
+                try:
+                    self._commit_branch_ref_update_unlocked(
+                        txdir=txdir,
+                        branch_name=target_branch_name,
+                        old_head=target_head,
+                        new_head=source_head,
+                        message=self._default_merge_title(source_revision, target_branch_name),
+                    )
+                finally:
+                    self._cleanup_txdir(txdir)
+                return MergeResult(
+                    status="fast-forward",
+                    target_revision=target_branch_name,
+                    source_revision=source_revision,
+                    base_commit=target_head,
+                    target_head_before=target_head,
+                    source_head=source_head,
+                    head_after=source_head,
+                    commit=self._commit_info(source_head, target_branch_name),
+                    conflicts=[],
+                    fast_forward=True,
+                    created_commit=False,
+                )
+
+            base_commit = self._find_merge_base_unlocked(target_head, source_head)
+            target_snapshot = self._snapshot_for_commit(target_head)
+            source_snapshot = self._snapshot_for_commit(source_head)
+            base_snapshot = self._snapshot_for_commit(base_commit)
+            merged_snapshot, conflicts = self._merge_snapshots_unlocked(
+                base_snapshot=base_snapshot,
+                target_snapshot=target_snapshot,
+                source_snapshot=source_snapshot,
+            )
+            if conflicts:
+                return MergeResult(
+                    status="conflict",
+                    target_revision=target_branch_name,
+                    source_revision=source_revision,
+                    base_commit=base_commit,
+                    target_head_before=target_head,
+                    source_head=source_head,
+                    head_after=target_head,
+                    commit=None,
+                    conflicts=conflicts,
+                    fast_forward=False,
+                    created_commit=False,
+                )
+
+            merge_title = commit_message
+            if merge_title is None:
+                merge_title = self._default_merge_title(source_revision, target_branch_name)
+            if len(merge_title) == 0:
+                raise ValueError("`commit_message` can't be empty, please pass a value.")
+
+            if commit_description is None:
+                stored_title, stored_description = self._split_commit_message(merge_title)
+                full_commit_message = merge_title
+            else:
+                stored_title = str(merge_title)
+                stored_description = str(commit_description)
+                full_commit_message = self._compose_commit_text(stored_title, stored_description)
+
+            txdir = self._create_txdir(target_branch_name, target_head)
+            try:
+                self._validate_snapshot(merged_snapshot)
+                tree_id = self._stage_tree_objects(txdir, merged_snapshot)
+                commit_payload = {
+                    "format_version": FORMAT_VERSION,
+                    "tree_id": tree_id,
+                    "parents": [target_head, source_head],
+                    "author": "",
+                    "committer": "",
+                    "created_at": _utc_now(),
+                    "message": full_commit_message,
+                    "title": stored_title,
+                    "description": stored_description,
+                    "metadata": {
+                        "merge": {
+                            "base_commit": base_commit,
+                            "source_revision": source_revision,
+                            "target_revision": target_branch_name,
+                        }
+                    },
+                }
+                commit_id = self._stage_json_object(txdir, "commits", commit_payload)
+                self._stage_chunk_manifest(txdir)
+                self._write_tx_state(txdir, "STAGED")
+                self._publish_staged_objects(txdir)
+                self._write_tx_state(txdir, "PUBLISHED_OBJECTS")
+                self._commit_branch_ref_update_unlocked(
+                    txdir=txdir,
+                    branch_name=target_branch_name,
+                    old_head=target_head,
+                    new_head=commit_id,
+                    message=stored_title,
+                )
+            finally:
+                self._cleanup_txdir(txdir)
+
+            return MergeResult(
+                status="merged",
+                target_revision=target_branch_name,
+                source_revision=source_revision,
+                base_commit=base_commit,
+                target_head_before=target_head,
+                source_head=source_head,
+                head_after=commit_id,
+                commit=CommitInfo(
+                    commit_url=self._commit_url(commit_id),
+                    commit_message=stored_title,
+                    commit_description=stored_description,
+                    oid=commit_id,
+                ),
+                conflicts=[],
+                fast_forward=False,
+                created_commit=True,
+            )
+
     def get_paths_info(
         self,
         paths: Union[Sequence[str], str],
@@ -1284,9 +1549,9 @@ class RepositoryBackend(object):
         such as ``repo_id``, ``repo_type``, and ``token`` because they have no
         real behavior for an embedded on-disk repository.
 
-        The MVP currently produces linear history only, so the returned list is
-        ordered from the selected head commit back through its first-parent
-        chain until the root commit.
+        The returned list walks the reachable commit DAG from the selected head
+        in a stable parent-first order. This keeps merge commits visible while
+        remaining deterministic for local regression tests.
 
         :param revision: Revision or commit ID to inspect, defaults to
             :data:`DEFAULT_BRANCH`
@@ -1324,17 +1589,10 @@ class RepositoryBackend(object):
             if head_commit_id is None:
                 return []
 
-            commits = []
-            seen = set()
-            current_commit_id = head_commit_id
-            while current_commit_id is not None and current_commit_id not in seen:
-                seen.add(current_commit_id)
-                info = self._git_commit_info(current_commit_id, formatted=formatted)
-                commits.append(info)
-                commit_payload = self._read_object_payload("commits", current_commit_id)
-                parents = list(commit_payload.get("parents", []))
-                current_commit_id = str(parents[0]) if parents else None
-            return commits
+            return [
+                self._git_commit_info(commit_id, formatted=formatted)
+                for commit_id in self._reachable_commit_order_unlocked(head_commit_id)
+            ]
 
     def list_repo_refs(self, include_pull_requests: bool = False) -> GitRefs:
         """
@@ -2589,22 +2847,16 @@ class RepositoryBackend(object):
             self._recover_transactions()
             branch_name = _validate_ref_name(ref_name)
             target_commit_id = self._resolve_revision(to_revision)
-            txdir = self._create_txdir(branch_name, target_commit_id)
+            old_head = self._read_ref(branch_name)
+            txdir = self._create_txdir(branch_name, old_head)
             try:
-                old_head = self._read_ref(branch_name)
-                self._write_tx_ref_update(
+                self._commit_branch_ref_update_unlocked(
                     txdir=txdir,
-                    ref_kind="branch",
-                    ref_name=branch_name,
+                    branch_name=branch_name,
                     old_head=old_head,
                     new_head=target_commit_id,
                     message="reset ref",
-                    ref_existed_before=True,
                 )
-                self._write_ref(branch_name, target_commit_id)
-                self._write_tx_state(txdir, "UPDATED_REF")
-                self._write_tx_state(txdir, "COMMITTED")
-                self._append_reflog(branch_name, old_head, target_commit_id, "reset ref")
             finally:
                 self._cleanup_txdir(txdir)
             return self._commit_info(target_commit_id, branch_name)
@@ -3495,6 +3747,25 @@ class RepositoryBackend(object):
             raise RevisionNotFoundError("revision has no commits yet: %s" % branch_name)
         return branch_name, "refs/heads/" + branch_name, head
 
+    def _resolve_target_branch_name_unlocked(self, revision: str) -> str:
+        """Resolve a merge target to an existing branch name."""
+
+        text = str(revision)
+        if text.startswith(OBJECT_HASH + ":") or text.startswith("refs/tags/"):
+            raise UnsupportedPathError("merge target must be a branch ref")
+        if text.startswith("refs/heads/"):
+            branch_name = _validate_ref_name(text.split("/", 2)[-1])
+        else:
+            branch_name = _validate_ref_name(text)
+        self._read_ref(branch_name)
+        return branch_name
+
+    @staticmethod
+    def _default_merge_title(source_revision: str, target_branch_name: str) -> str:
+        """Build the default merge-commit or merge-reflog title."""
+
+        return "Merge %s into %s" % (source_revision, target_branch_name)
+
     def _commit_lineage_unlocked(self, head_commit_id: str) -> List[str]:
         """Return the first-parent lineage from a head commit back to the root."""
 
@@ -3508,6 +3779,240 @@ class RepositoryBackend(object):
             parents = list(commit_payload.get("parents", []))
             current_commit_id = str(parents[0]) if parents else None
         return lineage
+
+    def _reachable_commit_order_unlocked(self, head_commit_id: str) -> List[str]:
+        """Return a stable parent-first traversal order for reachable commits."""
+
+        ordered = []
+        seen = set()
+        stack = [head_commit_id]
+        while stack:
+            current_commit_id = stack.pop()
+            if current_commit_id is None or current_commit_id in seen:
+                continue
+            seen.add(current_commit_id)
+            ordered.append(current_commit_id)
+            payload = self._read_object_payload("commits", current_commit_id)
+            parents = [str(parent_id) for parent_id in payload.get("parents", [])]
+            stack.extend(reversed(parents))
+        return ordered
+
+    def _ancestor_distances_unlocked(self, commit_id: Optional[str]) -> Dict[str, int]:
+        """Return the shortest parent-distance from a commit to each ancestor."""
+
+        if commit_id is None:
+            return {}
+        distances = {}
+        pending = [(commit_id, 0)]
+        while pending:
+            current_commit_id, distance = pending.pop(0)
+            previous = distances.get(current_commit_id)
+            if previous is not None and previous <= distance:
+                continue
+            distances[current_commit_id] = distance
+            payload = self._read_object_payload("commits", current_commit_id)
+            pending.extend((str(parent_id), distance + 1) for parent_id in payload.get("parents", []))
+        return distances
+
+    def _is_ancestor_unlocked(self, ancestor_commit_id: Optional[str], descendant_commit_id: Optional[str]) -> bool:
+        """Return whether one commit is reachable from another through parents."""
+
+        if ancestor_commit_id is None or descendant_commit_id is None:
+            return False
+        return ancestor_commit_id in self._ancestor_distances_unlocked(descendant_commit_id)
+
+    def _find_merge_base_unlocked(
+        self,
+        target_commit_id: Optional[str],
+        source_commit_id: Optional[str],
+    ) -> Optional[str]:
+        """Resolve the nearest common ancestor used as the merge base."""
+
+        if target_commit_id is None or source_commit_id is None:
+            return None
+        target_distances = self._ancestor_distances_unlocked(target_commit_id)
+        source_distances = self._ancestor_distances_unlocked(source_commit_id)
+        candidates = set(target_distances).intersection(source_distances)
+        if not candidates:
+            return None
+        return min(
+            candidates,
+            key=lambda commit_id: (
+                target_distances[commit_id] + source_distances[commit_id],
+                max(target_distances[commit_id], source_distances[commit_id]),
+                commit_id,
+            ),
+        )
+
+    def _file_identity_unlocked(
+        self,
+        file_object_id: Optional[str],
+        cache: Dict[str, Tuple[str, int, str]],
+    ) -> Optional[Tuple[str, int, str]]:
+        """Return a stable logical identity tuple for a file object."""
+
+        if file_object_id is None:
+            return None
+        identity = cache.get(file_object_id)
+        if identity is not None:
+            return identity
+        payload = self._read_object_payload("files", file_object_id)
+        identity = (
+            _public_sha256_hex(str(payload["sha256"])),
+            int(payload["logical_size"]),
+            str(payload["oid"]),
+        )
+        cache[file_object_id] = identity
+        return identity
+
+    def _same_file_version_unlocked(
+        self,
+        left_file_object_id: Optional[str],
+        right_file_object_id: Optional[str],
+        cache: Dict[str, Tuple[str, int, str]],
+    ) -> bool:
+        """Return whether two snapshot entries represent the same logical file."""
+
+        return self._file_identity_unlocked(left_file_object_id, cache) == self._file_identity_unlocked(
+            right_file_object_id,
+            cache,
+        )
+
+    def _make_merge_conflict_unlocked(
+        self,
+        path: str,
+        conflict_type: str,
+        message: str,
+        base_file_object_id: Optional[str],
+        target_file_object_id: Optional[str],
+        source_file_object_id: Optional[str],
+        identity_cache: Dict[str, Tuple[str, int, str]],
+        related_path: Optional[str] = None,
+    ) -> MergeConflict:
+        """Build a public merge-conflict entry from file-object identifiers."""
+
+        base_identity = self._file_identity_unlocked(base_file_object_id, identity_cache)
+        target_identity = self._file_identity_unlocked(target_file_object_id, identity_cache)
+        source_identity = self._file_identity_unlocked(source_file_object_id, identity_cache)
+        return MergeConflict(
+            path=path,
+            conflict_type=conflict_type,
+            message=message,
+            base_oid=base_identity[2] if base_identity is not None else None,
+            target_oid=target_identity[2] if target_identity is not None else None,
+            source_oid=source_identity[2] if source_identity is not None else None,
+            related_path=related_path,
+        )
+
+    def _merge_structural_conflicts_unlocked(self, snapshot: Dict[str, str]) -> List[MergeConflict]:
+        """Return structural conflicts for a merged snapshot candidate."""
+
+        conflicts = []
+        seen_pairs = set()
+        seen_per_dir = {}
+        for path in sorted(snapshot):
+            parts = path.split("/")
+            for index in range(1, len(parts)):
+                prefix = "/".join(parts[:index])
+                if prefix in snapshot:
+                    key = (prefix, path, "file/directory")
+                    if key in seen_pairs:
+                        continue
+                    seen_pairs.add(key)
+                    conflicts.append(
+                        MergeConflict(
+                            path=prefix,
+                            conflict_type="file/directory",
+                            message="file and directory paths conflict",
+                            base_oid=None,
+                            target_oid=None,
+                            source_oid=None,
+                            related_path=path,
+                        )
+                    )
+
+            parent = "/".join(parts[:-1])
+            directory_entries = seen_per_dir.setdefault(parent, {})
+            folded = parts[-1].casefold()
+            if folded in directory_entries and directory_entries[folded] != parts[-1]:
+                other_name = directory_entries[folded]
+                other_path = other_name if not parent else parent + "/" + other_name
+                key = tuple(sorted((other_path, path)) + ["case-fold"])
+                if key not in seen_pairs:
+                    seen_pairs.add(key)
+                    conflicts.append(
+                        MergeConflict(
+                            path=other_path,
+                            conflict_type="case-fold",
+                            message="case-insensitive path conflict",
+                            base_oid=None,
+                            target_oid=None,
+                            source_oid=None,
+                            related_path=path,
+                        )
+                    )
+            directory_entries[folded] = parts[-1]
+        return conflicts
+
+    def _merge_snapshots_unlocked(
+        self,
+        base_snapshot: Dict[str, str],
+        target_snapshot: Dict[str, str],
+        source_snapshot: Dict[str, str],
+    ) -> Tuple[Dict[str, str], List[MergeConflict]]:
+        """Three-way merge flat snapshots and return merged paths plus conflicts."""
+
+        identity_cache = {}
+        merged_snapshot = {}
+        conflicts = []
+        for path in sorted(set(base_snapshot).union(target_snapshot).union(source_snapshot)):
+            base_file_object_id = base_snapshot.get(path)
+            target_file_object_id = target_snapshot.get(path)
+            source_file_object_id = source_snapshot.get(path)
+
+            if self._same_file_version_unlocked(target_file_object_id, source_file_object_id, identity_cache):
+                if target_file_object_id is not None:
+                    merged_snapshot[path] = target_file_object_id
+                continue
+
+            if self._same_file_version_unlocked(base_file_object_id, target_file_object_id, identity_cache):
+                if source_file_object_id is not None:
+                    merged_snapshot[path] = source_file_object_id
+                continue
+
+            if self._same_file_version_unlocked(base_file_object_id, source_file_object_id, identity_cache):
+                if target_file_object_id is not None:
+                    merged_snapshot[path] = target_file_object_id
+                continue
+
+            if base_file_object_id is None:
+                conflict_type = "add/add"
+                message = "Both sides added %s differently." % path
+            elif target_file_object_id is None or source_file_object_id is None:
+                conflict_type = "delete/modify"
+                message = "One side deleted %s while the other changed it." % path
+            else:
+                conflict_type = "modify/modify"
+                message = "Both sides changed %s differently." % path
+            conflicts.append(
+                self._make_merge_conflict_unlocked(
+                    path=path,
+                    conflict_type=conflict_type,
+                    message=message,
+                    base_file_object_id=base_file_object_id,
+                    target_file_object_id=target_file_object_id,
+                    source_file_object_id=source_file_object_id,
+                    identity_cache=identity_cache,
+                )
+            )
+
+        if conflicts:
+            return {}, conflicts
+
+        structural_conflicts = self._merge_structural_conflicts_unlocked(merged_snapshot)
+        if structural_conflicts:
+            return {}, structural_conflicts
+        return merged_snapshot, []
 
     def _collect_graph_state_unlocked(self, commit_ids: Sequence[str], include_parents: bool) -> Dict[str, set]:
         """Collect reachable commit/tree/file/blob/chunk identifiers."""
@@ -5550,6 +6055,45 @@ class RepositoryBackend(object):
         """
 
         _write_json_atomic(txdir / "STATE.json", {"state": state, "updated_at": _utc_now()})
+
+    def _commit_branch_ref_update_unlocked(
+        self,
+        txdir: Path,
+        branch_name: str,
+        old_head: Optional[str],
+        new_head: Optional[str],
+        message: str,
+    ) -> None:
+        """
+        Persist and finalize one committed branch-head update.
+
+        :param txdir: Transaction working directory
+        :type txdir: pathlib.Path
+        :param branch_name: Normalized branch name
+        :type branch_name: str
+        :param old_head: Previous branch head
+        :type old_head: Optional[str]
+        :param new_head: New branch head
+        :type new_head: Optional[str]
+        :param message: Reflog message for the committed update
+        :type message: str
+        :return: ``None``.
+        :rtype: None
+        """
+
+        self._write_tx_ref_update(
+            txdir=txdir,
+            ref_kind="branch",
+            ref_name=branch_name,
+            old_head=old_head,
+            new_head=new_head,
+            message=message,
+            ref_existed_before=True,
+        )
+        self._write_ref(branch_name, new_head)
+        self._write_tx_state(txdir, "UPDATED_REF")
+        self._write_tx_state(txdir, "COMMITTED")
+        self._append_reflog(branch_name, old_head, new_head, message)
 
     def _read_tx_state(self, txdir: Path) -> Optional[str]:
         """

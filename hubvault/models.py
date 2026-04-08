@@ -9,6 +9,8 @@ The module contains:
 
 * :class:`RepoInfo` - Basic information about a local repository
 * :class:`CommitInfo` - HF-style commit creation result metadata
+* :class:`MergeConflict` - Structured merge-conflict description
+* :class:`MergeResult` - Result of a branch merge attempt
 * :class:`GitCommitInfo` - HF-style commit listing metadata
 * :class:`GitRefInfo` - HF-style git reference metadata
 * :class:`GitRefs` - HF-style git reference collection
@@ -146,6 +148,122 @@ class CommitInfo(str):
         object.__setattr__(self, "pr_num", None)
         if self._url is None:
             object.__setattr__(self, "_url", self.commit_url)
+
+
+@dataclass(frozen=True)
+class MergeConflict:
+    """
+    Describe one structured conflict detected during a merge attempt.
+
+    :param path: Primary repo-relative path involved in the conflict
+    :type path: str
+    :param conflict_type: Stable conflict kind such as ``"modify/modify"``,
+        ``"add/add"``, ``"delete/modify"``, ``"file/directory"``, or
+        ``"case-fold"``
+    :type conflict_type: str
+    :param message: Human-readable conflict summary
+    :type message: str
+    :param base_oid: Base-side logical file OID, if a file version exists
+    :type base_oid: Optional[str]
+    :param target_oid: Target-branch logical file OID, if a file version exists
+    :type target_oid: Optional[str]
+    :param source_oid: Source-side logical file OID, if a file version exists
+    :type source_oid: Optional[str]
+    :param related_path: Secondary repo-relative path for structural conflicts,
+        or ``None`` when the conflict concerns only ``path``
+    :type related_path: Optional[str]
+
+    Example::
+
+        >>> conflict = MergeConflict(
+        ...     path="demo.txt",
+        ...     conflict_type="modify/modify",
+        ...     message="Both sides changed demo.txt differently.",
+        ...     base_oid="abc",
+        ...     target_oid="def",
+        ...     source_oid="ghi",
+        ... )
+        >>> conflict.conflict_type
+        'modify/modify'
+    """
+
+    path: str
+    conflict_type: str
+    message: str
+    base_oid: Optional[str]
+    target_oid: Optional[str]
+    source_oid: Optional[str]
+    related_path: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class MergeResult:
+    """
+    Describe the result of a public branch merge operation.
+
+    :param status: Stable merge status string. Current values are
+        ``"merged"``, ``"fast-forward"``, ``"already-up-to-date"``, and
+        ``"conflict"``
+    :type status: str
+    :param target_revision: Target branch that received or would receive the merge
+    :type target_revision: str
+    :param source_revision: Source revision requested by the caller
+    :type source_revision: str
+    :param base_commit: Resolved merge base commit, or ``None`` when no common
+        ancestor exists
+    :type base_commit: Optional[str]
+    :param target_head_before: Target branch head before the merge attempt
+    :type target_head_before: Optional[str]
+    :param source_head: Resolved source commit
+    :type source_head: Optional[str]
+    :param head_after: Target branch head after the merge attempt
+    :type head_after: Optional[str]
+    :param commit: Commit metadata for the resulting head when the merge did
+        not conflict, or ``None`` for conflict results
+    :type commit: Optional[CommitInfo]
+    :param conflicts: Structured conflicts detected during the merge attempt
+    :type conflicts: List[MergeConflict]
+    :param fast_forward: Whether the merge resolved as a fast-forward ref move
+    :type fast_forward: bool
+    :param created_commit: Whether the merge created a brand-new merge commit
+    :type created_commit: bool
+
+    Example::
+
+        >>> commit = CommitInfo(
+        ...     commit_url="file:///tmp/repo#commit=sha256:c1",
+        ...     commit_message="seed",
+        ...     commit_description="",
+        ...     oid="sha256:c1",
+        ... )
+        >>> result = MergeResult(
+        ...     status="fast-forward",
+        ...     target_revision="main",
+        ...     source_revision="feature",
+        ...     base_commit="sha256:b0",
+        ...     target_head_before="sha256:b0",
+        ...     source_head="sha256:c1",
+        ...     head_after="sha256:c1",
+        ...     commit=commit,
+        ...     conflicts=[],
+        ...     fast_forward=True,
+        ...     created_commit=False,
+        ... )
+        >>> result.fast_forward
+        True
+    """
+
+    status: str
+    target_revision: str
+    source_revision: str
+    base_commit: Optional[str]
+    target_head_before: Optional[str]
+    source_head: Optional[str]
+    head_after: Optional[str]
+    commit: Optional[CommitInfo]
+    conflicts: List[MergeConflict] = field(default_factory=list)
+    fast_forward: bool = False
+    created_commit: bool = False
 
 
 @dataclass(frozen=True)

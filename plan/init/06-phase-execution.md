@@ -25,7 +25,8 @@
 - 当前 Phase 3 已经落地 `hubvault/storage/` 大文件引擎与 `test/test_phase3.py` 集成回归，并把 `hubvault/repo.py` 包化为 `hubvault/repo/`。
 - 当前 Phase 3 已补齐阈值边界回归，明确验证“只有大小大于等于 `large_file_threshold` 的文件才进入 chunked storage，小文件保持 whole-file blob”。
 - 当前 Phase 4 已经落地 `full_verify()`、`get_storage_overview()`、`gc()`、`squash_history()` 与对应公开模型，并补上 `test/test_phase4.py` 全周期维护回归。
-- 当前剩余工作会从原单一 Phase 5 拆成五个顺序 phase，分别处理 merge、真实对拍、异常安全、性能与文档交付，避免把 correctness 验证与性能/文档收尾混做。
+- 当前 Phase 5 已经落地 `merge()`、`MergeConflict`、`MergeResult`、merge DAG 历史遍历与 `test/test_phase5.py` 集成回归，并明确把冲突结果收敛成结构化返回而不是半提交异常状态。
+- 当前剩余工作会从原单一 Phase 5 继续拆成后续四个顺序 phase，分别处理真实对拍、异常安全、性能与文档交付，避免把 correctness 验证与性能/文档收尾混做。
 
 优先级排序如下：
 
@@ -222,24 +223,24 @@
 
 ### Status
 
-未开始。
+已完成。
 
 ### Todo
 
-* [ ] 冻结 `merge()` 的公开 API 形状，尽量贴近 Git/HF 用户能理解的语义，同时删除没有真实行为的兼容占位参数。
-* [ ] 实现首版三方 tree merge，覆盖 `target revision`、`source revision` 与 merge-base 自动解析。
-* [ ] 明确并实现首版冲突模型，至少覆盖同路径双改、增删冲突、文件/目录冲突、二进制大文件冲突。
-* [ ] 让 merge 复用现有事务发布、reflog 记录与 rollback-only 恢复链路，确保“要么产生一个新 merge commit，要么什么都没发生”。
-* [ ] 增加 merge commit、快进、非快进、冲突返回等公开 API 与集成回归。
-* [ ] 在 `plan/init/04-api-compat.md` 中同步记录 merge 与 Git/HF 的对齐结论及最小必要偏差。
+* [x] 冻结 `merge()` 的公开 API 形状，尽量贴近 Git/HF 用户能理解的语义，同时删除没有真实行为的兼容占位参数。
+* [x] 实现首版三方 tree merge，覆盖 `target revision`、`source revision` 与 merge-base 自动解析。
+* [x] 明确并实现首版冲突模型，至少覆盖同路径双改、增删冲突、文件/目录冲突、二进制大文件冲突。
+* [x] 让 merge 复用现有事务发布、reflog 记录与 rollback-only 恢复链路，确保“要么产生一个新 merge commit，要么什么都没发生”。
+* [x] 增加 merge commit、快进、非快进、冲突返回等公开 API 与集成回归。
+* [x] 在 `plan/init/04-api-compat.md` 中同步记录 merge 与 Git/HF 的对齐结论及最小必要偏差。
 
 ### Checklist
 
-* [ ] merge commit 仍使用现有 commit/tree/file/chunk 对象协议，不引入新的真相源。
-* [ ] 冲突不会写入半成品 ref，也不会污染任何已提交对象。
-* [ ] 快进、非快进和冲突三类结果都能通过公开 API 稳定区分。
-* [ ] merge 相关回归覆盖普通小文件、chunked 大文件和 branch/tag 组合场景。
-* [ ] `make unittest` 通过。
+* [x] merge commit 仍使用现有 commit/tree/file/chunk 对象协议，不引入新的真相源。
+* [x] 冲突不会写入半成品 ref，也不会污染任何已提交对象。
+* [x] 快进、非快进和冲突三类结果都能通过公开 API 稳定区分。
+* [x] merge 相关回归覆盖普通小文件、chunked 大文件和 branch/tag 组合场景。
+* [x] `make unittest` 通过。
 
 ## Phase 6. 对拍
 

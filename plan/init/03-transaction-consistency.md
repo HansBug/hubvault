@@ -244,13 +244,12 @@ Phase 4 已实现 `full_verify()`，当前校验范围包括：
 
 ### 9.3 `merge()`
 
-首版 merge 仍建议采用“三方 tree merge + 结构化冲突返回”，但当前尚未落地。
+首版 merge 已经按“三方 tree merge + 结构化冲突返回”落地，并继续复用与普通提交相同的事务发布和 rollback-only 恢复红线。
 
 当前后续执行顺序已经进一步拆细为：
 
-- Phase 5：先实现 merge 本体与冲突模型
-- Phase 6：再与真实 `git` / `git-lfs` / `huggingface_hub` 做行为对拍
-- Phase 7：再补 merge 与通用写路径的异常/故障注入验证
+- Phase 6：与真实 `git` / `git-lfs` / `huggingface_hub` 做行为对拍
+- Phase 7：补 merge 与通用写路径的异常/故障注入验证
 
 这样做的原因是先把功能做出来，再用外部真实基线和极端场景把语义压实，而不是把“实现、验证、异常安全”混成同一个模糊阶段。
 

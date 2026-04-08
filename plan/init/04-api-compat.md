@@ -32,6 +32,11 @@
 
 这几条就是 `hubvault` 当前 Phase 0-4 API 对齐的直接行为基准。
 
+补充结论：
+
+- `HfApi.merge_pull_request(...)` 只覆盖远端 PR 合并工作流，HF 当前没有直接对标“本地 branch -> branch merge”的公开 Python API
+- 因此 `hubvault.merge()` 作为本地嵌入式仓库扩展保留自有公开模型，但仍尽量遵循 Git 用户熟悉的 merge 结果与冲突语义
+
 ## 3. 当前公开入口
 
 当前推荐从包根导入的公开入口如下：
@@ -44,6 +49,8 @@ from hubvault import (
     CommitOperationCopy,
     RepoInfo,
     CommitInfo,
+    MergeConflict,
+    MergeResult,
     GitCommitInfo,
     GitRefInfo,
     GitRefs,
@@ -162,7 +169,21 @@ from hubvault import (
   empty branch 在第一次 commit 前是合法的，因此 `GitRefInfo.target_commit` 在本地允许为 `None`
 - `ReflogEntry` 没有直接 HF 对标，属于本地审计/恢复模型
 
-### 4.5 Phase 4 维护模型
+### 4.5 Merge 模型
+
+当前 Phase 5 已新增：
+
+- `MergeConflict`
+- `MergeResult`
+
+对齐结论：
+
+- HF 没有直接对标“本地 branch merge”的公开返回模型，因此这两者保留本地设计
+- 字段命名遵循现有 HF 风格偏好，公开返回短而直观的 `status`、`target_revision`、`source_revision`、`head_after`、`conflicts`
+- 冲突不再依赖异常字符串，而是返回结构化 `MergeConflict`
+- merge 成功时仍复用 HF 风格 `CommitInfo` 作为结果里的 `commit`
+
+### 4.6 Phase 4 维护模型
 
 以下模型是本地维护与空间治理公开表面：
 
@@ -177,11 +198,13 @@ from hubvault import (
 - 字段命名仍遵守 HF 风格偏好，尽量使用短、直观、面向结果的公开字段
 - 这些模型只暴露公开维护结果，不暴露内部 pack/object/chunk 路径推导细节
 
-### 4.6 本地专属模型
+### 4.7 本地专属模型
 
 以下模型当前没有直接 HF 对标，因此保持本地设计：
 
 - `RepoInfo`
+- `MergeConflict`
+- `MergeResult`
 - `ReflogEntry`
 - `VerifyReport`
 - `StorageSectionInfo`
@@ -247,6 +270,15 @@ class HubVaultApi:
         parent_commit=None,
     ) -> CommitInfo: ...
 
+    def merge(
+        self,
+        source_revision,
+        *,
+        target_revision=None,
+        parent_commit=None,
+        commit_message=None,
+        commit_description=None,
+    ) -> MergeResult: ...
     def get_paths_info(self, paths, *, revision=None) -> List[Union[RepoFile, RepoFolder]]: ...
     def list_repo_tree(
         self,
@@ -334,7 +366,7 @@ class HubVaultApi:
     ) -> SquashReport: ...
 ```
 
-当前 Phase 4 对齐说明：
+当前 Phase 5 对齐说明：
 
 - `read_range()` 是本地嵌入式仓库新增的必要读取 API，没有直接 HF Python 方法对标，但语义遵循“只返回请求范围，不暴露可写别名”
 - `upload_large_folder()` 保留 HF 方法名，但本地实现坚持单事务原子提交，因此返回一个 `CommitInfo`，而不是像远端多 commit 流程那样返回 `None`
@@ -393,6 +425,25 @@ class HubVaultApi:
 - 方法名与 HF 一致
 - 保留 `revision`、`formatted` 这两个真实有意义的参数
 - 丢弃 `repo_id`、`repo_type`、`token` 这类远端/传输参数
+- 当前已经不再把历史遍历限制在 first-parent 线性链，而是按稳定的 parent-first 顺序遍历可达 commit DAG，使 merge commit 与第二父链路可见
+
+#### `merge`
+
+这是本地嵌入式仓库新增的公开写 API，没有直接 HF branch-merge 方法对标。
+
+当前公开语义：
+
+- `source_revision` 接受 branch/tag/commit
+- `target_revision` 只接受 branch，因为该操作会真实更新目标 ref
+- 返回 `MergeResult`，用 `status` 明确区分 `merged` / `fast-forward` / `already-up-to-date` / `conflict`
+- 冲突通过 `MergeConflict` 列表结构化返回，而不是靠异常消息让调用方自行解析
+- 成功 merge 时仍返回 HF 风格 `CommitInfo` 作为结果里的 `commit`
+- `parent_commit` 保留为乐观并发保护参数，因为它在本地仓库中有真实行为
+
+最小必要偏差：
+
+- HF 只有远端 `merge_pull_request(...)`，没有本地 branch merge，因此 `MergeResult` / `MergeConflict` 属于本地扩展
+- fast-forward 与 already-up-to-date 结果不会强行伪造新 commit，而是直接返回现有 head 对应的 `CommitInfo`
 
 #### `list_repo_refs` / `create_branch` / `delete_branch` / `create_tag` / `delete_tag`
 

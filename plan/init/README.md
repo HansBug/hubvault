@@ -25,16 +25,16 @@
 - 已落地的 Phase 3 chunked file / pack / index / `read_range()` / `upload_large_folder()` 能力，以及对应的 `test/test_phase3.py` 全周期集成回归
 - 已落地的 Phase 3 阈值边界回归，明确验证只有满足 `large_file_threshold` 条件的文件才进入 chunked storage
 - 已落地的 Phase 4 `full_verify()` / `get_storage_overview()` / `gc()` / `squash_history()` 能力，以及对应的 `test/test_phase4.py` 全周期维护回归
+- 已落地的 Phase 5 `merge()`、结构化 `MergeConflict` / `MergeResult`、merge DAG 历史遍历，以及对应的 `test/test_phase5.py` 全周期 merge 集成回归
 
 尚未落地的核心能力包括：
 
-- merge 本体与冲突模型
 - 基于真实 `git` / `git-lfs` / `huggingface_hub` 的行为对拍
 - 面向极端场景的异常测试与故障注入验证
 - 更进一步的性能基线与可选优化
 - 文档、README、教程与最终交付收尾
 
-因此，这组初始化方案既要记录已经实现的 MVP 基线，也要继续约束后续 Phase 5-9，避免把已经落地的格式和公开语义重新漂移回“抽象设想”，也避免把 correctness 验证、性能和文档收尾混成一个模糊的大阶段。
+因此，这组初始化方案既要记录已经实现的 MVP 基线，也要继续约束后续 Phase 6-9，避免把已经落地的格式和公开语义重新漂移回“抽象设想”，也避免把 correctness 验证、性能和文档收尾混成一个模糊的大阶段。
 
 ## 2. 使用方式
 
@@ -56,7 +56,7 @@
 - `03-transaction-consistency.md`
   锁协议、事务状态机、崩溃恢复和一致性红线。
 - `04-api-compat.md`
-  公开 Python API、数据模型、错误模型和与 `huggingface_hub` 的兼容边界，包含 Phase 2 refs / snapshot / upload-delete 对齐结论。
+  公开 Python API、数据模型、错误模型和与 `huggingface_hub` 的兼容边界，包含 Phase 2 refs / snapshot / upload-delete 与 Phase 5 merge 的对齐结论。
 - `05-gc-roadmap.md`
   verify / GC / 历史压缩 / 空间治理路线图、保留策略和回收阶段拆分。
 - `06-phase-execution.md`
@@ -78,7 +78,6 @@
 
 更重的能力放到后续 phase：
 
-- merge
 - `git` / `git-lfs` / `huggingface_hub` 对拍
 - 异常测试与故障注入
 - 原生加速与性能基线

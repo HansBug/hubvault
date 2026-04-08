@@ -23,6 +23,8 @@ class TestPackageInit:
             "HubVaultValidationError",
             "IntegrityError",
             "LastCommitInfo",
+            "MergeConflict",
+            "MergeResult",
             "ReflogEntry",
             "RepoFile",
             "RepoFolder",

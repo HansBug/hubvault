@@ -140,6 +140,48 @@ class TestRepoBackendPackage:
         assert api.read_range("notes.txt", start=1, length=3) == b"ell"
 
     @pytest.mark.parametrize(
+        ("main_path", "feature_path", "expected_type", "expected_related_path"),
+        [
+            ("artifact", "artifact/model.bin", "file/directory", "artifact/model.bin"),
+            ("Model.bin", "model.bin", "case-fold", "model.bin"),
+        ],
+    )
+    def test_backend_merge_reports_structural_conflicts_without_partial_state(
+        self,
+        tmp_path,
+        main_path,
+        feature_path,
+        expected_type,
+        expected_related_path,
+    ):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        api.create_commit(
+            operations=[CommitOperationAdd("seed.txt", b"seed")],
+            commit_message="seed structural merge",
+        )
+        api.create_branch(branch="feature")
+        api.create_commit(
+            revision="feature",
+            operations=[CommitOperationAdd(feature_path, b"feature")],
+            commit_message="feature path",
+        )
+        main_commit = api.create_commit(
+            operations=[CommitOperationAdd(main_path, b"main")],
+            commit_message="main path",
+        )
+
+        result = api.merge("feature")
+
+        assert result.status == "conflict"
+        assert result.commit is None
+        assert result.head_after == main_commit.oid
+        assert len(result.conflicts) == 1
+        assert result.conflicts[0].conflict_type == expected_type
+        assert result.conflicts[0].related_path == expected_related_path
+        assert api.repo_info().head == main_commit.oid
+
+    @pytest.mark.parametrize(
         ("case_name", "expected_message"),
         [
             ("missing-index", "chunk missing from index"),

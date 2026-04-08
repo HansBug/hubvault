@@ -20,6 +20,20 @@ CommitInfo
     :members: __new__,__post_init__,commit_url,commit_message,commit_description,oid,pr_url,repo_url,pr_revision,pr_num
 
 
+MergeConflict
+-----------------------------------------------------
+
+.. autoclass:: MergeConflict
+    :members: path,conflict_type,message,base_oid,target_oid,source_oid,related_path
+
+
+MergeResult
+-----------------------------------------------------
+
+.. autoclass:: MergeResult
+    :members: status,target_revision,source_revision,base_commit,target_head_before,source_head,head_after,commit,conflicts,fast_forward,created_commit
+
+
 GitCommitInfo
 -----------------------------------------------------
 

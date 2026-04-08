@@ -13,6 +13,8 @@ The package contains:
 * :class:`CommitOperationCopy` - Copy-path commit operation
 * :class:`RepoInfo` - Repository metadata model
 * :class:`CommitInfo` - HF-style commit creation result model
+* :class:`MergeConflict` - Structured merge-conflict model
+* :class:`MergeResult` - Merge result model
 * :class:`GitCommitInfo` - HF-style commit listing model
 * :class:`GitRefInfo` - HF-style git reference model
 * :class:`GitRefs` - HF-style git reference collection model
@@ -58,6 +60,8 @@ from .models import (
     GitRefs,
     GcReport,
     LastCommitInfo,
+    MergeConflict,
+    MergeResult,
     ReflogEntry,
     RepoFile,
     RepoFolder,
@@ -87,6 +91,8 @@ __all__ = [
     "HubVaultValidationError",
     "IntegrityError",
     "LastCommitInfo",
+    "MergeConflict",
+    "MergeResult",
     "ReflogEntry",
     "RepoFile",
     "RepoFolder",

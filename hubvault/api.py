@@ -35,6 +35,7 @@ from .models import (
     GcReport,
     GitCommitInfo,
     GitRefs,
+    MergeResult,
     ReflogEntry,
     RepoFile,
     RepoFolder,
@@ -235,6 +236,78 @@ class HubVaultApi:
             commit_description=commit_description,
             revision=revision or self._default_revision,
             parent_commit=parent_commit,
+        )
+
+    def merge(
+        self,
+        source_revision: str,
+        *,
+        target_revision: Optional[str] = None,
+        parent_commit: Optional[str] = None,
+        commit_message: Optional[str] = None,
+        commit_description: Optional[str] = None,
+    ) -> MergeResult:
+        """
+        Merge a source revision into a target branch.
+
+        This local API has no direct one-to-one counterpart in
+        ``huggingface_hub``. It follows familiar Git merge semantics instead:
+        conflicts are returned as structured data, while successful merges may
+        resolve as ``"merged"``, ``"fast-forward"``, or
+        ``"already-up-to-date"``.
+
+        :param source_revision: Source branch, tag, or commit ID to merge from
+        :type source_revision: str
+        :param target_revision: Target branch name or full branch ref, defaults
+            to the API default revision
+        :type target_revision: Optional[str]
+        :param parent_commit: Optional expected current head for optimistic
+            concurrency on the target branch
+        :type parent_commit: Optional[str]
+        :param commit_message: Optional merge-commit title. When omitted, a
+            default merge title is generated.
+        :type commit_message: Optional[str]
+        :param commit_description: Optional merge-commit body
+        :type commit_description: Optional[str]
+        :return: Structured merge result
+        :rtype: MergeResult
+        :raises hubvault.errors.ConflictError: Raised when
+            ``parent_commit`` does not match the current target head.
+        :raises hubvault.errors.RevisionNotFoundError: Raised when the source
+            revision or target branch does not exist.
+        :raises hubvault.errors.UnsupportedPathError: Raised when the target
+            revision is not a valid branch ref.
+        :raises ValueError: Raised when ``commit_message`` is explicitly empty.
+
+        Example::
+
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> from hubvault import CommitOperationAdd, HubVaultApi
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     api = HubVaultApi(Path(tmpdir) / "repo")
+            ...     _ = api.create_repo()
+            ...     _ = api.create_commit(
+            ...         operations=[CommitOperationAdd("demo.txt", b"base")],
+            ...         commit_message="seed",
+            ...     )
+            ...     api.create_branch(branch="feature")
+            ...     _ = api.create_commit(
+            ...         revision="feature",
+            ...         operations=[CommitOperationAdd("feature.txt", b"hello")],
+            ...         commit_message="feature work",
+            ...     )
+            ...     result = api.merge("feature")
+            ...     (result.status, api.read_bytes("feature.txt"))
+            ('fast-forward', b'hello')
+        """
+
+        return self._backend.merge(
+            source_revision=source_revision,
+            target_revision=target_revision or self._default_revision,
+            parent_commit=parent_commit,
+            commit_message=commit_message,
+            commit_description=commit_description,
         )
 
     def get_paths_info(

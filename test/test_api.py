@@ -11,6 +11,8 @@ from hubvault import (
     EntryNotFoundError,
     GcReport,
     HubVaultApi,
+    MergeConflict,
+    MergeResult,
     RepoFile,
     RepoFolder,
     RepoInfo,
@@ -255,6 +257,105 @@ class TestApi:
         assert formatted_history[0].formatted_message == "body &amp; tail"
         assert commit.commit_message == "document <api>"
         assert commit.commit_description == "body & tail"
+
+    def test_merge_public_api_supports_fast_forward_and_merge_commit_results(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo(large_file_threshold=64)
+
+        seed_commit = api.create_commit(
+            operations=[CommitOperationAdd("shared.txt", b"seed")],
+            commit_message="seed main",
+        )
+        api.create_branch(branch="feature")
+        feature_commit = api.create_commit(
+            revision="feature",
+            operations=[CommitOperationAdd("feature.txt", b"feature-only")],
+            commit_message="feature work",
+        )
+
+        fast_forward = api.merge("feature")
+        assert isinstance(fast_forward, MergeResult)
+        assert fast_forward.status == "fast-forward"
+        assert fast_forward.fast_forward is True
+        assert fast_forward.created_commit is False
+        assert fast_forward.base_commit == seed_commit.oid
+        assert fast_forward.target_head_before == seed_commit.oid
+        assert fast_forward.source_head == feature_commit.oid
+        assert fast_forward.head_after == feature_commit.oid
+        assert fast_forward.commit is not None
+        assert fast_forward.commit.oid == feature_commit.oid
+        assert fast_forward.conflicts == []
+        assert api.read_bytes("feature.txt") == b"feature-only"
+
+        main_commit = api.create_commit(
+            operations=[CommitOperationAdd("main.txt", b"main-only")],
+            commit_message="main work",
+        )
+        release_payload = b"B" * 256
+        feature_branch_commit = api.create_commit(
+            revision="feature",
+            operations=[CommitOperationAdd("artifacts/model.bin", release_payload)],
+            commit_message="feature release",
+        )
+        api.create_tag(tag="feature-ready", revision="feature")
+
+        merge_commit = api.merge("feature-ready")
+        assert merge_commit.status == "merged"
+        assert merge_commit.fast_forward is False
+        assert merge_commit.created_commit is True
+        assert merge_commit.base_commit == feature_commit.oid
+        assert merge_commit.target_head_before == main_commit.oid
+        assert merge_commit.source_head == feature_branch_commit.oid
+        assert merge_commit.head_after == merge_commit.commit.oid
+        assert merge_commit.commit.commit_message == "Merge feature-ready into main"
+        assert merge_commit.conflicts == []
+        assert api.read_bytes("main.txt") == b"main-only"
+        assert api.read_bytes("feature.txt") == b"feature-only"
+        assert api.read_bytes("artifacts/model.bin") == release_payload
+
+        history_ids = [item.commit_id for item in api.list_repo_commits()]
+        assert history_ids[0] == merge_commit.commit.oid
+        assert feature_branch_commit.oid in history_ids
+        assert main_commit.oid in history_ids
+        assert seed_commit.oid in history_ids
+
+    def test_merge_public_api_returns_structured_conflicts_without_mutating_target(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        seed_commit = api.create_commit(
+            operations=[CommitOperationAdd("notes.txt", b"seed")],
+            commit_message="seed",
+        )
+        api.create_branch(branch="feature")
+        feature_commit = api.create_commit(
+            revision="feature",
+            operations=[CommitOperationAdd("notes.txt", b"feature")],
+            commit_message="feature edit",
+        )
+        main_commit = api.create_commit(
+            operations=[CommitOperationAdd("notes.txt", b"main")],
+            commit_message="main edit",
+        )
+
+        conflict = api.merge("feature", parent_commit=main_commit.oid)
+        assert isinstance(conflict, MergeResult)
+        assert conflict.status == "conflict"
+        assert conflict.fast_forward is False
+        assert conflict.created_commit is False
+        assert conflict.base_commit == seed_commit.oid
+        assert conflict.target_head_before == main_commit.oid
+        assert conflict.source_head == feature_commit.oid
+        assert conflict.head_after == main_commit.oid
+        assert conflict.commit is None
+        assert len(conflict.conflicts) == 1
+        assert isinstance(conflict.conflicts[0], MergeConflict)
+        assert conflict.conflicts[0].path == "notes.txt"
+        assert conflict.conflicts[0].conflict_type == "modify/modify"
+        assert api.repo_info().head == main_commit.oid
+        assert api.read_bytes("notes.txt") == b"main"
+
+        with pytest.raises(ConflictError):
+            api.merge("feature", parent_commit=seed_commit.oid)
 
     def test_phase2_public_refs_upload_delete_snapshot_and_reflog_methods(self, tmp_path):
         repo_dir = tmp_path / "repo"

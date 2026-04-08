@@ -12,6 +12,8 @@ from hubvault.models import (
     GitRefInfo,
     GitRefs,
     LastCommitInfo,
+    MergeConflict,
+    MergeResult,
     ReflogEntry,
     RepoFile,
     RepoFolder,
@@ -92,6 +94,15 @@ class TestModels:
             tags=[],
             pull_requests=[],
         )
+        merge_conflict = MergeConflict(
+            path="demo.txt",
+            conflict_type="modify/modify",
+            message="Both sides changed demo.txt differently.",
+            base_oid="base-oid",
+            target_oid="target-oid",
+            source_oid="source-oid",
+            related_path=None,
+        )
         reflog_entry = ReflogEntry(
             timestamp=datetime(2024, 1, 2, tzinfo=timezone.utc),
             ref_name="refs/heads/main",
@@ -141,6 +152,19 @@ class TestModels:
             blocking_refs=["refs/tags/v1"],
             gc_report=gc_report,
         )
+        merge_result = MergeResult(
+            status="merged",
+            target_revision="main",
+            source_revision="feature",
+            base_commit="sha256:b0",
+            target_head_before="sha256:t0",
+            source_head="sha256:s0",
+            head_after="sha256:m1",
+            commit=commit,
+            conflicts=[merge_conflict],
+            fast_forward=False,
+            created_commit=True,
+        )
 
         assert commit.oid == "sha256:c1"
         assert commit.commit_message == "hello"
@@ -152,6 +176,11 @@ class TestModels:
         assert git_ref.target_commit is None
         assert git_refs.branches[0].ref == "refs/heads/main"
         assert git_refs.pull_requests == []
+        assert merge_conflict.source_oid == "source-oid"
+        assert merge_result.status == "merged"
+        assert merge_result.commit == commit
+        assert merge_result.conflicts == [merge_conflict]
+        assert merge_result.created_commit is True
         assert reflog_entry.message == "seed"
         assert reflog_entry.ref_name == "refs/heads/main"
         assert lfs.pointer_size == 128
