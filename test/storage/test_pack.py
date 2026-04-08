@@ -47,3 +47,18 @@ class TestPackStore:
 
         with pytest.raises(IntegrityError):
             store.read_range("missing", len(PACK_MAGIC), 1)
+
+    def test_pack_store_supports_empty_pack_and_detects_invalid_header(self, tmp_path):
+        store = PackStore(tmp_path / "packs")
+
+        empty_result = store.write_pack("empty", [])
+        assert empty_result.total_size == len(PACK_MAGIC)
+        assert empty_result.chunks == ()
+        assert store.read_range("empty", len(PACK_MAGIC), 0) == b""
+
+        _ = store.write_pack("demo", [b"abc"])
+        pack_path = store.pack_path("demo")
+        pack_path.write_bytes(b"broken-pack\nabc")
+
+        with pytest.raises(IntegrityError):
+            store.read_range("demo", len(PACK_MAGIC), 1)

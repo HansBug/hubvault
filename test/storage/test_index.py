@@ -18,6 +18,26 @@ def _entry(chunk_id, pack_id, offset):
 
 @pytest.mark.unittest
 class TestIndexStore:
+    def test_index_entry_and_manifest_validation_errors(self):
+        with pytest.raises(IntegrityError):
+            IndexEntry.from_dict({"chunk_id": "sha256:a"})
+
+        manifest = IndexManifest.empty().add_segment("L0", "seg-a.idx").add_segment("L0", "seg-a.idx")
+        assert manifest.levels["L0"] == ("seg-a.idx",)
+        assert manifest.to_dict()["levels"]["L0"] == ["seg-a.idx"]
+
+        with pytest.raises(ValueError):
+            IndexManifest.empty().add_segment("LX", "seg-a.idx")
+
+        with pytest.raises(IntegrityError):
+            IndexManifest.from_dict({})
+
+        with pytest.raises(IntegrityError):
+            IndexManifest.from_dict({"levels": []})
+
+        with pytest.raises(IntegrityError):
+            IndexManifest.from_dict({"levels": {"L0": "not-a-list"}})
+
     def test_manifest_and_segment_round_trip(self, tmp_path):
         store = IndexStore(tmp_path / "index")
         entry = _entry("sha256:a", "pack-a", 16)
@@ -48,6 +68,9 @@ class TestIndexStore:
     def test_index_store_detects_invalid_inputs(self, tmp_path):
         store = IndexStore(tmp_path / "index")
 
+        assert store.read_manifest().levels["L0"] == ()
+        assert store.lookup("sha256:missing") is None
+
         with pytest.raises(ValueError):
             store.segment_path("LX", "seg.idx")
 
@@ -68,3 +91,51 @@ class TestIndexStore:
         _ = store.write_segment("L0", "seg.idx", [good_entry])
         with pytest.raises(IntegrityError):
             store.write_segment("L0", "seg.idx", [good_entry])
+
+    def test_index_store_detects_malformed_manifest_and_segment_shapes(self, tmp_path):
+        manifest_store = IndexStore(tmp_path / "bad-manifest")
+        manifest_store.manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_store.manifest_path.write_text("{bad json", encoding="utf-8")
+        with pytest.raises(IntegrityError):
+            manifest_store.read_manifest()
+
+        directory_manifest_store = IndexStore(tmp_path / "dir-manifest")
+        directory_manifest_store.manifest_path.mkdir(parents=True)
+        with pytest.raises(IntegrityError):
+            directory_manifest_store.read_manifest()
+
+        missing_segment_store = IndexStore(tmp_path / "missing-segment")
+        with pytest.raises(IntegrityError):
+            missing_segment_store.load_segment("L0", "missing.idx")
+
+        blank_segment_store = IndexStore(tmp_path / "blank-segment")
+        entry = _entry("sha256:blank", "pack-blank", 32)
+        path = blank_segment_store.segment_path("L0", "blank.idx")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n%s\n\n" % entry.to_dict(), encoding="utf-8")
+        with pytest.raises(IntegrityError):
+            blank_segment_store.load_segment("L0", "blank.idx")
+
+        valid_blank_store = IndexStore(tmp_path / "valid-blank-segment")
+        valid_blank_path = valid_blank_store.segment_path("L0", "valid.idx")
+        valid_blank_path.parent.mkdir(parents=True, exist_ok=True)
+        valid_blank_path.write_text(
+            "\n"
+            '{"checksum":"sha256:blank","chunk_id":"sha256:blank","compression":"none",'
+            '"logical_size":4,"offset":32,"pack_id":"pack-blank","stored_size":4}'
+            "\n\n",
+            encoding="utf-8",
+        )
+        assert valid_blank_store.load_segment("L0", "valid.idx") == (entry,)
+
+        non_object_store = IndexStore(tmp_path / "non-object-segment")
+        non_object_path = non_object_store.segment_path("L0", "non-object.idx")
+        non_object_path.parent.mkdir(parents=True, exist_ok=True)
+        non_object_path.write_text("[]\n", encoding="utf-8")
+        with pytest.raises(IntegrityError):
+            non_object_store.load_segment("L0", "non-object.idx")
+
+        directory_segment_store = IndexStore(tmp_path / "dir-segment")
+        directory_segment_store.segment_path("L0", "segment-dir.idx").mkdir(parents=True)
+        with pytest.raises(IntegrityError):
+            directory_segment_store.load_segment("L0", "segment-dir.idx")
