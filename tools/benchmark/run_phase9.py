@@ -928,15 +928,13 @@ def main() -> int:
 
     full_scenarios = [
         ("small_batch_commit", _small_batch_commit_scenario),
-        ("host_io_write_baseline", _host_io_write_baseline_scenario),
-        ("host_io_read_baseline", _host_io_read_baseline_scenario),
         ("small_read_all", _small_read_all_scenario),
         ("nested_tree_listing", _nested_tree_listing_scenario),
         ("snapshot_download_small", _snapshot_download_scenario),
         ("mixed_model_snapshot", _mixed_model_snapshot_scenario),
-        ("large_upload", _large_upload_scenario),
         ("host_io_write_baseline", _host_io_write_baseline_scenario),
         ("host_io_read_baseline", _host_io_read_baseline_scenario),
+        ("large_upload", _large_upload_scenario),
         ("large_read_range", _large_read_range_scenario),
         ("hf_hub_download_cold", _hf_hub_download_cold_scenario),
         ("hf_hub_download_warm", _hf_hub_download_warm_scenario),
@@ -955,6 +953,8 @@ def main() -> int:
         ("squash_history", _squash_history_scenario),
     ]
     pressure_scenarios = [
+        ("host_io_write_baseline", _host_io_write_baseline_scenario),
+        ("host_io_read_baseline", _host_io_read_baseline_scenario),
         ("large_upload", _large_upload_scenario),
         ("large_read_range", _large_read_range_scenario),
         ("hf_hub_download_cold", _hf_hub_download_cold_scenario),
