@@ -3330,11 +3330,17 @@ class RepositoryBackend(object):
                 expected_size = int(file_payload["logical_size"])
                 target_path = target_root / repo_path
                 previous_file_info = previous_file_entries.get(repo_path)
+                previous_size = object()
+                if isinstance(previous_file_info, dict):
+                    try:
+                        previous_size = int(previous_file_info.get("size"))
+                    except (TypeError, ValueError):
+                        previous_size = object()
                 if (
                     isinstance(previous_file_info, dict)
                     and str(previous_file_info.get("sha256")) == expected_sha256
                     and str(previous_file_info.get("oid")) == str(file_payload["oid"])
-                    and int(previous_file_info.get("size")) == expected_size
+                    and previous_size == expected_size
                     and self._detached_file_matches_metadata(
                         target_path,
                         size=expected_size,
@@ -5241,8 +5247,6 @@ class RepositoryBackend(object):
             "objects/blobs/sha256",
             "txn",
             "locks",
-            "cache/materialized/sha256",
-            "cache/materialized/meta",
             "cache/views/files",
             "cache/views/snapshots",
             "cache/files",
@@ -7833,58 +7837,6 @@ class RepositoryBackend(object):
             file_.flush()
             os.fsync(file_.fileno())
         _fsync_directory(path.parent)
-
-    def _materialize_content_pool(self, file_payload: Dict[str, object], data: bytes) -> None:
-        """
-        Materialize content into the repository's deduplicated cache pool.
-
-        :param file_payload: Public file payload metadata
-        :type file_payload: Dict[str, object]
-        :param data: Logical file content
-        :type data: bytes
-        :return: ``None``.
-        :rtype: None
-
-        Example::
-
-            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
-            >>> backend._materialize_content_pool({"sha256": "a" * 64, "oid": "b" * 40, "logical_size": 4}, b"demo")  # doctest: +SKIP
-        """
-
-        content_key = _public_sha256_hex(str(file_payload["sha256"]))
-        expected_size = int(file_payload["logical_size"])
-        pool_path = self._repo_path / "cache" / "materialized" / OBJECT_HASH / content_key[:2] / (content_key[2:] + ".data")
-        meta_path = self._repo_path / "cache" / "materialized" / "meta" / (content_key + ".json")
-        if pool_path.exists() and meta_path.exists():
-            try:
-                meta = _read_json(meta_path)
-                if (
-                    isinstance(meta, dict)
-                    and str(meta.get("content_key")) == content_key
-                    and str(meta.get("sha256")) == content_key
-                    and str(meta.get("oid")) == str(file_payload["oid"])
-                    and int(meta.get("size")) == expected_size
-                ):
-                    return
-            except (AttributeError, OSError, TypeError, ValueError):
-                pass
-        if not pool_path.exists():
-            _write_bytes_atomic(pool_path, data, durable=False)
-            try:
-                pool_path.chmod(stat.S_IREAD | stat.S_IRGRP | stat.S_IROTH)
-            except OSError:  # pragma: no cover - permission semantics vary
-                pass
-        _write_json_atomic(
-            meta_path,
-            {
-                "content_key": content_key,
-                "oid": file_payload["oid"],
-                "sha256": content_key,
-                "size": expected_size,
-                "created_at": _utc_now(),
-            },
-            durable=False,
-        )
 
     def _validate_detached_target_root(self, target_root: Path) -> None:
         """

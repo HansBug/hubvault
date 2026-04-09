@@ -119,6 +119,21 @@ class TestRepoSemantics:
                     commit_message="invalid path",
                 )
 
+    def test_create_repo_runtime_failpoint_leaves_empty_public_branch_state(self, tmp_path, monkeypatch):
+        api = HubVaultApi(tmp_path / "repo")
+
+        with monkeypatch.context() as env:
+            env.setenv("HUBVAULT_FAILPOINT", "create_repo.initial_commit.after_reflog_append")
+            env.setenv("HUBVAULT_FAIL_ACTION", "raise-runtime")
+            with pytest.raises(RuntimeError) as excinfo:
+                api.create_repo()
+
+        assert "create_repo.initial_commit.after_reflog_append" in str(excinfo.value)
+        assert api.repo_info().head is None
+        assert api.list_repo_tree() == []
+        assert api.list_repo_commits() == []
+        assert api.quick_verify().ok is True
+
     def test_download_views_are_detached_and_rebuildable(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")
         api.create_repo()
@@ -194,6 +209,84 @@ class TestRepoSemantics:
             )
             assert rebuilt_from_symlink.is_file()
             assert rebuilt_from_symlink.read_bytes() == b"payload-v1"
+
+    def test_managed_download_view_metadata_is_rebuilt_when_metadata_is_invalid(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        api.create_commit(
+            operations=[CommitOperationAdd("models/core/model.safetensors", b"payload-v1")],
+            commit_message="seed",
+        )
+
+        repo_dir = tmp_path / "repo"
+        view_path = Path(api.hf_hub_download("models/core/model.safetensors"))
+        view_meta_path = _only_path(repo_dir / "cache" / "views" / "files", "*.json")
+
+        metadata = _read_json(view_meta_path)
+        metadata.pop("view_mtime_ns")
+        _write_json(view_meta_path, metadata)
+
+        rebuilt_without_mtime = Path(api.hf_hub_download("models/core/model.safetensors"))
+        assert rebuilt_without_mtime == view_path
+        assert rebuilt_without_mtime.read_bytes() == b"payload-v1"
+        assert "view_mtime_ns" in _read_json(view_meta_path)
+
+        metadata = _read_json(view_meta_path)
+        metadata["target_path"] = "cache/files/invalid/models/core/model.safetensors"
+        _write_json(view_meta_path, metadata)
+
+        rebuilt_with_wrong_target = Path(api.hf_hub_download("models/core/model.safetensors"))
+        assert rebuilt_with_wrong_target == view_path
+        assert rebuilt_with_wrong_target.read_bytes() == b"payload-v1"
+
+        view_meta_path.write_text("[]", encoding="utf-8")
+        rebuilt_from_list_metadata = Path(api.hf_hub_download("models/core/model.safetensors"))
+        assert rebuilt_from_list_metadata == view_path
+        assert rebuilt_from_list_metadata.read_bytes() == b"payload-v1"
+
+        view_meta_path.write_text("{bad json", encoding="utf-8")
+        rebuilt_from_bad_json = Path(api.hf_hub_download("models/core/model.safetensors"))
+        assert rebuilt_from_bad_json == view_path
+        assert rebuilt_from_bad_json.read_bytes() == b"payload-v1"
+
+    def test_managed_download_view_rebuilds_for_metadata_mismatches_and_verify_tolerates_bad_size(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        api.create_commit(
+            operations=[CommitOperationAdd("models/core/model.safetensors", b"payload-v1")],
+            commit_message="seed",
+        )
+
+        repo_dir = tmp_path / "repo"
+        view_path = Path(api.hf_hub_download("models/core/model.safetensors"))
+        view_meta_path = _only_path(repo_dir / "cache" / "views" / "files", "*.json")
+
+        def assert_rebuilt():
+            rebuilt = Path(api.hf_hub_download("models/core/model.safetensors"))
+            assert rebuilt == view_path
+            assert rebuilt.read_bytes() == b"payload-v1"
+
+        for field, replacement in (
+            ("revision", "other"),
+            ("commit_id", None),
+            ("path_in_repo", "models/core/other.safetensors"),
+            ("sha256", "0" * 64),
+            ("size", 999),
+        ):
+            metadata = _read_json(view_meta_path)
+            metadata[field] = replacement
+            _write_json(view_meta_path, metadata)
+            assert_rebuilt()
+
+        metadata = _read_json(view_meta_path)
+        metadata["size"] = "invalid"
+        _write_json(view_meta_path, metadata)
+
+        report = api.quick_verify()
+        assert report.ok is True
+        assert not any("stale file view" in warning for warning in report.warnings)
+
+        assert_rebuilt()
 
     def test_copy_delete_reset_and_repo_move_keep_working(self, tmp_path):
         repo_dir = tmp_path / "repo"
@@ -281,6 +374,82 @@ class TestRepoSemantics:
         assert "refs/tags/v-broken" in report.checked_refs
         assert any(item.startswith("refs/tags/v-broken:") for item in report.errors)
 
+    def test_empty_branch_public_listing_and_merge_paths(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        commit = api.create_commit(
+            operations=[CommitOperationAdd("file.bin", b"payload")],
+            commit_message="seed",
+        )
+        api.create_branch(branch="empty")
+
+        empty_branch_path = tmp_path / "repo" / "refs" / "heads" / "empty"
+        empty_branch_path.write_text("", encoding="utf-8")
+
+        assert api.list_repo_tree(revision="refs/heads/empty") == []
+        assert api.list_repo_commits(revision="refs/heads/empty") == []
+
+        verify_report = api.quick_verify()
+        assert verify_report.ok is True
+        assert "refs/heads/empty" in verify_report.checked_refs
+
+        empty_source_result = api.merge("empty")
+        assert empty_source_result.status == "already-up-to-date"
+        assert empty_source_result.source_head is None
+        assert empty_source_result.target_head_before == commit.oid
+        assert empty_source_result.head_after == commit.oid
+        assert empty_source_result.created_commit is False
+        assert api.repo_info().head == commit.oid
+
+        empty_target_result = api.merge("main", target_revision="empty")
+        assert empty_target_result.status == "fast-forward"
+        assert empty_target_result.target_head_before is None
+        assert empty_target_result.source_head == commit.oid
+        assert empty_target_result.head_after == commit.oid
+        assert empty_target_result.created_commit is False
+        assert [item.commit_id for item in api.list_repo_commits(revision="refs/heads/empty")] == [
+            item.commit_id for item in api.list_repo_commits()
+        ]
+
+    def test_list_repo_reflog_returns_empty_when_ref_exists_but_log_file_is_missing(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        api.create_branch(branch="temp")
+
+        reflog_path = tmp_path / "repo" / "logs" / "refs" / "heads" / "temp.log"
+        reflog_path.unlink()
+
+        assert api.list_repo_reflog("refs/heads/temp") == []
+
+    def test_branch_reflog_updates_survive_blank_and_malformed_last_records(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        api.create_commit(
+            operations=[CommitOperationAdd("file.bin", b"payload")],
+            commit_message="seed",
+        )
+
+        reflog_path = tmp_path / "repo" / "logs" / "refs" / "heads" / "temp.log"
+
+        def recreate_temp_branch():
+            if "temp" not in [item.name for item in api.list_repo_refs().branches]:
+                api.create_branch(branch="temp")
+
+        recreate_temp_branch()
+        reflog_path.write_text(reflog_path.read_text(encoding="utf-8") + "\n\n", encoding="utf-8")
+        api.delete_branch(branch="temp")
+        assert "temp" not in [item.name for item in api.list_repo_refs().branches]
+
+        recreate_temp_branch()
+        reflog_path.write_text("[]\n", encoding="utf-8")
+        api.delete_branch(branch="temp")
+        assert "temp" not in [item.name for item in api.list_repo_refs().branches]
+
+        recreate_temp_branch()
+        reflog_path.write_text("{bad json\n", encoding="utf-8")
+        api.delete_branch(branch="temp")
+        assert "temp" not in [item.name for item in api.list_repo_refs().branches]
+
     def test_repo_supports_explicit_commit_description_and_hf_style_commit_fallbacks(self, tmp_path):
         api, repo_dir = _single_file_repo(tmp_path, repo_name="commit-fallbacks", payload=b"payload")
 
@@ -326,6 +495,27 @@ class TestRepoSemantics:
         empty_history = api.list_repo_commits(revision=second_commit.oid)
         assert empty_history[0].title == ""
         assert empty_history[0].message == ""
+
+    def test_squash_history_falls_back_to_stored_message_when_title_and_description_are_missing(self, tmp_path):
+        api, repo_dir = _single_file_repo(tmp_path, repo_name="squash-fallbacks", payload=b"payload")
+
+        api.create_commit(
+            operations=[CommitOperationAdd("file.bin", b"payload-v2")],
+            parent_commit=api.repo_info().head,
+            commit_message="subject line",
+            commit_description="body line",
+        )
+
+        commit_payload = _read_json(_head_commit_path(repo_dir))
+        del commit_payload["payload"]["title"]
+        del commit_payload["payload"]["description"]
+        _write_json(_head_commit_path(repo_dir), commit_payload)
+
+        report = api.squash_history("main", run_gc=False)
+
+        assert report.ref_name == "refs/heads/main"
+        assert api.list_repo_commits()[0].title == "subject line"
+        assert api.list_repo_commits()[0].message == "body line"
 
     def test_repo_only_writers_recover_transactions_and_verify_surfaces_leftovers(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")
@@ -403,6 +593,101 @@ class TestRepoSemantics:
         assert info.head == first_commit.oid
         assert api.read_bytes("file.bin") == b"v1"
         assert not txdir.exists()
+
+    def test_public_runtime_failpoints_roll_back_ref_updates_and_history_rewrites(self, tmp_path, monkeypatch):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        base_commit = api.create_commit(
+            operations=[CommitOperationAdd("file.bin", b"base\n")],
+            commit_message="base",
+        )
+        api.create_branch(branch="feature")
+        _ = api.create_commit(
+            revision="feature",
+            operations=[CommitOperationAdd("feature.txt", b"feature\n")],
+            commit_message="feature",
+        )
+        main_commit = api.create_commit(
+            operations=[CommitOperationAdd("main.txt", b"main\n")],
+            commit_message="main",
+        )
+        api.create_branch(branch="ephemeral")
+        api.create_tag(tag="stable", revision="main")
+        api.create_branch(branch="empty-target")
+        (tmp_path / "repo" / "refs" / "heads" / "empty-target").write_text("", encoding="utf-8")
+
+        def assert_runtime_failpoint(failpoint, callback):
+            with monkeypatch.context() as env:
+                env.setenv("HUBVAULT_FAILPOINT", failpoint)
+                env.setenv("HUBVAULT_FAIL_ACTION", "raise-runtime")
+                with pytest.raises(RuntimeError) as excinfo:
+                    callback()
+            assert failpoint in str(excinfo.value)
+
+        merge_reflog_before = list(api.list_repo_reflog("main"))
+        assert_runtime_failpoint("merge.after_reflog_append", lambda: api.merge("feature"))
+        assert api.repo_info().head == main_commit.oid
+        assert "feature.txt" not in api.list_repo_files()
+        assert api.list_repo_reflog("main") == merge_reflog_before
+
+        assert_runtime_failpoint(
+            "merge.after_reflog_append",
+            lambda: api.merge("main", target_revision="empty-target"),
+        )
+        assert api.list_repo_commits(revision="refs/heads/empty-target") == []
+
+        assert_runtime_failpoint("create_branch.after_reflog_append", lambda: api.create_branch(branch="broken-branch"))
+        assert "broken-branch" not in [item.name for item in api.list_repo_refs().branches]
+
+        assert_runtime_failpoint("delete_branch.after_reflog_append", lambda: api.delete_branch(branch="ephemeral"))
+        assert "ephemeral" in [item.name for item in api.list_repo_refs().branches]
+
+        assert_runtime_failpoint("create_tag.after_reflog_append", lambda: api.create_tag(tag="broken-tag", revision="main"))
+        assert "broken-tag" not in [item.name for item in api.list_repo_refs().tags]
+
+        assert_runtime_failpoint("delete_tag.after_reflog_append", lambda: api.delete_tag(tag="stable"))
+        assert "stable" in [item.name for item in api.list_repo_refs().tags]
+
+        assert_runtime_failpoint("reset_ref.after_reflog_append", lambda: api.reset_ref("main", to_revision=base_commit.oid))
+        assert api.repo_info().head == main_commit.oid
+
+        api.create_branch(branch="ff")
+        _ = api.create_commit(
+            revision="ff",
+            operations=[CommitOperationAdd("ff.txt", b"ff\n")],
+            commit_message="ff",
+        )
+        ff_reflog_before = list(api.list_repo_reflog("main"))
+        assert_runtime_failpoint("merge.after_reflog_append", lambda: api.merge("ff"))
+        assert api.repo_info().head == main_commit.oid
+        assert "ff.txt" not in api.list_repo_files()
+        assert api.list_repo_reflog("main") == ff_reflog_before
+
+        history_before_squash = [item.commit_id for item in api.list_repo_commits()]
+        assert_runtime_failpoint("squash_history.after_reflog_append", lambda: api.squash_history("main", run_gc=False))
+        assert [item.commit_id for item in api.list_repo_commits()] == history_before_squash
+        assert api.quick_verify().ok is True
+
+    def test_public_failpoints_support_non_runtime_actions_and_still_roll_back(self, tmp_path, monkeypatch):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        api.create_commit(
+            operations=[CommitOperationAdd("file.bin", b"payload\n")],
+            commit_message="seed",
+        )
+
+        def assert_failpoint(action, expected_exception, branch_name):
+            with monkeypatch.context() as env:
+                env.setenv("HUBVAULT_FAILPOINT", "create_branch.after_reflog_append")
+                env.setenv("HUBVAULT_FAIL_ACTION", action)
+                with pytest.raises(expected_exception) as excinfo:
+                    api.create_branch(branch=branch_name)
+            assert "hubvault failpoint triggered" in str(excinfo.value) or "unknown hubvault fail action" in str(excinfo.value)
+            assert branch_name not in [item.name for item in api.list_repo_refs().branches]
+
+        assert_failpoint("raise-oserror", OSError, "broken-oserror")
+        assert_failpoint("raise-keyboard", KeyboardInterrupt, "broken-keyboard")
+        assert_failpoint("unknown-action", ValueError, "broken-valueerror")
 
     def test_repo_write_lock_blocks_other_process_readers_and_writers(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")
@@ -766,6 +1051,59 @@ class TestRepoSemantics:
         rebuilt_snapshot_file.unlink()
         missing_report = api.quick_verify()
         assert any("stale snapshot view" in warning for warning in missing_report.warnings)
+
+    def test_managed_snapshot_view_rebuilds_for_missing_mismatched_and_malformed_metadata(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        api.upload_file(path_or_fileobj=b"payload-v1", path_in_repo="bundle/file.bin")
+
+        repo_dir = tmp_path / "repo"
+        snapshot_dir = Path(api.snapshot_download())
+        snapshot_file = snapshot_dir / "bundle" / "file.bin"
+        meta_path = _only_path(repo_dir / "cache" / "views" / "snapshots", "*.json")
+
+        def assert_snapshot_rebuilt(expected_warning=None):
+            if expected_warning is None:
+                rebuilt = Path(api.snapshot_download())
+            else:
+                with warnings.catch_warnings(record=True) as records:
+                    warnings.simplefilter("always")
+                    rebuilt = Path(api.snapshot_download())
+                assert any(expected_warning in str(item.message) for item in records)
+            assert rebuilt == snapshot_dir
+            assert snapshot_file.read_bytes() == b"payload-v1"
+
+        meta_path.unlink()
+        assert_snapshot_rebuilt()
+
+        for field, replacement in (
+            ("allow_patterns", ["*.txt"]),
+            ("ignore_patterns", ["*.bin"]),
+        ):
+            metadata = _read_json(meta_path)
+            metadata[field] = replacement
+            _write_json(meta_path, metadata)
+            assert_snapshot_rebuilt()
+
+        metadata = _read_json(meta_path)
+        metadata["files"] = {}
+        _write_json(meta_path, metadata)
+        assert_snapshot_rebuilt("Ignoring malformed detached snapshot metadata")
+
+        metadata = _read_json(meta_path)
+        metadata["files"] = ["bad-entry"]
+        _write_json(meta_path, metadata)
+        assert_snapshot_rebuilt("Ignoring malformed detached snapshot metadata")
+
+        metadata = _read_json(meta_path)
+        metadata["files"][0]["size"] = "invalid"
+        _write_json(meta_path, metadata)
+
+        report = api.quick_verify()
+        assert report.ok is True
+        assert not any("stale snapshot view" in warning for warning in report.warnings)
+
+        assert_snapshot_rebuilt()
 
     def test_snapshot_download_warns_when_detached_snapshot_metadata_is_malformed(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")
