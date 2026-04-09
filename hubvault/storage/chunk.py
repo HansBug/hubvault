@@ -1,35 +1,44 @@
 """
 Chunk planning helpers for :mod:`hubvault.storage`.
 
-This module contains the deterministic chunk-planning logic used by the local
-repository backend when a file is large enough to switch from whole-blob
-storage to chunked pack storage.
+This module contains the chunk-planning logic used by the local repository
+backend when a file is large enough to switch from whole-blob storage to
+chunked pack storage. Phase 10 upgrades this path from fixed-size splitting to
+FastCDC content-defined chunking and uses ``blake3`` as the planner's fast
+digest.
 
 The module contains:
 
 * :class:`ChunkDescriptor` - Logical metadata for one chunk in a file
 * :class:`ChunkPart` - Chunk descriptor paired with chunk payload bytes
 * :class:`ChunkPlan` - Full chunk plan and LFS-style public metadata for a file
-* :class:`ChunkStore` - Planner that splits bytes into deterministic chunks
+* :class:`ChunkStore` - Planner that splits bytes into content-defined chunks
 * :func:`canonical_lfs_pointer` - Build canonical Git LFS pointer bytes
 * :func:`git_blob_oid` - Compute a Git-compatible blob OID
 
 Example::
 
-    >>> store = ChunkStore(chunk_size=4)
+    >>> store = ChunkStore(chunk_size=256, min_chunk_size=64, max_chunk_size=1024)
     >>> plan = store.plan_bytes(b"abcdefgh")
-    >>> len(plan.chunks)
-    2
+    >>> sum(chunk.logical_size for chunk in plan.chunks)
+    8
     >>> plan.etag == plan.sha256
     True
 """
 
+from blake3 import blake3
 from dataclasses import dataclass
+from fastcdc import fastcdc
 from hashlib import sha1, sha256
-from typing import Tuple
+from typing import Optional, Tuple
 
 OBJECT_HASH = "sha256"
 DEFAULT_CHUNK_SIZE = 4 * 1024 * 1024
+DEFAULT_MIN_CHUNK_SIZE = max(64, DEFAULT_CHUNK_SIZE // 4)
+DEFAULT_MAX_CHUNK_SIZE = DEFAULT_CHUNK_SIZE * 4
+FASTCDC_MIN_CHUNK_SIZE = 64
+FASTCDC_MIN_AVG_SIZE = 256
+FASTCDC_MIN_MAX_SIZE = 1024
 
 
 def sha256_hex(data: bytes) -> str:
@@ -169,7 +178,7 @@ class ChunkPlan:
 
     Example::
 
-        >>> store = ChunkStore(chunk_size=3)
+        >>> store = ChunkStore(chunk_size=256, min_chunk_size=64, max_chunk_size=1024)
         >>> plan = store.plan_bytes(b"abcdef")
         >>> plan.pointer_size > 0
         True
@@ -188,43 +197,71 @@ class ChunkStore:
     """
     Build deterministic chunk plans for large file payloads.
 
-    :param chunk_size: Maximum chunk size in bytes, defaults to
+    :param chunk_size: Target average chunk size in bytes, defaults to
         :data:`DEFAULT_CHUNK_SIZE`
     :type chunk_size: int, optional
-    :raises ValueError: Raised when ``chunk_size`` is not positive.
+    :param min_chunk_size: Optional minimum chunk size, defaults to
+        :data:`DEFAULT_MIN_CHUNK_SIZE`
+    :type min_chunk_size: Optional[int], optional
+    :param max_chunk_size: Optional maximum chunk size, defaults to
+        :data:`DEFAULT_MAX_CHUNK_SIZE`
+    :type max_chunk_size: Optional[int], optional
+    :raises ValueError: Raised when the chunk-size settings are invalid.
 
     Example::
 
-        >>> store = ChunkStore(chunk_size=4)
+        >>> store = ChunkStore(chunk_size=256, min_chunk_size=64, max_chunk_size=1024)
         >>> store.chunk_size
-        4
+        256
     """
 
-    def __init__(self, chunk_size: int = DEFAULT_CHUNK_SIZE) -> None:
+    def __init__(
+        self,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
+        min_chunk_size: Optional[int] = None,
+        max_chunk_size: Optional[int] = None,
+    ) -> None:
         """
         Initialize the chunk planner.
 
-        :param chunk_size: Maximum chunk size in bytes, defaults to
+        :param chunk_size: Target average chunk size in bytes, defaults to
             :data:`DEFAULT_CHUNK_SIZE`
         :type chunk_size: int, optional
+        :param min_chunk_size: Optional minimum chunk size, defaults to
+            :data:`DEFAULT_MIN_CHUNK_SIZE`
+        :type min_chunk_size: Optional[int], optional
+        :param max_chunk_size: Optional maximum chunk size, defaults to
+            :data:`DEFAULT_MAX_CHUNK_SIZE`
+        :type max_chunk_size: Optional[int], optional
         :return: ``None``.
         :rtype: None
-        :raises ValueError: Raised when ``chunk_size`` is not positive.
+        :raises ValueError: Raised when the chunk-size settings are invalid.
 
         Example::
 
-            >>> ChunkStore(chunk_size=1).chunk_size
-            1
+            >>> ChunkStore(chunk_size=256, min_chunk_size=64, max_chunk_size=1024).chunk_size
+            256
         """
 
         chunk_size = int(chunk_size)
-        if chunk_size <= 0:
-            raise ValueError("chunk_size must be > 0")
+        if chunk_size < FASTCDC_MIN_AVG_SIZE:
+            raise ValueError("chunk_size must be >= %d" % FASTCDC_MIN_AVG_SIZE)
         self.chunk_size = chunk_size
+        self.min_chunk_size = int(min_chunk_size) if min_chunk_size is not None else max(64, chunk_size // 4)
+        self.max_chunk_size = int(max_chunk_size) if max_chunk_size is not None else max(chunk_size, chunk_size * 4)
+        if self.min_chunk_size < FASTCDC_MIN_CHUNK_SIZE:
+            raise ValueError("min_chunk_size must be >= %d" % FASTCDC_MIN_CHUNK_SIZE)
+        if self.max_chunk_size < FASTCDC_MIN_MAX_SIZE:
+            raise ValueError("max_chunk_size must be >= %d" % FASTCDC_MIN_MAX_SIZE)
+        if self.max_chunk_size < self.chunk_size:
+            raise ValueError("max_chunk_size must be >= chunk_size")
+        if self.min_chunk_size > self.chunk_size:
+            raise ValueError("min_chunk_size must be <= chunk_size")
+        self.algorithm = "fastcdc"
 
     def plan_bytes(self, data: bytes) -> ChunkPlan:
         """
-        Split bytes into deterministic chunks and compute public metadata.
+        Split bytes into content-defined chunks and compute public metadata.
 
         :param data: Logical file payload bytes
         :type data: bytes
@@ -234,10 +271,10 @@ class ChunkStore:
 
         Example::
 
-            >>> store = ChunkStore(chunk_size=4)
+            >>> store = ChunkStore(chunk_size=256, min_chunk_size=64, max_chunk_size=1024)
             >>> plan = store.plan_bytes(b"abcdefgh")
-            >>> [part.data for part in plan.parts]
-            [b'abcd', b'efgh']
+            >>> sum(len(part.data) for part in plan.parts)
+            8
         """
 
         if not isinstance(data, (bytes, bytearray)):
@@ -247,13 +284,29 @@ class ChunkStore:
         file_sha256 = sha256_hex(payload)
         pointer = canonical_lfs_pointer(file_sha256, len(payload))
         parts = []
-        for index in range(0, len(payload), self.chunk_size):
-            chunk = payload[index:index + self.chunk_size]
-            chunk_digest = sha256_hex(chunk)
+        chunk_digest_cache = {}
+        for boundary in fastcdc(
+            payload,
+            min_size=self.min_chunk_size,
+            avg_size=self.chunk_size,
+            max_size=self.max_chunk_size,
+            hf=blake3,
+        ):
+            chunk = payload[int(boundary.offset):int(boundary.offset) + int(boundary.length)]
+            cache_key = (str(boundary.hash) or None, len(chunk))
+            chunk_digest = None
+            cached_items = chunk_digest_cache.get(cache_key, tuple())
+            for cached_chunk, cached_digest in cached_items:
+                if cached_chunk == chunk:
+                    chunk_digest = cached_digest
+                    break
+            if chunk_digest is None:
+                chunk_digest = sha256_hex(chunk)
+                chunk_digest_cache.setdefault(cache_key, []).append((chunk, chunk_digest))
             descriptor = ChunkDescriptor(
                 chunk_id=OBJECT_HASH + ":" + chunk_digest,
                 checksum=OBJECT_HASH + ":" + chunk_digest,
-                logical_offset=index,
+                logical_offset=int(boundary.offset),
                 logical_size=len(chunk),
                 stored_size=len(chunk),
                 compression="none",

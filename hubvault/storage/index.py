@@ -529,3 +529,42 @@ class IndexStore:
                     if entry.chunk_id == chunk_id:
                         return entry
         return None
+
+    def visible_entries(self, manifest: Optional[IndexManifest] = None) -> Dict[str, IndexEntry]:
+        """
+        Load the currently visible chunk-index view into one mapping.
+
+        The returned mapping keeps the same precedence as :meth:`lookup`, which
+        means newer entries from later L0 segments override older ones, and
+        lower-priority levels only fill in chunk IDs not already resolved.
+
+        :param manifest: Optional already-loaded manifest
+        :type manifest: Optional[IndexManifest]
+        :return: Mapping from chunk ID to its visible index entry
+        :rtype: Dict[str, IndexEntry]
+        :raises IntegrityError: Raised when a visible segment cannot be read.
+
+        Example::
+
+            >>> from pathlib import Path
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     store = IndexStore(Path(tmpdir))
+            ...     older = IndexEntry("sha256:a", "pack-old", 16, 4, 4, "none", "sha256:a")
+            ...     newer = IndexEntry("sha256:a", "pack-new", 32, 4, 4, "none", "sha256:a")
+            ...     _ = store.write_segment("L0", "seg-old.idx", [older])
+            ...     _ = store.write_segment("L0", "seg-new.idx", [newer])
+            ...     store.write_manifest(IndexManifest.empty().add_segment("L0", "seg-old.idx").add_segment("L0", "seg-new.idx"))
+            ...     store.visible_entries()["sha256:a"].pack_id
+            'pack-new'
+        """
+
+        active_manifest = manifest or self.read_manifest()
+        resolved = {}
+        for level in INDEX_LEVELS:
+            for segment_name in reversed(active_manifest.levels.get(level, tuple())):
+                entries = self.load_segment(level, segment_name)
+                for entry in reversed(entries):
+                    if entry.chunk_id not in resolved:
+                        resolved[entry.chunk_id] = entry
+        return resolved

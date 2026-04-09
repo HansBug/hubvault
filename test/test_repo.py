@@ -867,14 +867,25 @@ class TestRepoSemantics:
         api = HubVaultApi(tmp_path / "repo")
         api.create_repo(large_file_threshold=64)
 
-        large_payload = (b"A" * DEFAULT_CHUNK_SIZE) + (b"B" * 1024)
+        large_payload = (
+            (b"A" * DEFAULT_CHUNK_SIZE)
+            + (b"B" * DEFAULT_CHUNK_SIZE)
+            + (b"C" * DEFAULT_CHUNK_SIZE)
+            + (b"D" * DEFAULT_CHUNK_SIZE)
+            + (b"E" * DEFAULT_CHUNK_SIZE)
+            + (b"F" * 1024)
+        )
         api.create_commit(
             operations=[CommitOperationAdd("artifacts/large.bin", large_payload)],
             commit_message="seed chunked file",
         )
 
         pack_path = _only_path(tmp_path / "repo" / "chunks" / "packs", "*.pack")
-        first_chunk_limit = len(PACK_MAGIC) + DEFAULT_CHUNK_SIZE
+        index_path = _only_path(tmp_path / "repo" / "chunks" / "index" / "L0", "*.idx")
+        index_records = [json.loads(line) for line in index_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        assert len(index_records) >= 2
+        first_index_record = index_records[0]
+        first_chunk_limit = int(first_index_record["offset"]) + int(first_index_record["stored_size"])
         pack_path.write_bytes(pack_path.read_bytes()[:first_chunk_limit])
 
         assert api.read_range("artifacts/large.bin", start=0, length=1024) == b"A" * 1024

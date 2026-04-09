@@ -5703,6 +5703,19 @@ class RepositoryBackend(object):
         existing = sorted(pack_dir.glob("*.pack")) if pack_dir.exists() else []
         return "%s-%06d" % (txdir.name, len(existing) + 1)
 
+    def _staged_chunk_entries_unlocked(self, txdir: Path) -> Dict[str, IndexEntry]:
+        """Return the chunk entries already staged inside one transaction."""
+
+        staged_index = IndexStore(txdir / "chunks" / "index")
+        manifest = IndexManifest.empty()
+        for level in ("L0", "L1", "L2"):
+            level_root = staged_index.segment_path(level, "placeholder").parent
+            if not level_root.exists():
+                continue
+            for path in sorted(level_root.glob("*.idx")):
+                manifest = manifest.add_segment(level, path.name)
+        return staged_index.visible_entries(manifest=manifest)
+
     def _stage_chunked_add_operation(
         self,
         txdir: Path,
@@ -5720,25 +5733,41 @@ class RepositoryBackend(object):
         """
 
         chunk_plan = ChunkStore().plan_bytes(data)
-        pack_id = self._next_pack_id(txdir)
-        pack_store = PackStore(txdir / "chunks" / "packs")
-        pack_result = pack_store.write_pack(pack_id, [part.data for part in chunk_plan.parts])
+        visible_index = IndexStore(self._repo_path / "chunks" / "index").visible_entries()
+        visible_index.update(self._staged_chunk_entries_unlocked(txdir))
+
+        new_parts = []
+        new_chunk_ids = set()
+        for part in chunk_plan.parts:
+            if part.descriptor.chunk_id in visible_index:
+                continue
+            if part.descriptor.chunk_id in new_chunk_ids:
+                continue
+            new_parts.append(part)
+            new_chunk_ids.add(part.descriptor.chunk_id)
 
         index_entries = []
         file_chunks = []
-        for part, location in zip(chunk_plan.parts, pack_result.chunks):
-            descriptor = part.descriptor
-            index_entries.append(
-                IndexEntry(
-                    chunk_id=descriptor.chunk_id,
-                    pack_id=location.pack_id,
-                    offset=location.offset,
-                    stored_size=location.stored_size,
-                    logical_size=descriptor.logical_size,
-                    compression=descriptor.compression,
-                    checksum=descriptor.checksum,
+        if new_parts:
+            pack_id = self._next_pack_id(txdir)
+            pack_store = PackStore(txdir / "chunks" / "packs")
+            pack_result = pack_store.write_pack(pack_id, [part.data for part in new_parts])
+            for part, location in zip(new_parts, pack_result.chunks):
+                descriptor = part.descriptor
+                index_entries.append(
+                    IndexEntry(
+                        chunk_id=descriptor.chunk_id,
+                        pack_id=location.pack_id,
+                        offset=location.offset,
+                        stored_size=location.stored_size,
+                        logical_size=descriptor.logical_size,
+                        compression=descriptor.compression,
+                        checksum=descriptor.checksum,
+                    )
                 )
-            )
+
+        for part in chunk_plan.parts:
+            descriptor = part.descriptor
             file_chunks.append(
                 {
                     "chunk_id": descriptor.chunk_id,
@@ -5750,11 +5779,12 @@ class RepositoryBackend(object):
                 }
             )
 
-        IndexStore(txdir / "chunks" / "index").write_segment(
-            "L0",
-            "seg-%s.idx" % pack_id,
-            index_entries,
-        )
+        if index_entries:
+            IndexStore(txdir / "chunks" / "index").write_segment(
+                "L0",
+                "seg-%s.idx" % pack_id,
+                index_entries,
+            )
         file_payload = {
             "format_version": FORMAT_VERSION,
             "storage_kind": "chunked",

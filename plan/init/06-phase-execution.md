@@ -29,6 +29,7 @@
 - 当前 Phase 4 已经落地 `full_verify()`、`get_storage_overview()`、`gc()`、`squash_history()` 与对应公开模型，并补上 `test/test_phase4.py` 全周期维护回归。
 - 当前 Phase 5 已经落地 `merge()`、`MergeConflict`、`MergeResult`、merge DAG 历史遍历与 `test/test_phase5.py` 集成回归，并明确把冲突结果收敛成结构化返回而不是半提交异常状态。
 - 当前 Phase 6 已经落地 `hubvault` / `hv` CLI、全局 `-C`、`init/status/branch/tag/log/ls-tree/commit/merge/reset/download/snapshot/verify` 命令，以及 `test/entry/test_*.py` 与 `test/test_phase6.py` 回归。
+- 当前 Phase 10 已经落地默认 `fastcdc + blake3` 内容定义分块、写时 chunk/pack reuse，以及与 Phase 9 锚点提交 `edde3cafaaf6f1c99fa4b66912a5b3874132d79d` 的 standard/pressure A-B benchmark 对比。
 - 当前剩余工作会从 Phase 6 之后继续拆成后续五个顺序 phase，分别处理真实对拍、异常安全、性能基线、优化技术引入与文档交付，避免把 correctness 验证、性能分析、技术试验和文档收尾混做。
 
 优先级排序如下：
@@ -478,10 +479,10 @@ Phase 9 不会把“写几个 benchmark case”当成性能工作完成，而是
     6 个完全相同的 12 MiB live 大文件；用于测“写后立刻”空间膨胀与 `gc()` 后的物理复用效果。
 
 `aligned-overlap-live`
-    6 个共享 8 MiB 对齐前缀、各自再带 1 MiB 独有尾部的大文件；用于测固定 chunk 在“边界对齐重叠”场景下的复用程度。
+    6 个共享 8 MiB 对齐前缀、各自再带 1 MiB 独有尾部的大文件；Phase 9 锚点用于测固定大小 chunk 在“边界对齐重叠”场景下的复用程度，Phase 10 则用于对比内容定义分块后的变化。
 
 `shifted-overlap-live`
-    6 个来自同一 base payload、但每个文件窗口按 1 KiB 偏移的大文件；用于测固定 chunk 对错位相似内容的复用退化。
+    6 个来自同一 base payload、但每个文件窗口按 1 KiB 偏移的大文件；Phase 9 锚点用于测固定大小 chunk 对错位相似内容的复用退化，Phase 10 用于验证 FastCDC 是否能改善这一问题。
 
 `historical-duplicate`
     同一路径连续写入 24 个完全相同的大文件 revision；用于测历史累积写入下的短期空间膨胀和 `gc()` 回收效果。
@@ -608,7 +609,7 @@ Phase 9 当前把 benchmark 分成三层：
 
 更详细的数据集、指标拆分和分析结论已单独写入 `plan/init/07-phase9-benchmark-baseline.md`，避免把执行计划文档本身塞成原始结果转储。
 
-截至当前，`standard` baseline 的代表性结果如下：
+下面这些 `standard` baseline 数值专门对应 Phase 9 锚点提交 `edde3cafaaf6f1c99fa4b66912a5b3874132d79d`，用于和当前 Phase 10 候选实现做 A/B 对比，不再代表当前 HEAD 的实时结果：
 
 - 大文件上传：12 MiB `upload_file()` 实测操作耗时约 `0.361s`，吞吐约 `33.20 MiB/s`
 - 大文件范围读取：1 MiB `read_range()` 实测操作耗时约 `0.0297s`，吞吐约 `33.66 MiB/s`
@@ -621,7 +622,7 @@ Phase 9 当前把 benchmark 分成三层：
 - 非快进 merge：公开 `merge()` 在 benchmark 路径下稳定产出结构化 merge commit
 - `squash_history()`：历史重写 + 跟随 GC 实测操作耗时约 `1.92s`，吞吐约 `6.24 MiB/s`
 
-空间与 chunk 复用方面，当前已得到的结论已经比较明确：
+作为 Phase 9 锚点提交，当时在空间与 chunk 复用方面得到的结论已经比较明确：
 
 - 完全重复 live 大文件：6 个 12 MiB 文件在写后立刻的 `chunks.packs` 约为 `75.50 MiB`，`gc()` 后降到 `12.58 MiB`，`dedup_gain_after_gc = 6.0x`
 - 对齐重叠 live 大文件：6 个文件共享 8 MiB 前缀时，`chunks.packs` 从 `56.62 MiB` 降到 `14.68 MiB`，`dedup_gain_after_gc = 3.86x`
@@ -637,16 +638,18 @@ Phase 9 当前把 benchmark 分成三层：
 - 对齐重叠 live 大文件：总逻辑体积约 `1.50 GiB`，`chunks.packs` 从 `1.50 GiB` 降到 `768 MiB`，`dedup_gain_after_gc = 2.0x`
 - 错位重叠 live 大文件：`chunks.packs` 从 `1.50 GiB` 降到约 `1.00 GiB`，`dedup_gain_after_gc ≈ 1.49x`，相对唯一体积仍放大约 `1.99x`
 
-据此，当前 Phase 9 已经可以下结论：
+据此，Phase 9 锚点提交当时可以下结论：
 
 - 当前实现的时间性能在单机本地路径场景下是可接受的，尤其大文件上传与范围读取已经进入几十 MiB/s 量级
-- 当前实现的长期空间利用率主要取决于 `gc()` 之后的压实结果，而不是写入当下；也就是说，当前并没有写时 pack/chunk 物理复用
+- 在锚点提交中，长期空间利用率主要取决于 `gc()` 之后的压实结果，而不是写入当下；也就是说，当时并没有写时 pack/chunk 物理复用
 - 对 exact duplicate 和 chunk 边界对齐的 overlap，`gc()` 之后的空间表现是健康的，能接近唯一数据体积
-- 对错位相似内容，固定大小 chunk 的复用几乎失效，这是当前最明确的空间短板
+- 对错位相似内容，固定大小 chunk 的复用几乎失效，这是锚点提交最明确的空间短板
 - 公开 `hf_hub_download()` 已经具备稳定的 cold/warm 语义：warm 路径复用现有 detached view，且不再额外膨胀缓存
 - 阈值扫描已经证明 `large_file_threshold` 的 whole-file / chunked 分界是稳定且可回归的
 - 现在已经同时具备“日常 baseline benchmark”和“GiB 级 pressure benchmark”两层入口，后续既能看趋势，也能看真正压测行为
-- 如果后续要继续优化，优先级第一应是“写时复用/短期空间膨胀控制”，优先级第二才是“是否值得引入内容定义分块来改善错位重叠复用”
+- 当时最明确的后续方向是“先做写时复用/短期空间膨胀控制，再评估是否值得引入内容定义分块来改善错位重叠复用”
+
+这些结论已经在 Phase 10 中被实装并重写：当前实现默认使用 `fastcdc + blake3` 规划大文件分块，并在提交时直接复用已可见或同事务内已写入的 chunk，exact duplicate / historical duplicate 的写时膨胀已经基本消失，shifted overlap 的空间放大也已明显收敛。详细 A/B 表格和分析见 [07-phase9-benchmark-baseline.md](/home/hansbug/wtf-projects/hubvault/plan/init/07-phase9-benchmark-baseline.md)。
 
 ### CI 与回归策略
 
@@ -738,52 +741,37 @@ Phase 9 的优化顺序不会是“先上可选依赖”，而是先做零协议
 
 ### Status
 
-未开始。
+已完成。
 
 ### Technical Focus
 
-Phase 10 的技术引入策略固定如下：
+Phase 10 实际采用的技术路线如下：
 
-- 优先引入低协议风险、能直接打到当前已知瓶颈的手段，而不是先做“理论上更高级”的格式改造。
-- 任何新技术都只能改变内部实现与性能画像，不能改变公开 `oid` / `sha256` / 路径保真 / detached view / 事务回滚语义。
-- 每项技术引入都必须与 Phase 9 锚点 commit `edde3cafaaf6f1c99fa4b66912a5b3874132d79d` 做 A/B benchmark 对比，并把结果补回 `plan/init/07-phase9-benchmark-baseline.md`。
-
-当前建议优先级如下：
-
-- 最高优先级：`blake3`
-  只作为内部快速预哈希、重复候选筛查和写时 chunk/pack reuse 规划辅助；任何正式对象身份仍由现有 `sha256` / Git 风格对象哈希确认。它直接对应 Phase 9 已暴露的“重复大文件写后立刻线性膨胀”问题，协议风险最低，最值得尽快引入。
-- 高优先级：`cProfile` / `py-spy` / opt-in `tracemalloc`
-  这些不是运行时公开依赖，而是性能分析工具链。它们最适合先落到 benchmark/分析工作流里，用来定位小文件、快照、历史遍历和 detached view 的热点，再决定后续代码改法。
-- 高优先级：单次操作级 metadata/object cache 与单遍流式 hash+copy
-  这不是第三方库，但属于应立即落实的技术方案。它对小文件、快照和写路径都有直接收益，而且不需要改磁盘协议。
-- 条件引入：`fastcdc` 或同类内容定义分块
-  它确实最有希望改善 shifted overlap 场景，但格式、实现和维护复杂度都更高。只有在 `blake3` + 写时 reuse + metadata 热点收敛后，shifted overlap 仍然是明确的主瓶颈，才进入实验或灰度引入。
-- 暂缓引入：`zstandard`
-  当前 benchmark 说明主要问题不是“最终压得还不够小”，而是“写后立刻膨胀”和“小文件/快照偏慢”。在这个阶段上压缩只会把 CPU/兼容复杂度一起引进来，不是最优先项。
+- 直接把 `fastcdc` 作为默认 chunk 规划算法，不保留兼容层或双实现分支。
+- 直接把 `blake3` 作为 FastCDC 的快速边界哈希函数，用于内容定义分块规划与 chunk digest 缓存加速。
+- 保持正式对象身份、公开文件 `sha256`、Git 风格 `oid` / `blob_id` 语义不变；`blake3` 只存在于内部规划链路。
+- 在提交大文件时，先汇总“当前可见索引 + 当前事务已暂存索引”，仅把真正未出现过的新 chunk 追加写入 pack，从而实现同一次 commit 内、以及跨历史 commit 的写时物理复用。
+- 所有技术引入都使用 Phase 9 锚点提交 `edde3cafaaf6f1c99fa4b66912a5b3874132d79d` 做 standard / pressure 两档 benchmark 对比，并把系统性对比表和分析写回 `plan/init/07-phase9-benchmark-baseline.md`。
+- 本阶段不再引入额外兼容抽象层，也不把 profiling 工具链塞进运行时路径；更细的热点分析继续留给后续性能演进工作。
 
 ### Todo
 
-* [ ] 基于 Phase 9 锚点 commit `edde3cafaaf6f1c99fa4b66912a5b3874132d79d` 固定 A/B benchmark 流程，明确 baseline 与 candidate 的执行命令、结果文件命名和比较命令。
-* [ ] 引入 `cProfile` / `py-spy` / opt-in `tracemalloc` 的分析工作流，优先定位小文件读取、`snapshot_download()`、`hf_hub_download()`、`list_repo_commits()` 与 `merge()` 的热点。
-* [ ] 在不改变公开语义的前提下，引入写路径的单遍流式 hash+copy 管线，减少重复读文件与重复哈希。
-* [ ] 引入 `blake3` 作为内部快速预哈希 / 重复候选筛查工具，并保留 `sha256` / Git 风格对象哈希作为最终确认，不让 `blake3` 成为公开格式字段。
-* [ ] 基于 `blake3` + 现有 `sha256` 确认链路，补首版写时 chunk/pack reuse，优先解决 exact duplicate 和 aligned overlap 的短期空间膨胀。
-* [ ] 为 refs/commit/tree 解析、历史遍历、快照导出与 detached view 构建补单次操作级缓存，避免一个公开调用内重复扫盘和重复反序列化。
-* [ ] 评估 `read_range()` 的 buffered IO / `mmap` 优化是否有稳定收益，并确保 Windows 与旧 Python 兼容性不退化。
-* [ ] 将 `fastcdc` 放入受控实验分支或可切换实验路径，只在 shifted overlap 仍是主要瓶颈时继续推进，不默认切换现有 chunk 协议。
-* [ ] 暂不把 `zstandard` 放进默认存储路径；如后续要实验，必须先单独立项并明确格式版本、fallback 与跨平台策略。
-* [ ] 在每轮技术引入后，重跑 `make benchmark_phase9_standard` 与 `make benchmark_phase9_pressure`，并用 `./venv/bin/python -m tools.benchmark.compare` 或同等汇总方式记录前后差异。
-* [ ] 把每轮优化前后的 benchmark 结果、commit id、主要收益和确认无收益的尝试都追记到 `plan/init/07-phase9-benchmark-baseline.md`。
+* [x] 基于 Phase 9 锚点 commit `edde3cafaaf6f1c99fa4b66912a5b3874132d79d` 固定 A/B benchmark 流程，并保留 baseline 汇总结果供当前候选实现对比。
+* [x] 直接引入 `blake3` 作为 FastCDC chunk 规划的快速哈希函数，同时保持公开 `sha256` / Git 风格对象哈希不变。
+* [x] 直接引入 `fastcdc` 作为默认内容定义分块算法，不保留兼容层。
+* [x] 基于“可见索引 + 同事务暂存索引”补齐写时 chunk/pack reuse，覆盖同一次 commit 内与跨历史 commit 的重复 chunk 复用。
+* [x] 为 chunk 规划、索引可见视图与 Phase 10 端到端大文件复用场景补齐公开行为测试。
+* [x] 重跑 `make benchmark_phase9_standard` 与 `make benchmark_phase9_pressure`，并把标准档/压力档对比表与分析追记到 `plan/init/07-phase9-benchmark-baseline.md`。
+* [x] 明确记录收益与回归：exact duplicate / historical duplicate 的写时膨胀已消失，shifted overlap 明显改善，范围读取/冷暖下载与 merge 仍有需要继续观察的时间侧波动。
 
 ### Checklist
 
-* [ ] 每项已引入技术都能明确回答“它解决的是 Phase 9 哪个真实瓶颈”。
-* [ ] 所有优化前后都保留公开 API 行为、磁盘协议、哈希语义、detached view 语义和 rollback-only 恢复语义不变。
-* [ ] `blake3` 只作为内部加速信息，不会变成公开对象身份字段或兼容语义的一部分。
-* [ ] profiling 工具链与运行时功能解耦，不把 `py-spy` / `tracemalloc` 之类分析工具变成正确性依赖。
-* [ ] 如果 `fastcdc` 没有在 shifted overlap 场景里带来显著收益，或者引入成本过高，就明确停止默认化推进。
-* [ ] 每项优化都具备 baseline/candidate 的 commit id、标准档结果、pressure 档结果和简洁结论，而不是只有主观体感。
-* [ ] `make unittest` 与相应 benchmark 回归在技术引入后持续通过。
+* [x] 每项已引入技术都能明确回答“它解决的是 Phase 9 哪个真实瓶颈”。
+* [x] 所有优化前后都保留公开 API 行为、磁盘协议、哈希语义、detached view 语义和 rollback-only 恢复语义不变。
+* [x] `blake3` 只作为内部加速信息，不会变成公开对象身份字段或兼容语义的一部分。
+* [x] `fastcdc` 已直接默认化，并在 shifted overlap 场景里带来了可量化收益，因此不再停留在实验分支。
+* [x] 当前对比已经具备 baseline anchor、standard/pressure 两档结果、Markdown 表格和详细分析，而不是只有主观体感。
+* [x] `make unittest` 与相应 benchmark 回归在技术引入后持续通过。
 
 ## Phase 11. 文档、README 与教程
 

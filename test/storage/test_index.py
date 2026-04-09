@@ -58,9 +58,10 @@ class TestIndexStore:
         store = IndexStore(tmp_path / "index")
         older = _entry("sha256:dup", "pack-old", 16)
         newer = _entry("sha256:dup", "pack-new", 32)
+        sibling = _entry("sha256:other", "pack-other", 48)
 
         store.write_segment("L0", "seg-old.idx", [older])
-        store.write_segment("L0", "seg-new.idx", [newer])
+        store.write_segment("L0", "seg-new.idx", [sibling, newer])
         store.write_manifest(
             IndexManifest.empty()
             .add_segment("L0", "seg-old.idx")
@@ -68,6 +69,10 @@ class TestIndexStore:
         )
 
         assert store.lookup("sha256:dup") == newer
+        assert store.visible_entries() == {
+            "sha256:dup": newer,
+            "sha256:other": sibling,
+        }
 
     def test_index_store_detects_invalid_inputs(self, tmp_path):
         store = IndexStore(tmp_path / "index")

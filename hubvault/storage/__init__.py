@@ -6,7 +6,7 @@ repository backend.
 
 The package contains:
 
-* :class:`ChunkStore` - Deterministic chunk planner for logical file payloads
+* :class:`ChunkStore` - Content-defined chunk planner for logical file payloads
 * :class:`PackStore` - Append-only pack-file reader and writer
 * :class:`IndexStore` - Immutable segment and manifest index layer
 

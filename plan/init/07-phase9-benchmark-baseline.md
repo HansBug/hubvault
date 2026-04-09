@@ -241,7 +241,7 @@ make benchmark_phase9_pressure
 - shifted overlap 在 GiB 总量下依然明显差于对齐重叠
 - detached view 在大文件下载场景下会带来显著缓存膨胀
 
-## 当前可以成立的结论
+## Phase 9 锚点当时可以成立的结论
 
 ### 1. 大文件读写速度当前是可接受的
 
@@ -290,7 +290,7 @@ shifted overlap 的结果已经说明：
 
 这也是当前最值得明确记录的结构性短板。
 
-## 当前建议的优化优先级
+## Phase 9 结束时的优化优先级（历史记录）
 
 基于这轮 benchmark，后续优化优先级已经可以明确：
 
@@ -318,7 +318,7 @@ shifted overlap 的结果已经说明：
 
 才值得进入 `fastcdc` 一类内容定义分块实验。
 
-## 新技术引入建议
+## Phase 9 结束时的新技术引入建议（历史记录）
 
 结合当前结果，对前面提到的几类技术建议如下：
 
@@ -350,11 +350,137 @@ Phase 9 的核心交付已经完成，但这份文档仍然允许后续继续追
 - 更系统的热点 flamegraph / cProfile 结果
 - 更细分的 cache amplification 拆解
 
-## 结论摘要
+## Phase 10 当前候选实现对比
 
-用最短的话概括当前状态：
+### 候选实现说明
 
-- 时间性能：大文件 baseline 和 GiB 级 pressure 都可接受，小文件/快照仍偏慢
-- 空间性能：长期看健康，短期看重复大文件会膨胀
-- 复用能力：exact duplicate 和对齐 overlap 好，错位 overlap 差
-- 优先方向：先做写时复用，再看是否值得做内容定义分块
+当前候选实现直接默认引入：
+
+- `fastcdc` 内容定义分块
+- `blake3` 作为 FastCDC 的快速边界哈希
+- 写时 chunk/pack reuse（同事务内 + 跨既有历史）
+
+本轮候选结果仍使用与 Phase 9 相同的命令口径：
+
+```bash
+make benchmark_phase9_standard
+make benchmark_phase9_pressure
+```
+
+对比基线固定为：
+
+- anchor commit：`edde3cafaaf6f1c99fa4b66912a5b3874132d79d`
+- anchor subject：`feat(benchmark): complete phase9 baseline and pressure suite`
+
+### Standard 档时间对比
+
+| 场景 | Anchor | Candidate | 变化 | 说明 |
+| --- | --- | --- | --- | --- |
+| `large_upload` | `33.20 MiB/s` / `0.361s` | `37.16 MiB/s` / `0.323s` | `+11.9%` | 标准档大文件写入更快，说明 FastCDC 规划和写时复用没有拖垮 12 MiB 量级上传。 |
+| `large_read_range` | `33.66 MiB/s` / `0.0297s` | `27.36 MiB/s` / `0.0365s` | `-18.7%` | 标准档小范围 range read 出现回退，后续应继续盯 `IndexStore.lookup()` 与逐 chunk 校验。 |
+| `small_read_all` | `0.71 MiB/s` / `0.703s` | `0.87 MiB/s` / `0.574s` | `+22.5%` | 小文件全量读取反而更快，说明对象扫描和仓库尺寸收敛对读路径有正反馈。 |
+| `snapshot_download_small` | `0.22 MiB/s` / `2.30s` | `0.27 MiB/s` / `1.85s` | `+24.5%` | 小文件快照导出也更快，说明当前改动没有把 detached view 路径变慢。 |
+| `hf_hub_download_cold` | `56.28 MiB/s` / `0.213s` | `58.56 MiB/s` / `0.205s` | `+4.1%` | 冷下载小幅变好。 |
+| `hf_hub_download_warm` | `77.28 MiB/s` / `0.155s` | `57.56 MiB/s` / `0.208s` | `-25.5%` | warm 路径回退明显，但缓存增量仍保持 `0`；后续要继续盯现有 view 复用链路。 |
+| `merge_non_fast_forward` | `24.41 MiB/s` / `0.0822s` | `19.62 MiB/s` / `0.102s` | `-19.7%` | merge 不是本轮主优化面，但已出现可测回退，需要在后续性能 phase 里单独 profiling。 |
+| `squash_history` | `6.24 MiB/s` / `1.92s` | `21.33 MiB/s` / `0.563s` | `+241.8%` | 历史重复写入被写时复用消掉后，历史压缩路径显著变轻。 |
+| `full_verify` | `2.23 MiB/s` / `4.04s` | `3.08 MiB/s` / `2.93s` | `+38.2%` | 由于重复 pack/索引大幅减少，完整校验路径也直接受益。 |
+
+### Standard 档空间与复用对比
+
+| 场景 | Anchor 写后立刻 pack | Candidate 写后立刻 pack | Anchor `gc()` 后 pack | Candidate `gc()` 后 pack | Anchor 写后立刻 / unique | Candidate 写后立刻 / unique | 说明 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `exact_duplicate_live_space` | `72.00 MiB` | `12.00 MiB` | `12.00 MiB` | `12.00 MiB` | `6.00x` | `1.00x` | exact duplicate 的写时膨胀已经完全消失。 |
+| `aligned_overlap_live_space` | `54.00 MiB` | `22.33 MiB` | `14.00 MiB` | `22.33 MiB` | `3.86x` | `1.60x` | 写时空间明显更健康，但这个标准档合成数据集在旧固定 chunk 下原本就“完美对齐”，因此 `gc()` 后最终体积反而不如 anchor 极致。 |
+| `shifted_overlap_live_space` | `72.00 MiB` | `35.83 MiB` | `72.00 MiB` | `35.83 MiB` | `6.00x` | `2.98x` | 错位重叠场景显著改善，FastCDC 的核心收益在这里开始体现。 |
+| `historical_duplicate_space` | `288.00 MiB` | `12.00 MiB` | `12.00 MiB` | `12.00 MiB` | `24.00x` | `1.00x` | 同一路径历史重复写入不再制造短期 pack 膨胀。 |
+
+### Pressure 档时间对比
+
+| 场景 | Anchor | Candidate | 变化 | 说明 |
+| --- | --- | --- | --- | --- |
+| `large_upload` | `80.93 MiB/s` / `6.33s` | `78.97 MiB/s` / `6.48s` | `-2.4%` | GiB 级上传基本持平，说明默认切换 FastCDC 后吞吐没有数量级恶化。 |
+| `large_read_range` | `80.80 MiB/s` / `0.396s` | `167.53 MiB/s` / `0.191s` | `+107.3%` | 压测档大范围 range read 明显提速，说明更少的重复 pack 与更稳定的可见索引布局在重负载下反而更有利。 |
+| `hf_hub_download_cold` | `54.70 MiB/s` / `9.36s` | `49.14 MiB/s` / `10.42s` | `-10.2%` | 冷下载仍有回退，但缓存增量保持 `1.00 GiB`，没有额外放大。 |
+
+### Pressure 档空间与复用对比
+
+| 场景 | Anchor 写后立刻 pack | Candidate 写后立刻 pack | Anchor `gc()` 后 pack | Candidate `gc()` 后 pack | Anchor 写后立刻 / unique | Candidate 写后立刻 / unique | 说明 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `exact_duplicate_live_space` | `1536.00 MiB` | `512.00 MiB` | `512.00 MiB` | `512.00 MiB` | `3.00x` | `1.00x` | GiB 级 exact duplicate 也已经在写入当下完成物理复用。 |
+| `aligned_overlap_live_space` | `1536.00 MiB` | `773.16 MiB` | `768.00 MiB` | `773.16 MiB` | `2.00x` | `1.01x` | 对齐重叠场景在压测档几乎直接压到唯一数据体积，和 anchor 的 `gc()` 后结果非常接近。 |
+| `shifted_overlap_live_space` | `1536.00 MiB` | `526.54 MiB` | `1028.00 MiB` | `526.54 MiB` | `2.98x` | `1.02x` | GiB 级错位重叠是本轮最亮眼的收益点，当前已经非常接近唯一数据体积。 |
+
+### 详细分析
+
+#### 1. 写时复用已经真正落地，而不是只靠 `gc()`
+
+最关键的变化不是“`gc()` 后能否压小”，而是“写完立刻是否已经健康”。
+
+- standard 档 exact duplicate 从 `72.00 MiB` 直接降到 `12.00 MiB`
+- standard 档 historical duplicate 从 `288.00 MiB` 直接降到 `12.00 MiB`
+- pressure 档 exact duplicate 从 `1536.00 MiB` 直接降到 `512.00 MiB`
+
+这说明当前大文件提交已经不是“先线性膨胀，再等维护命令回收”的模型，而是提交当下就直接复用已有 chunk。
+
+#### 2. FastCDC 对 shifted overlap 的收益是实打实的
+
+Phase 9 锚点最大的结构性短板是错位重叠：
+
+- standard 档从 `6.00x` 唯一数据体积降到 `2.98x`
+- pressure 档从 `2.98x` 进一步降到 `1.02x`
+
+这不是噪声级收益，而是直接把“几乎无法复用”改成了“接近唯一体积”。也正因为这个结果已经足够明显，`fastcdc` 不再需要留在“实验路径”里。
+
+#### 3. aligned overlap 要分开看“短期写时”与“最终极限”
+
+当前 candidate 在 aligned overlap 上呈现出一个很有代表性的 trade-off：
+
+- 写时空间明显比 anchor 健康，不再需要依赖后续 `gc()`
+- 但 standard 档那个专门按旧固定 chunk 边界构造的合成数据，在 anchor 上 `gc()` 后可以压到更低的 `14.00 MiB`
+- candidate 在 standard aligned case 上稳定在 `22.33 MiB`
+
+这并不说明 candidate 退化成“更差格式”，而是说明：
+
+- 旧锚点数据集对固定 chunk 非常友好
+- 当前内容定义分块更偏向真实错位/近重复场景的总体收益
+- 在更重的 pressure 档里，aligned overlap 已经能达到 `1.01x` unique，说明真实大体量场景下 candidate 更均衡
+
+#### 4. 时间性能是“明显净收益 + 少数局部回退”的混合结果
+
+当前不能把 Phase 10 简化成“所有时间路径都更快”。
+
+已经确认的明显收益包括：
+
+- standard `large_upload`、`small_read_all`、`snapshot_download_small`
+- standard `full_verify`、`squash_history`
+- pressure `large_read_range`
+
+已经确认的局部回退包括：
+
+- standard `large_read_range`
+- standard `hf_hub_download_warm`
+- standard `merge_non_fast_forward`
+- pressure `hf_hub_download_cold`
+
+因此当前最合理的工程结论不是回退 Phase 10，而是：
+
+- 保留 FastCDC + 写时复用这条主线，因为它已经解决了最关键的空间问题
+- 把后续时间侧工作聚焦到 range read、warm download、merge 三条可测热点
+
+#### 5. 当前总体判断
+
+如果按 Phase 9 当时提出的优先级来审视：
+
+- “写时复用 / 短期空间膨胀控制”已经完成
+- “是否值得做内容定义分块”也已经有了明确答案：值得，而且收益主要体现在 shifted overlap
+- 剩余的性能工作已经从“空间正确性与去重模型”转向“若干读路径和 merge 路径的局部时间优化”
+
+## 当前仓库状态下的结论
+
+用最短的话概括当前真实状态：
+
+- 时间性能：总体仍可接受，而且大文件写入、完整校验、历史压缩已经明显变好；但 warm download、merge 和部分 standard range read 还有回退要继续处理
+- 空间性能：不只是长期 `gc()` 后健康，写后立刻也已经健康得多
+- 复用能力：exact duplicate、historical duplicate 已基本达到 `1.0x`；shifted overlap 也已从明显短板收敛到接近唯一体积
+- 当前最值得继续盯的点：range read 热点、warm detached view 路径、merge 时间路径，以及 aligned overlap 在特定合成数据集上的最终体积差异

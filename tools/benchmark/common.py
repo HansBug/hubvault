@@ -707,9 +707,13 @@ def infer_space_conclusions(results: Dict[str, Dict[str, object]]) -> List[str]:
 
     conclusions = []
 
+    def _near_one(value: float, tolerance: float = 0.05) -> bool:
+        return abs(float(value) - 1.0) <= float(tolerance)
+
     exact = results["exact_duplicate_live_space"]["metrics"]
     aligned = results["aligned_overlap_live_space"]["metrics"]
     shifted = results["shifted_overlap_live_space"]["metrics"]
+    historical = results.get("historical_duplicate_space", {}).get("metrics", {})
 
     conclusions.append(
         "大文件上传中位吞吐约 {value:.2f} MiB/s，范围读取中位吞吐约 {range_value:.2f} MiB/s。".format(
@@ -717,24 +721,65 @@ def infer_space_conclusions(results: Dict[str, Dict[str, object]]) -> List[str]:
             range_value=float(results["large_read_range"].get("throughput_mib_per_sec", 0.0)),
         )
     )
-    conclusions.append(
-        "完全重复的大文件在写入后立即占用仍接近线性膨胀，`gc()` 后 `chunks.packs` 体积下降到原来的 {ratio:.2%}，说明当前物理复用主要依赖后续压实而不是写时复用。".format(
-            ratio=float(exact["physical_over_logical_after_gc"]),
+    exact_before_unique = float(exact.get("physical_over_unique_before_gc", 0.0))
+    exact_after_unique = float(exact.get("physical_over_unique_after_gc", 0.0))
+    if _near_one(exact_before_unique):
+        conclusions.append(
+            "完全重复的大文件在写入当下就保持接近单份物理副本，写前后 `physical_over_unique` 都约为 {ratio:.2f}x，说明写时 chunk/pack 复用已经生效，`gc()` 不再承担主要去重职责。".format(
+                ratio=exact_before_unique,
+            )
         )
-    )
-    conclusions.append(
-        "按 chunk 边界对齐的部分重复文件，`gc()` 后能够把公共 chunk 压缩到接近唯一数据体积，`dedup_gain_after_gc` 约为 {gain:.2f}x。".format(
-            gain=float(aligned["dedup_gain_after_gc"]),
+    else:
+        conclusions.append(
+            "完全重复的大文件在写入后立即占用仍接近线性膨胀，`gc()` 后 `chunks.packs` 体积下降到原来的 {ratio:.2%}，说明当前物理复用主要依赖后续压实而不是写时复用。".format(
+                ratio=float(exact["physical_over_logical_after_gc"]),
+            )
         )
-    )
-    conclusions.append(
-        "错位重复文件的复用明显变差，`gc()` 后相对唯一字节体积的放大仍约为 {ratio:.2f}x，说明固定大小 chunk 对错位相似内容不够友好。".format(
-            ratio=float(shifted.get("physical_over_unique_after_gc", 0.0)),
+
+    aligned_before_unique = float(aligned.get("physical_over_unique_before_gc", 0.0))
+    aligned_after_unique = float(aligned.get("physical_over_unique_after_gc", 0.0))
+    if _near_one(aligned_before_unique):
+        conclusions.append(
+            "按 chunk 边界对齐的部分重复文件在写入当下就已经接近唯一数据体积，`physical_over_unique_before_gc` 约为 {ratio:.2f}x，`gc()` 基本不再改变结果。".format(
+                ratio=aligned_before_unique,
+            )
         )
-    )
-    conclusions.append(
-        "同一路径反复写入完全相同的大文件时，提交阶段的 pack 占用仍会持续增长，但 `gc()` 可把这类重复 pack 压回到接近单份数据体积，当前风险在于压实前的短期空间膨胀而不是最终不可回收。"
-    )
+    else:
+        conclusions.append(
+            "按 chunk 边界对齐的部分重复文件在当前内容定义分块规划下，写入当下可压到约 {before_ratio:.2f}x 唯一数据体积，`gc()` 后保持约 {after_ratio:.2f}x。".format(
+                before_ratio=aligned_before_unique,
+                after_ratio=aligned_after_unique,
+            )
+        )
+
+    shifted_before_unique = float(shifted.get("physical_over_unique_before_gc", 0.0))
+    shifted_after_unique = float(shifted.get("physical_over_unique_after_gc", 0.0))
+    if _near_one(shifted_before_unique):
+        conclusions.append(
+            "错位重复文件在当前内容定义分块规划下也已接近唯一数据体积，写入当下 `physical_over_unique_before_gc` 约为 {ratio:.2f}x，说明 shifted overlap 不再是明显空间短板。".format(
+                ratio=shifted_before_unique,
+            )
+        )
+    else:
+        conclusions.append(
+            "错位重复文件的空间放大已经收敛到约 {before_ratio:.2f}x（写入当下）和 {after_ratio:.2f}x（`gc()` 后），虽然仍差于 exact duplicate / aligned overlap，但已经明显优于早期固定大小 chunk 的表现。".format(
+                before_ratio=shifted_before_unique,
+                after_ratio=shifted_after_unique,
+            )
+        )
+
+    if historical:
+        historical_before_unique = float(historical.get("physical_over_unique_before_gc", 0.0))
+        if _near_one(historical_before_unique):
+            conclusions.append(
+                "同一路径反复写入完全相同的大文件时，历史重复提交也不会再把 pack 线性撑大，写入当下已经维持在约 {ratio:.2f}x 唯一数据体积。".format(
+                    ratio=historical_before_unique,
+                )
+            )
+        else:
+            conclusions.append(
+                "同一路径反复写入完全相同的大文件时，提交阶段的 pack 占用仍会持续增长，但 `gc()` 可把这类重复 pack 压回到接近单份数据体积，当前风险在于压实前的短期空间膨胀而不是最终不可回收。"
+            )
     cold_download = results.get("hf_hub_download_cold", {})
     warm_download = results.get("hf_hub_download_warm", {})
     if cold_download and warm_download:
@@ -758,12 +803,17 @@ def infer_space_conclusions(results: Dict[str, Dict[str, object]]) -> List[str]:
         conclusions.append(
             "`squash_history()` 已纳入性能基线，当前可以直接衡量“历史重写 + 跟随 GC”这一完整维护路径，而不是只看 `gc()` 单点。"
         )
-    conclusions.append(
-        "如果目标是降低重复大文件的即时空间膨胀，优先级最高的问题是写时 chunk/pack 复用；如果目标是提高错位相似内容复用，后续才值得评估内容定义分块方案。"
-    )
-    conclusions.append(
-        "当前实现对时间性能和长期 GC 后空间占用是可接受的，但对“写后立刻”的重复大文件空间放大仍然偏保守，尤其在大量重复提交但未及时 GC 的场景下需要重点关注。"
-    )
+    if _near_one(exact_before_unique) and (not historical or _near_one(float(historical.get("physical_over_unique_before_gc", 0.0)))):
+        conclusions.append(
+            "当前优化已经基本解决 exact duplicate 与历史重复写入的短期空间膨胀，后续应优先关注范围读取、warm download、merge 等时间侧回归，以及 aligned/shifted overlap 的剩余空间差异。"
+        )
+    else:
+        conclusions.append(
+            "如果目标是降低重复大文件的即时空间膨胀，优先级最高的问题是写时 chunk/pack 复用；如果目标是提高错位相似内容复用，后续才值得评估内容定义分块方案。"
+        )
+        conclusions.append(
+            "当前实现对时间性能和长期 GC 后空间占用是可接受的，但对“写后立刻”的重复大文件空间放大仍然偏保守，尤其在大量重复提交但未及时 GC 的场景下需要重点关注。"
+        )
 
     if float(results["large_read_range"].get("throughput_mib_per_sec", 0.0)) < float(
         results["large_upload"].get("throughput_mib_per_sec", 0.0)
