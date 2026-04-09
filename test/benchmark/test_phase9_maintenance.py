@@ -6,6 +6,7 @@ from tools.benchmark.common import (
     collect_space_profile,
     next_round_repo_dir,
     run_squash_history_case,
+    run_verify_heavy_case,
 )
 
 
@@ -51,6 +52,17 @@ class TestPhase9MaintenanceBenchmarks:
         benchmark.extra_info["scenario"] = "squash_history_with_followup_gc"
         benchmark.pedantic(
             lambda: run_squash_history_case(tmp_path, phase9_config),
+            rounds=phase9_config.rounds,
+            warmup_rounds=phase9_config.warmup_rounds,
+            iterations=1,
+        )
+
+    def test_phase12_benchmark_verify_heavy_full_verify(self, benchmark, tmp_path, phase9_config):
+        reference = run_verify_heavy_case(tmp_path, phase9_config)
+        benchmark.extra_info.update(reference)
+        benchmark.extra_info["scenario"] = "verify_heavy_full_verify"
+        benchmark.pedantic(
+            lambda: run_verify_heavy_case(tmp_path, phase9_config),
             rounds=phase9_config.rounds,
             warmup_rounds=phase9_config.warmup_rounds,
             iterations=1,

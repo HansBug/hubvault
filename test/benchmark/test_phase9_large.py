@@ -7,6 +7,7 @@ from tools.benchmark.common import (
     build_shifted_overlap_live_repo,
     collect_space_profile,
     next_round_repo_dir,
+    run_cache_heavy_warm_download_case,
     run_hf_hub_download_cold_case,
     run_hf_hub_download_warm_case,
     run_threshold_sweep_case,
@@ -127,6 +128,17 @@ class TestPhase9LargeBenchmarks:
         benchmark.extra_info["scenario"] = "hf_hub_download_warm_large_file"
         benchmark.pedantic(
             lambda: run_hf_hub_download_warm_case(tmp_path, phase9_config),
+            rounds=phase9_config.rounds,
+            warmup_rounds=phase9_config.warmup_rounds,
+            iterations=1,
+        )
+
+    def test_phase12_benchmark_cache_heavy_warm_download(self, benchmark, tmp_path, phase9_config):
+        reference = run_cache_heavy_warm_download_case(tmp_path, phase9_config)
+        benchmark.extra_info.update(reference)
+        benchmark.extra_info["scenario"] = "cache_heavy_warm_download"
+        benchmark.pedantic(
+            lambda: run_cache_heavy_warm_download_case(tmp_path, phase9_config),
             rounds=phase9_config.rounds,
             warmup_rounds=phase9_config.warmup_rounds,
             iterations=1,

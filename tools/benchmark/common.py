@@ -23,6 +23,10 @@ class Phase9BenchmarkConfig:
     small_file_size: int
     nested_directory_count: int
     nested_files_per_directory: int
+    mixed_large_file_size: int
+    history_deep_depth: int
+    merge_side_commit_count: int
+    cache_warm_rounds: int
     large_file_size: int
     duplicate_file_count: int
     overlap_shared_size: int
@@ -47,6 +51,10 @@ class Phase9BenchmarkConfig:
                 small_file_size=4 * 1024,
                 nested_directory_count=4,
                 nested_files_per_directory=8,
+                mixed_large_file_size=4 * MIB,
+                history_deep_depth=24,
+                merge_side_commit_count=2,
+                cache_warm_rounds=1,
                 large_file_size=6 * MIB,
                 duplicate_file_count=4,
                 overlap_shared_size=4 * MIB,
@@ -66,6 +74,10 @@ class Phase9BenchmarkConfig:
                 small_file_size=8 * 1024,
                 nested_directory_count=8,
                 nested_files_per_directory=8,
+                mixed_large_file_size=32 * MIB,
+                history_deep_depth=64,
+                merge_side_commit_count=3,
+                cache_warm_rounds=2,
                 large_file_size=512 * MIB,
                 duplicate_file_count=3,
                 overlap_shared_size=384 * MIB,
@@ -78,13 +90,17 @@ class Phase9BenchmarkConfig:
                 rounds=1,
                 warmup_rounds=0,
             )
-        if normalized == "stress":
+        if normalized in ("stress", "nightly"):
             return cls(
-                scale="stress",
+                scale="nightly" if normalized == "nightly" else "stress",
                 small_file_count=256,
                 small_file_size=8 * 1024,
                 nested_directory_count=32,
                 nested_files_per_directory=8,
+                mixed_large_file_size=24 * MIB,
+                history_deep_depth=256,
+                merge_side_commit_count=6,
+                cache_warm_rounds=3,
                 large_file_size=16 * MIB,
                 duplicate_file_count=10,
                 overlap_shared_size=12 * MIB,
@@ -103,6 +119,10 @@ class Phase9BenchmarkConfig:
             small_file_size=4 * 1024,
             nested_directory_count=16,
             nested_files_per_directory=8,
+            mixed_large_file_size=16 * MIB,
+            history_deep_depth=128,
+            merge_side_commit_count=4,
+            cache_warm_rounds=2,
             large_file_size=12 * MIB,
             duplicate_file_count=6,
             overlap_shared_size=8 * MIB,
@@ -261,6 +281,31 @@ def generate_nested_small_entries(config: Phase9BenchmarkConfig) -> List[Tuple[s
     return entries
 
 
+def generate_mixed_model_entries(config: Phase9BenchmarkConfig) -> List[Tuple[str, bytes]]:
+    """Build a deterministic mixed text/binary model-style repository payload set."""
+
+    small_file_size = int(config.small_file_size)
+    large_file_size = int(config.mixed_large_file_size)
+    text_payload = (
+        b'{"architectures":["HubVaultModel"],"hidden_size":1024,"num_hidden_layers":24,"vocab_size":32000}\n'
+    )
+    vocab_payload = b"\n".join(
+        ("token_%05d" % index).encode("utf-8") for index in range(max(128, small_file_size // 8))
+    ) + b"\n"
+    entries = [
+        ("README.md", b"# hubvault mixed-model benchmark\n"),
+        ("config.json", text_payload),
+        ("generation_config.json", b'{"max_length":2048,"temperature":0.7}\n'),
+        ("tokenizer/tokenizer.json", deterministic_bytes(max(small_file_size * 2, 4096), "mixed-tokenizer-json")),
+        ("tokenizer/vocab.txt", vocab_payload),
+        ("tokenizer/special_tokens_map.json", b'{"bos_token":"<s>","eos_token":"</s>"}\n'),
+        ("assets/sample.txt", deterministic_bytes(max(small_file_size, 2048), "mixed-sample-text")),
+        ("artifacts/model-00001-of-00002.safetensors", deterministic_bytes(large_file_size, "mixed-large-00001")),
+        ("artifacts/model-00002-of-00002.safetensors", deterministic_bytes(large_file_size, "mixed-large-00002")),
+    ]
+    return entries
+
+
 def create_repo(api: HubVaultApi, large_file_threshold: int) -> None:
     """Create a repository with a chosen chunk threshold."""
 
@@ -299,6 +344,22 @@ def build_nested_small_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tu
         commit_message="seed nested small tree",
     )
     return api, [path for path, _ in entries], sum(len(data) for _, data in entries)
+
+
+def build_mixed_model_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tuple[HubVaultApi, List[str], int, List[str]]:
+    """Create a repository shaped like a small model snapshot with large binaries."""
+
+    api = HubVaultApi(repo_dir)
+    create_repo(api, large_file_threshold=int(config.chunk_threshold))
+    entries = generate_mixed_model_entries(config)
+    api.create_commit(
+        operations=[CommitOperationAdd(path, data) for path, data in entries],
+        commit_message="seed mixed model repo",
+    )
+    paths = [path for path, _ in entries]
+    total_bytes = sum(len(data) for _, data in entries)
+    large_paths = [path for path, _ in entries if path.endswith(".safetensors")]
+    return api, paths, total_bytes, large_paths
 
 
 def build_large_repo(
@@ -420,6 +481,26 @@ def build_maintenance_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tup
     return api, logical_live_bytes(api)
 
 
+def build_verify_heavy_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tuple[HubVaultApi, int]:
+    """Create a repository shaped for verify-heavy maintenance benchmarks."""
+
+    api, _paths, total_bytes, large_paths = build_mixed_model_repo(repo_dir, config)
+    for index in range(int(config.merge_side_commit_count)):
+        api.upload_file(
+            path_or_fileobj=deterministic_bytes(int(config.small_file_size), "verify-heavy-note-%02d" % index),
+            path_in_repo="notes/revision-%02d.txt" % index,
+            commit_message="verify heavy note %02d" % index,
+        )
+    head_commit = api.repo_info().head
+    if head_commit is not None:
+        api.create_branch(branch="verify-review", revision=head_commit, exist_ok=True)
+        api.create_tag(tag="verify-heavy-tip", revision=head_commit, exist_ok=True)
+    for large_path in large_paths:
+        _ = api.hf_hub_download(large_path)
+    _ = api.snapshot_download()
+    return api, total_bytes + (int(config.small_file_size) * int(config.merge_side_commit_count))
+
+
 def build_history_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tuple[HubVaultApi, int]:
     """Create a deep small-file history with refs and reflog activity."""
 
@@ -436,6 +517,35 @@ def build_history_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tuple[H
         api.create_branch(branch="review", revision=head_commit, exist_ok=True)
         api.create_tag(tag="history-tip", revision=head_commit, exist_ok=True)
     return api, len(api.list_repo_commits())
+
+
+def build_history_deep_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tuple[HubVaultApi, int]:
+    """Create a deeper history dataset for metadata-heavy benchmark paths."""
+
+    api = HubVaultApi(repo_dir)
+    create_repo(api, large_file_threshold=max(int(config.large_file_size) * 2, int(config.chunk_threshold) * 4))
+    depth = int(config.history_deep_depth)
+    for index in range(depth):
+        operations = [
+            CommitOperationAdd(
+                "history/timeline.bin",
+                deterministic_bytes(int(config.small_file_size), "history-deep-main-%03d" % index),
+            ),
+            CommitOperationAdd(
+                "history/metadata/%03d.json" % (index % 16),
+                deterministic_bytes(max(int(config.small_file_size) // 2, 256), "history-deep-meta-%03d" % index),
+            ),
+        ]
+        api.create_commit(
+            operations=operations,
+            commit_message="history deep version %03d" % index,
+        )
+    head_commit = api.repo_info().head
+    if head_commit is not None:
+        api.create_branch(branch="review", revision=head_commit, exist_ok=True)
+        api.create_branch(branch="release", revision=head_commit, exist_ok=True)
+        api.create_tag(tag="history-deep-tip", revision=head_commit, exist_ok=True)
+    return api, depth + 1
 
 
 def build_merge_ready_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tuple[HubVaultApi, int]:
@@ -469,6 +579,47 @@ def build_merge_ready_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tup
         commit_message="main update",
     )
     return api, len(feature_model) + len(feature_note) + len(main_note)
+
+
+def build_merge_heavy_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tuple[HubVaultApi, int]:
+    """Create a deeper branchy repository for merge-heavy benchmark paths."""
+
+    api, total_bytes = build_merge_ready_repo(repo_dir, config)
+    for index in range(int(config.merge_side_commit_count)):
+        api.create_commit(
+            revision="feature",
+            operations=[
+                CommitOperationAdd(
+                    "notes/feature-series-%02d.txt" % index,
+                    deterministic_bytes(int(config.small_file_size), "merge-heavy-feature-%02d" % index),
+                )
+            ],
+            commit_message="feature series %02d" % index,
+        )
+        api.create_commit(
+            revision="main",
+            operations=[
+                CommitOperationAdd(
+                    "notes/main-series-%02d.txt" % index,
+                    deterministic_bytes(int(config.small_file_size), "merge-heavy-main-%02d" % index),
+                )
+            ],
+            commit_message="main series %02d" % index,
+        )
+        total_bytes += int(config.small_file_size) * 2
+    return api, total_bytes
+
+
+def build_cache_heavy_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tuple[HubVaultApi, List[str], int]:
+    """Create a repository with pre-existing download and snapshot cache state."""
+
+    api, _paths, total_bytes, large_paths = build_mixed_model_repo(repo_dir, config)
+    rounds = max(1, int(config.cache_warm_rounds))
+    for _ in range(rounds):
+        for large_path in large_paths:
+            _ = api.hf_hub_download(large_path)
+        _ = api.snapshot_download()
+    return api, large_paths, total_bytes
 
 
 def threshold_sweep_sizes(config: Phase9BenchmarkConfig) -> List[int]:
@@ -547,6 +698,8 @@ def collect_space_profile(
         "physical_over_logical_before_gc": safe_ratio(before_pack, int(logical_live_total)),
         "physical_over_logical_after_gc": safe_ratio(after_pack, int(logical_live_total)),
         "logical_over_physical_after_gc": safe_ratio(int(logical_live_total), after_pack),
+        "space_amplification_live": safe_ratio(before_pack, int(logical_live_total)),
+        "space_amplification_live_after_gc": safe_ratio(after_pack, int(logical_live_total)),
         "dedup_gain_after_gc": safe_ratio(before_pack, after_pack),
         "space_reduction_after_gc": safe_ratio(before_pack - after_pack, before_pack),
     }
@@ -555,6 +708,8 @@ def collect_space_profile(
             {
                 "physical_over_unique_before_gc": safe_ratio(before_pack, unique_estimate),
                 "physical_over_unique_after_gc": safe_ratio(after_pack, unique_estimate),
+                "space_amplification_unique": safe_ratio(before_pack, unique_estimate),
+                "space_amplification_unique_after_gc": safe_ratio(after_pack, unique_estimate),
                 "unique_over_physical_after_gc": safe_ratio(unique_estimate, after_pack),
             }
         )
@@ -597,9 +752,33 @@ def run_nested_tree_listing_case(workspace_root: Path, config: Phase9BenchmarkCo
             "processed_bytes": 0,
             "operation_seconds": round(finished - started, 6),
             "operation_count": len(items),
+            "dataset_family": "nested-small",
             "tree_entry_count": len(items),
             "live_file_count": len(paths),
             "logical_live_bytes": int(total_bytes),
+        }
+
+
+def run_mixed_model_snapshot_case(workspace_root: Path, config: Phase9BenchmarkConfig) -> Dict[str, object]:
+    """Execute a mixed-model snapshot export benchmark."""
+
+    with benchmark_workspace(workspace_root, "phase12-mixed-model-snapshot-") as tmpdir:
+        api, paths, total_bytes, _large_paths = build_mixed_model_repo(Path(tmpdir) / "repo", config)
+        before = api.get_storage_overview()
+        started = time.perf_counter()
+        snapshot_root = Path(api.snapshot_download())
+        finished = time.perf_counter()
+        after = api.get_storage_overview()
+        manifest = snapshot_file_manifest(snapshot_root)
+        return {
+            "processed_bytes": int(total_bytes),
+            "operation_seconds": round(finished - started, 6),
+            "operation_count": len(manifest),
+            "dataset_family": "mixed-model",
+            "snapshot_file_count": len(manifest),
+            "live_file_count": len(paths),
+            "cache_delta_bytes": int(after.reclaimable_cache_size - before.reclaimable_cache_size),
+            "files_materialized": len(manifest),
         }
 
 
@@ -611,6 +790,7 @@ def run_large_upload_case(workspace_root: Path, config: Phase9BenchmarkConfig) -
         overview = api.get_storage_overview()
         return {
             "processed_bytes": len(payload),
+            "dataset_family": "large-single",
             "repo_total_bytes": int(overview.total_size),
             "chunk_pack_bytes": int(section_size(api, "chunks.packs")),
             "chunk_index_bytes": int(section_size(api, "chunks.index")),
@@ -632,6 +812,7 @@ def run_hf_hub_download_cold_case(workspace_root: Path, config: Phase9BenchmarkC
             "processed_bytes": len(payload),
             "operation_seconds": round(finished - started, 6),
             "operation_count": 1,
+            "dataset_family": "large-single",
             "downloaded_bytes": int(path.stat().st_size),
             "cache_delta_bytes": int(after.reclaimable_cache_size - before.reclaimable_cache_size),
             "suffix_preserved": str(path).replace("\\", "/").endswith("artifacts/model.bin"),
@@ -653,6 +834,7 @@ def run_hf_hub_download_warm_case(workspace_root: Path, config: Phase9BenchmarkC
             "processed_bytes": len(payload),
             "operation_seconds": round(finished - started, 6),
             "operation_count": 1,
+            "dataset_family": "large-single",
             "downloaded_bytes": int(second_path.stat().st_size),
             "cache_delta_bytes": int(after.reclaimable_cache_size - before.reclaimable_cache_size),
             "reused_view_path": str(first_path) == str(second_path),
@@ -674,6 +856,30 @@ def run_history_listing_case(workspace_root: Path, config: Phase9BenchmarkConfig
             "processed_bytes": 0,
             "operation_seconds": round(finished - started, 6),
             "operation_count": len(commits) + len(refs.branches) + len(refs.tags) + len(reflog),
+            "dataset_family": "history",
+            "commit_count": len(commits),
+            "expected_commit_count": int(commit_count),
+            "branch_count": len(refs.branches),
+            "tag_count": len(refs.tags),
+            "reflog_count": len(reflog),
+        }
+
+
+def run_history_deep_listing_case(workspace_root: Path, config: Phase9BenchmarkConfig) -> Dict[str, object]:
+    """Execute commit/ref/reflog listing over the deeper Phase 12 history dataset."""
+
+    with benchmark_workspace(workspace_root, "phase12-history-deep-") as tmpdir:
+        api, commit_count = build_history_deep_repo(Path(tmpdir) / "repo", config)
+        started = time.perf_counter()
+        commits = list(api.list_repo_commits())
+        refs = api.list_repo_refs()
+        reflog = list(api.list_repo_reflog("main"))
+        finished = time.perf_counter()
+        return {
+            "processed_bytes": 0,
+            "operation_seconds": round(finished - started, 6),
+            "operation_count": len(commits) + len(refs.branches) + len(refs.tags) + len(reflog),
+            "dataset_family": "history-deep",
             "commit_count": len(commits),
             "expected_commit_count": int(commit_count),
             "branch_count": len(refs.branches),
@@ -695,6 +901,30 @@ def run_merge_non_fast_forward_case(workspace_root: Path, config: Phase9Benchmar
         return {
             "processed_bytes": int(merge_shape_bytes),
             "operation_seconds": round(finished - started, 6),
+            "dataset_family": "merge-ready",
+            "merge_status": result.status,
+            "created_commit": bool(result.created_commit),
+            "conflict_count": len(result.conflicts),
+            "history_count_before": before_history_count,
+            "history_count_after": after_history_count,
+        }
+
+
+def run_merge_heavy_case(workspace_root: Path, config: Phase9BenchmarkConfig) -> Dict[str, object]:
+    """Execute a deeper non-fast-forward merge workflow."""
+
+    with benchmark_workspace(workspace_root, "phase12-merge-heavy-") as tmpdir:
+        api, merge_shape_bytes = build_merge_heavy_repo(Path(tmpdir) / "repo", config)
+        before_history_count = len(api.list_repo_commits())
+        started = time.perf_counter()
+        result = api.merge("feature")
+        finished = time.perf_counter()
+        after_history_count = len(api.list_repo_commits())
+        return {
+            "processed_bytes": int(merge_shape_bytes),
+            "operation_seconds": round(finished - started, 6),
+            "operation_count": before_history_count + after_history_count,
+            "dataset_family": "merge-heavy",
             "merge_status": result.status,
             "created_commit": bool(result.created_commit),
             "conflict_count": len(result.conflicts),
@@ -745,10 +975,34 @@ def run_threshold_sweep_case(workspace_root: Path, config: Phase9BenchmarkConfig
             "processed_bytes": int(total_processed),
             "operation_seconds": round(total_operation_seconds, 6),
             "threshold_cases": len(results),
+            "dataset_family": "threshold-sweep",
             "threshold_boundary_below_chunked": bool(below and below["chunked"]),
             "threshold_boundary_at_chunked": bool(at and at["chunked"]),
             "threshold_boundary_above_chunked": bool(above and above["chunked"]),
             "threshold_results": results,
+        }
+
+
+def run_cache_heavy_warm_download_case(workspace_root: Path, config: Phase9BenchmarkConfig) -> Dict[str, object]:
+    """Execute a warm detached-file download on a cache-heavy mixed-model repo."""
+
+    with benchmark_workspace(workspace_root, "phase12-cache-heavy-") as tmpdir:
+        api, large_paths, total_bytes = build_cache_heavy_repo(Path(tmpdir) / "repo", config)
+        target_path = large_paths[-1]
+        before = api.get_storage_overview()
+        started = time.perf_counter()
+        local_path = Path(api.hf_hub_download(target_path))
+        finished = time.perf_counter()
+        after = api.get_storage_overview()
+        return {
+            "processed_bytes": int(local_path.stat().st_size),
+            "operation_seconds": round(finished - started, 6),
+            "operation_count": 1,
+            "dataset_family": "cache-heavy",
+            "logical_live_bytes": int(total_bytes),
+            "downloaded_bytes": int(local_path.stat().st_size),
+            "cache_delta_bytes": int(after.reclaimable_cache_size - before.reclaimable_cache_size),
+            "suffix_preserved": str(local_path).replace("\\", "/").endswith(target_path),
         }
 
 
@@ -767,11 +1021,30 @@ def run_squash_history_case(workspace_root: Path, config: Phase9BenchmarkConfig)
         return {
             "processed_bytes": int(logical_live_total),
             "operation_seconds": round(finished - started, 6),
+            "dataset_family": "historical-duplicate",
             "rewritten_commit_count": int(report.rewritten_commit_count),
             "dropped_ancestor_count": int(report.dropped_ancestor_count),
             "blocking_ref_count": len(report.blocking_refs),
             "gc_reclaimed_size": reclaimed_size,
             "history_count_after": history_after,
+        }
+
+
+def run_verify_heavy_case(workspace_root: Path, config: Phase9BenchmarkConfig) -> Dict[str, object]:
+    """Execute full verification over a verify-heavy repository shape."""
+
+    with benchmark_workspace(workspace_root, "phase12-verify-heavy-") as tmpdir:
+        api, logical_live_total = build_verify_heavy_repo(Path(tmpdir) / "repo", config)
+        started = time.perf_counter()
+        report = api.full_verify()
+        finished = time.perf_counter()
+        return {
+            "processed_bytes": int(logical_live_total),
+            "operation_seconds": round(finished - started, 6),
+            "dataset_family": "verify-heavy",
+            "operation_count": max(1, len(list(api.list_repo_files()))),
+            "reported_full_verify_seconds": round(finished - started, 6),
+            "verify_ok": bool(report.ok),
         }
 
 

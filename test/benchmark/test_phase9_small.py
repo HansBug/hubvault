@@ -5,6 +5,7 @@ from tools.benchmark.common import (
     build_nested_small_repo,
     build_small_repo,
     read_all_small_files,
+    run_mixed_model_snapshot_case,
     run_small_batch_commit_case,
     snapshot_file_manifest,
 )
@@ -82,6 +83,17 @@ class TestPhase9SmallBenchmarks:
         benchmark.extra_info["scenario"] = "snapshot_download_cold_small_tree"
         benchmark.pedantic(
             run_once,
+            rounds=phase9_config.rounds,
+            warmup_rounds=phase9_config.warmup_rounds,
+            iterations=1,
+        )
+
+    def test_phase12_benchmark_mixed_model_snapshot_download(self, benchmark, tmp_path, phase9_config):
+        reference = run_mixed_model_snapshot_case(tmp_path, phase9_config)
+        benchmark.extra_info.update(reference)
+        benchmark.extra_info["scenario"] = "mixed_model_snapshot_download"
+        benchmark.pedantic(
+            lambda: run_mixed_model_snapshot_case(tmp_path, phase9_config),
             rounds=phase9_config.rounds,
             warmup_rounds=phase9_config.warmup_rounds,
             iterations=1,

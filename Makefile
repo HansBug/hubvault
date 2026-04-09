@@ -1,4 +1,4 @@
-.PHONY: help docs docs_en docs_zh pdocs rst_auto test unittest benchmark benchmark_smoke benchmark_standard benchmark_phase9 benchmark_phase9_smoke benchmark_phase9_standard benchmark_phase9_pressure benchmark_compare build test_cli package clean
+.PHONY: help docs docs_en docs_zh pdocs rst_auto test unittest benchmark benchmark_smoke benchmark_standard benchmark_phase9 benchmark_phase9_smoke benchmark_phase9_standard benchmark_phase9_pressure benchmark_phase12 benchmark_phase12_raw benchmark_phase12_summary benchmark_phase12_smoke benchmark_phase12_standard benchmark_phase12_nightly benchmark_phase12_pressure benchmark_compare benchmark_phase12_compare build test_cli package clean
 
 PYTHON := $(shell [ -x ./venv/bin/python ] && printf '%s' ./venv/bin/python || which python)
 SPHINXBUILD ?= $(shell which sphinx-build)
@@ -33,6 +33,17 @@ BENCHMARK_FILTER ?=
 BENCHMARK_SCALE ?= standard
 BENCHMARK_SCENARIO_SET ?= full
 BENCHMARK_PHASE9_JSON ?= ${BENCHMARK_DIR}/phase9-summary.json
+BENCHMARK_PHASE12_ROOT ?= ${BENCHMARK_DIR}/phase12
+BENCHMARK_PHASE12_RAW_DIR ?= ${BENCHMARK_PHASE12_ROOT}/raw
+BENCHMARK_PHASE12_SUMMARY_DIR ?= ${BENCHMARK_PHASE12_ROOT}/summary
+BENCHMARK_PHASE12_COMPARE_DIR ?= ${BENCHMARK_PHASE12_ROOT}/compare
+BENCHMARK_PHASE12_MANIFEST_DIR ?= ${BENCHMARK_PHASE12_ROOT}/manifests
+BENCHMARK_PHASE12_RAW_JSON ?= ${BENCHMARK_PHASE12_RAW_DIR}/pytest-benchmark-${BENCHMARK_SCALE}.json
+BENCHMARK_PHASE12_SUMMARY_JSON ?= ${BENCHMARK_PHASE12_SUMMARY_DIR}/phase12-${BENCHMARK_SCALE}-${BENCHMARK_SCENARIO_SET}.json
+BENCHMARK_PHASE12_MANIFEST_JSON ?= ${BENCHMARK_PHASE12_MANIFEST_DIR}/phase12-${BENCHMARK_SCALE}-${BENCHMARK_SCENARIO_SET}-manifest.json
+BENCHMARK_PHASE12_COMPARE_JSON ?= ${BENCHMARK_PHASE12_COMPARE_DIR}/phase12-compare.json
+BENCHMARK_STORAGE ?= file://${BENCHMARK_PHASE12_RAW_DIR}/autosave
+BENCHMARK_SAVE_NAME ?= phase12-${BENCHMARK_SCALE}-${BENCHMARK_SCENARIO_SET}
 BENCHMARK_BASELINE ?=
 BENCHMARK_CANDIDATE ?=
 
@@ -51,7 +62,7 @@ help:
 	@echo "                      Options: RANGE_DIR=<dir> COV_TYPES='xml term-missing'"
 	@echo "                               MIN_COVERAGE=<percent> WORKERS=<n>"
 	@echo "  make benchmark    - Run pytest benchmark suite into build/benchmark/"
-	@echo "                      Options: BENCHMARK_SCALE=<smoke|standard|stress>"
+	@echo "                      Options: BENCHMARK_SCALE=<smoke|standard|nightly|stress|pressure>"
 	@echo "                               BENCHMARK_FILTER='<pytest -k expr>' BENCHMARK_JSON=<path>"
 	@echo "  make benchmark_smoke"
 	@echo "                    - Run the pytest benchmark suite with BENCHMARK_SCALE=smoke"
@@ -67,9 +78,21 @@ help:
 	@echo "                    - Run the curated Phase 9 runner with the standard/full baseline suite"
 	@echo "  make benchmark_phase9_pressure"
 	@echo "                    - Run the GB-scale pressure subset focused on large-file IO and dedup space behavior"
+	@echo "  make benchmark_phase12"
+	@echo "                    - Run the default Phase 12 standard benchmark entry (raw pytest + curated summary + manifest)"
+	@echo "  make benchmark_phase12_smoke"
+	@echo "                    - Run the Phase 12 smoke tier and write raw/summary/manifests under build/benchmark/phase12/"
+	@echo "  make benchmark_phase12_standard"
+	@echo "                    - Run the Phase 12 standard tier with raw pytest output, curated summary, and manifest"
+	@echo "  make benchmark_phase12_nightly"
+	@echo "                    - Run the Phase 12 nightly tier with the expanded nightly dataset and artifact layout"
+	@echo "  make benchmark_phase12_pressure"
+	@echo "                    - Run the Phase 12 pressure curated summary for large-file IO, amplification, and host IO baselines"
 	@echo "  make benchmark_compare"
 	@echo "                    - Compare two pytest-benchmark JSON files"
 	@echo "                      Options: BENCHMARK_BASELINE=<path> BENCHMARK_CANDIDATE=<path>"
+	@echo "  make benchmark_phase12_compare"
+	@echo "                    - Compare two Phase 12 raw or curated JSON files and persist a compare JSON report"
 	@echo "  make test_cli     - Smoke test the built CLI executable"
 	@echo ""
 	@echo "Documentation:"
@@ -148,6 +171,63 @@ benchmark_compare:
 	@test -n "${BENCHMARK_BASELINE}" || (echo "Missing BENCHMARK_BASELINE=<path>" && exit 1)
 	@test -n "${BENCHMARK_CANDIDATE}" || (echo "Missing BENCHMARK_CANDIDATE=<path>" && exit 1)
 	${PYTHON} -m tools.benchmark.compare "${BENCHMARK_BASELINE}" "${BENCHMARK_CANDIDATE}"
+
+benchmark_phase12: benchmark_phase12_standard
+
+benchmark_phase12_raw:
+	@mkdir -p ${BENCHMARK_PHASE12_RAW_DIR}
+	HUBVAULT_BENCHMARK_SCALE=${BENCHMARK_SCALE} \
+		${PYTHON} -m pytest "${TEST_DIR}/benchmark" \
+		-sv -m benchmark --benchmark-only \
+		--benchmark-save="${BENCHMARK_SAVE_NAME}" \
+		--benchmark-save-data \
+		--benchmark-storage="${BENCHMARK_STORAGE}" \
+		--benchmark-json="${BENCHMARK_PHASE12_RAW_JSON}" \
+		$(if ${BENCHMARK_FILTER},-k "${BENCHMARK_FILTER}",)
+
+benchmark_phase12_summary:
+	@mkdir -p ${BENCHMARK_PHASE12_SUMMARY_DIR} ${BENCHMARK_PHASE12_MANIFEST_DIR}
+	HUBVAULT_BENCHMARK_SCALE=${BENCHMARK_SCALE} \
+		${PYTHON} -m tools.benchmark.run_phase9 \
+		--scale ${BENCHMARK_SCALE} \
+		--scenario-set ${BENCHMARK_SCENARIO_SET} \
+		--output "${BENCHMARK_PHASE12_SUMMARY_JSON}" \
+		--manifest-output "${BENCHMARK_PHASE12_MANIFEST_JSON}"
+
+benchmark_phase12_smoke:
+	@$(MAKE) benchmark_phase12_raw \
+		BENCHMARK_SCALE=smoke \
+		BENCHMARK_SAVE_NAME=phase12-smoke-full
+	@$(MAKE) benchmark_phase12_summary \
+		BENCHMARK_SCALE=smoke \
+		BENCHMARK_SCENARIO_SET=full
+
+benchmark_phase12_standard:
+	@$(MAKE) benchmark_phase12_raw \
+		BENCHMARK_SCALE=standard \
+		BENCHMARK_SAVE_NAME=phase12-standard-full
+	@$(MAKE) benchmark_phase12_summary \
+		BENCHMARK_SCALE=standard \
+		BENCHMARK_SCENARIO_SET=full
+
+benchmark_phase12_nightly:
+	@$(MAKE) benchmark_phase12_raw \
+		BENCHMARK_SCALE=nightly \
+		BENCHMARK_SAVE_NAME=phase12-nightly-full
+	@$(MAKE) benchmark_phase12_summary \
+		BENCHMARK_SCALE=nightly \
+		BENCHMARK_SCENARIO_SET=full
+
+benchmark_phase12_pressure:
+	@$(MAKE) benchmark_phase12_summary \
+		BENCHMARK_SCALE=pressure \
+		BENCHMARK_SCENARIO_SET=pressure
+
+benchmark_phase12_compare:
+	@test -n "${BENCHMARK_BASELINE}" || (echo "Missing BENCHMARK_BASELINE=<path>" && exit 1)
+	@test -n "${BENCHMARK_CANDIDATE}" || (echo "Missing BENCHMARK_CANDIDATE=<path>" && exit 1)
+	@mkdir -p ${BENCHMARK_PHASE12_COMPARE_DIR}
+	${PYTHON} -m tools.benchmark.compare "${BENCHMARK_BASELINE}" "${BENCHMARK_CANDIDATE}" > "${BENCHMARK_PHASE12_COMPARE_JSON}"
 
 docs:
 	@if [ -f "${DOC_DIR}/Makefile" ]; then \
