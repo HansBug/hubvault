@@ -21,24 +21,24 @@ Phase 13 不单独创造“新热点”，而是依赖下面这些前提：
 
 ## 当前已知候选热点
 
-根据 Phase 10 A/B 结果，当前最值得继续盯的路径包括：
+根据 Phase 12 的 `standard` / `pressure` 完整结果与 host I/O reference，当前最值得继续盯的路径包括：
 
 - `read_range()`
-  standard 档 1 MiB range read 出现回退，优先怀疑可见索引加载、逐 chunk lookup 与逐 chunk 校验链路。
-- warm `hf_hub_download()`
-  warm 路径已有 detached view 复用语义，但时间结果出现明显回退，优先怀疑 view existence check、目录扫描和 metadata 解析路径。
-- 冷 `hf_hub_download()` / `snapshot_download()`
-  继续观察 cache amplification、目录物化与文件树扫描的成本。
-- `merge_non_fast_forward`
-  当前不是主优化面，但已有可测回退，适合在 Phase 12 补齐 `merge-heavy` 数据集后重新排序。
+  当前 `large_read_range` 相对 host 顺序读基线仍只有约 `2.14%`（standard）到 `10.35%`（pressure），优先怀疑可见索引加载、逐 chunk lookup、逐 chunk 校验与 Python 层 copy path。
+- cold / warm `hf_hub_download()` 与 `snapshot_download()`
+  当前 cold/warm download 相对 host 顺序读基线仍大致只有 `2%` 到 `4%`，warm 路径虽然已经做到 `cache_amplification = 0`，但 wall-clock 仍明显偏高，优先怀疑 detached view existence check、目录扫描、materialization bookkeeping 与 metadata 解析链路。
 - `list_repo_commits()` / `list_repo_refs()` / `list_repo_reflog()`
-  深历史与 refs-heavy 仓库下仍可能出现明显 metadata hot path，需要 Phase 12 的 `history-deep` 数据集来验证。
+  `history_deep_listing` 已经在 metadata 分榜中测到 `latency_p50_seconds = 4.942012`、`operations_per_sec = 8157.419516`，说明操作本体吞吐并不差，但 end-to-end wall-clock 仍值得拆开做热点定位。
+- `merge_non_fast_forward`
+  `merge_heavy_non_fast_forward` 已经纳入 metadata 分榜，当前 `latency_p50_seconds = 0.441694`、`operations_per_sec = 476.315225`，适合在读路径热点之后进入 `merge-base`、tree parse 与 commit graph 遍历 profiling。
+- amplification follow-up
+  exact duplicate 与 historical duplicate 已经稳定在 `~1.00x` 唯一数据体积，pressure 下 aligned / shifted overlap 也已接近 `1.00x`，因此空间面先保持趋势观察，不再作为 Phase 13 第一优先级实现面。
 
 ## 优化顺序
 
 Phase 13 的优化顺序固定如下：
 
-1. 先用扩容 benchmark 排序热点，确认真正的前 2-3 个回退点。
+1. 先用扩容 benchmark 排序热点，优先锁定 `read_range()` 与 download/materialization 路径。
 2. 再用 profiling 确认函数级成本，不凭代码直觉改。
 3. 优先做零协议风险优化，例如调用级缓存、批量读取、重复扫描消除和目录遍历压缩。
 4. 每轮改动后重跑同一批 Phase 12 benchmark，记录收益与回退。

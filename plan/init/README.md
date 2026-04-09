@@ -33,13 +33,13 @@
 - 已落地的 Phase 9 benchmark baseline 与 pressure 压测体系：已固定性能锚点提交、Makefile 入口、compare 工具与三平台 smoke workflow
 - 已落地的 Phase 10 优化技术引入：默认 `fastcdc + blake3` 内容定义分块、写时 chunk/pack reuse，以及与 Phase 9 锚点的 A/B benchmark 对比
 - 已落地的 Phase 11 文档交付：README、docs 首页、中英双语教程和安装/工作流/维护/结构说明已经完成收尾
+- 已落地的 Phase 12 benchmark 扩容：四档执行层次（`smoke` / `standard` / `nightly` / `pressure`）、curated summary / manifest / compare 产物、same-machine compare 规则、host local sequential I/O reference，以及 bandwidth / metadata / maintenance / amplification / stability 五类摘要已经固定
 
 当前尚未启动、但已经明确列入 `plan/init` 的后续能力包括：
 
-- Phase 12：在 Phase 9/10 已有 baseline 与 A/B 结论之上，扩充更全面的 benchmark 数据集、指标定义、产物结构与长期回归口径
 - Phase 13：基于 Phase 12 的扩容 benchmark 与 profiling 结果，收敛当前剩余的时间路径热点与回退风险
 
-因此，这组初始化方案既要记录已经实现的 MVP、CLI、benchmark baseline 与文档交付，也要继续约束后续 Phase 12-13，避免把已经落地的格式和公开语义重新漂移回“抽象设想”，也避免把 benchmark 扩容与热点收敛重新混回一个模糊的大阶段。
+因此，这组初始化方案既要记录已经实现的 MVP、CLI、benchmark baseline、benchmark 扩容与文档交付，也要继续约束后续 Phase 13，避免把已经落地的格式和公开语义重新漂移回“抽象设想”，也避免把热点收敛重新混回一个模糊的大阶段。
 
 ## 2. 使用方式
 
