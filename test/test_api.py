@@ -1,5 +1,6 @@
 import io
 import os
+import time
 from hashlib import sha1, sha256
 from pathlib import Path
 
@@ -226,6 +227,44 @@ class TestApi:
 
         with pytest.raises(RevisionNotFoundError):
             api.list_repo_commits(revision="missing")
+
+    def test_snapshot_download_reuses_current_detached_local_dir_without_rewriting_views(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        api.upload_file(path_or_fileobj=b"payload-v1", path_in_repo="bundle/file.bin")
+
+        snapshot_dir = Path(api.snapshot_download(local_dir=tmp_path / "snapshot-export"))
+        metadata_path = snapshot_dir / ".cache" / "hubvault" / "snapshot.json"
+        snapshot_file = snapshot_dir / "bundle" / "file.bin"
+        metadata_bytes = metadata_path.read_bytes()
+        file_mtime_ns = snapshot_file.stat().st_mtime_ns
+        metadata_mtime_ns = metadata_path.stat().st_mtime_ns
+
+        time.sleep(1.1)
+        reused_snapshot_dir = Path(api.snapshot_download(local_dir=snapshot_dir))
+
+        assert reused_snapshot_dir == snapshot_dir
+        assert reused_snapshot_dir == Path(os.path.realpath(str(snapshot_dir)))
+        assert metadata_path.read_bytes() == metadata_bytes
+        assert snapshot_file.read_bytes() == b"payload-v1"
+        assert snapshot_file.stat().st_mtime_ns == file_mtime_ns
+        assert metadata_path.stat().st_mtime_ns == metadata_mtime_ns
+
+    def test_snapshot_download_reuses_current_managed_view_without_rebuilding_files(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        api.upload_file(path_or_fileobj=b"payload-v1", path_in_repo="bundle/file.bin")
+
+        snapshot_dir = Path(api.snapshot_download())
+        snapshot_file = snapshot_dir / "bundle" / "file.bin"
+        file_mtime_ns = snapshot_file.stat().st_mtime_ns
+
+        time.sleep(1.1)
+        reused_snapshot_dir = Path(api.snapshot_download())
+
+        assert reused_snapshot_dir == snapshot_dir
+        assert snapshot_file.read_bytes() == b"payload-v1"
+        assert snapshot_file.stat().st_mtime_ns == file_mtime_ns
 
     def test_create_commit_defaults_to_current_head_when_parent_is_omitted(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")

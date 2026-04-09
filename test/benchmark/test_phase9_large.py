@@ -42,6 +42,15 @@ class TestPhase9LargeBenchmarks:
         path_in_repo = "artifacts/model.bin"
         expected = payload[phase9_config.range_start:phase9_config.range_start + phase9_config.range_length]
 
+        def run_once():
+            current = api.read_range(
+                path_in_repo=path_in_repo,
+                start=phase9_config.range_start,
+                length=phase9_config.range_length,
+            )
+            assert current == expected
+            return current
+
         benchmark.extra_info.update(
             {
                 "scenario": "large_read_range",
@@ -52,12 +61,7 @@ class TestPhase9LargeBenchmarks:
             }
         )
         benchmark.pedantic(
-            api.read_range,
-            kwargs={
-                "path_in_repo": path_in_repo,
-                "start": phase9_config.range_start,
-                "length": phase9_config.range_length,
-            },
+            run_once,
             rounds=phase9_config.rounds,
             warmup_rounds=phase9_config.warmup_rounds,
             iterations=1,

@@ -15,6 +15,12 @@ class TestPhase9MaintenanceBenchmarks:
     def test_phase9_benchmark_full_verify_on_history_heavy_repo(self, benchmark, tmp_path, phase9_config):
         api, logical_live_total = build_maintenance_repo(tmp_path / "maintenance-verify", phase9_config)
         report = api.full_verify()
+        assert report.ok is True
+
+        def run_once():
+            current_report = api.full_verify()
+            assert current_report.ok is True
+            return current_report
 
         benchmark.extra_info.update(
             {
@@ -24,7 +30,7 @@ class TestPhase9MaintenanceBenchmarks:
             }
         )
         benchmark.pedantic(
-            api.full_verify,
+            run_once,
             rounds=phase9_config.rounds,
             warmup_rounds=phase9_config.warmup_rounds,
             iterations=1,

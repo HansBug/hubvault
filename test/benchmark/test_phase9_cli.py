@@ -38,6 +38,10 @@ class TestPhase9CliBenchmarks:
             assert log_result.exit_code == 0
             assert tree_result.exit_code == 0
             assert verify_result.exit_code == 0
+            assert "main" in status_result.output
+            assert "seed small tree" in log_result.output
+            assert paths[0] in tree_result.output
+            assert "Quick verification OK" in verify_result.output
             return {
                 "processed_bytes": 0,
                 "path_count": len(paths),

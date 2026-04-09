@@ -24,6 +24,10 @@ class TestEntryStyle:
         assert style_text("demo", tone="success", env={"NO_COLOR": "1"}) == "demo"
         assert "\x1b[" in style_text("demo", tone="success", env={})
 
+    def test_public_style_text_returns_plain_text_when_no_style_is_requested(self):
+        assert style_text("demo", env={}) == "demo"
+        assert style_text(123, env={}) == "123"
+
     def test_public_echo_helper_emits_color_only_when_allowed(self):
         runner = CliRunner()
 

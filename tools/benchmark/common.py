@@ -226,6 +226,38 @@ def list_repo_file_infos(api: HubVaultApi) -> List[RepoFile]:
     return [info for info in infos if isinstance(info, RepoFile)]
 
 
+def _assert_quick_verify_ok(api: HubVaultApi) -> None:
+    """Assert that quick verification succeeds."""
+
+    report = api.quick_verify()
+    assert report.ok is True, "quick_verify failed: errors=%r" % (report.errors,)
+
+
+def _assert_full_verify_ok(api: HubVaultApi) -> None:
+    """Assert that full verification succeeds."""
+
+    report = api.full_verify()
+    assert report.ok is True, "full_verify failed: errors=%r" % (report.errors,)
+
+
+def _assert_repo_file_set(api: HubVaultApi, expected_paths: Sequence[str], revision: Optional[str] = None) -> List[str]:
+    """Assert that the public repo file listing matches the expected set."""
+
+    actual_paths = sorted(api.list_repo_files(revision=revision))
+    normalized_expected = sorted(str(path).replace("\\", "/") for path in expected_paths)
+    assert actual_paths == normalized_expected
+    return actual_paths
+
+
+def _assert_snapshot_manifest(snapshot_root: Path, expected_paths: Sequence[str]) -> List[str]:
+    """Assert that one detached snapshot exports the expected files."""
+
+    manifest = snapshot_file_manifest(snapshot_root)
+    normalized_expected = sorted(str(path).replace("\\", "/") for path in expected_paths)
+    assert manifest == normalized_expected
+    return manifest
+
+
 def logical_live_bytes(api: HubVaultApi) -> int:
     """Return total logical live bytes for the current revision."""
 
@@ -330,7 +362,10 @@ def build_small_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tuple[Hub
         operations=[CommitOperationAdd(path, data) for path, data in entries],
         commit_message="seed small tree",
     )
-    return api, [path for path, _ in entries], sum(len(data) for _, data in entries)
+    paths = [path for path, _ in entries]
+    _assert_repo_file_set(api, paths)
+    _assert_quick_verify_ok(api)
+    return api, paths, sum(len(data) for _, data in entries)
 
 
 def build_nested_small_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tuple[HubVaultApi, List[str], int]:
@@ -343,7 +378,10 @@ def build_nested_small_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tu
         operations=[CommitOperationAdd(path, data) for path, data in entries],
         commit_message="seed nested small tree",
     )
-    return api, [path for path, _ in entries], sum(len(data) for _, data in entries)
+    paths = [path for path, _ in entries]
+    _assert_repo_file_set(api, paths)
+    _assert_quick_verify_ok(api)
+    return api, paths, sum(len(data) for _, data in entries)
 
 
 def build_mixed_model_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tuple[HubVaultApi, List[str], int, List[str]]:
@@ -359,6 +397,8 @@ def build_mixed_model_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tup
     paths = [path for path, _ in entries]
     total_bytes = sum(len(data) for _, data in entries)
     large_paths = [path for path, _ in entries if path.endswith(".safetensors")]
+    _assert_repo_file_set(api, paths)
+    _assert_quick_verify_ok(api)
     return api, paths, total_bytes, large_paths
 
 
@@ -378,6 +418,8 @@ def build_large_repo(
         path_in_repo=path_in_repo,
         commit_message="seed large file",
     )
+    assert api.read_bytes(path_in_repo) == resolved_payload
+    _assert_quick_verify_ok(api)
     return api, resolved_payload
 
 
@@ -396,6 +438,11 @@ def build_exact_duplicate_live_repo(repo_dir: Path, config: Phase9BenchmarkConfi
             )
         )
     api.create_commit(operations=operations, commit_message="seed exact duplicate live set")
+    expected_paths = ["duplicates/exact-{index:02d}.bin".format(index=index) for index in range(int(config.duplicate_file_count))]
+    _assert_repo_file_set(api, expected_paths)
+    assert api.read_bytes(expected_paths[0]) == payload
+    assert api.read_bytes(expected_paths[-1]) == payload
+    _assert_quick_verify_ok(api)
     logical_total = len(payload) * int(config.duplicate_file_count)
     return api, logical_total, len(payload)
 
@@ -407,16 +454,24 @@ def build_aligned_overlap_live_repo(repo_dir: Path, config: Phase9BenchmarkConfi
     create_repo(api, large_file_threshold=int(config.chunk_threshold))
     shared = deterministic_bytes(int(config.overlap_shared_size), "aligned-shared")
     operations = []
+    expected_payloads = {}
     for index in range(int(config.duplicate_file_count)):
         unique_tail = deterministic_bytes(int(config.overlap_unique_size), "aligned-tail-{index}".format(index=index))
         payload = shared + unique_tail
+        path = "duplicates/aligned-{index:02d}.bin".format(index=index)
+        expected_payloads[path] = payload
         operations.append(
             CommitOperationAdd(
-                "duplicates/aligned-{index:02d}.bin".format(index=index),
+                path,
                 payload,
             )
         )
     api.create_commit(operations=operations, commit_message="seed aligned overlap live set")
+    expected_paths = sorted(expected_payloads)
+    _assert_repo_file_set(api, expected_paths)
+    assert api.read_bytes(expected_paths[0]) == expected_payloads[expected_paths[0]]
+    assert api.read_bytes(expected_paths[-1]) == expected_payloads[expected_paths[-1]]
+    _assert_quick_verify_ok(api)
     file_size = len(shared) + int(config.overlap_unique_size)
     logical_total = file_size * int(config.duplicate_file_count)
     logical_unique = len(shared) + (int(config.overlap_unique_size) * int(config.duplicate_file_count))
@@ -433,16 +488,24 @@ def build_shifted_overlap_live_repo(repo_dir: Path, config: Phase9BenchmarkConfi
         "shifted-window-base",
     )
     operations = []
+    expected_payloads = {}
     for index in range(int(config.duplicate_file_count)):
         start = index * int(config.shifted_window_step)
         payload = base[start:start + int(config.large_file_size)]
+        path = "duplicates/shifted-{index:02d}.bin".format(index=index)
+        expected_payloads[path] = payload
         operations.append(
             CommitOperationAdd(
-                "duplicates/shifted-{index:02d}.bin".format(index=index),
+                path,
                 payload,
             )
         )
     api.create_commit(operations=operations, commit_message="seed shifted overlap live set")
+    expected_paths = sorted(expected_payloads)
+    _assert_repo_file_set(api, expected_paths)
+    assert api.read_bytes(expected_paths[0]) == expected_payloads[expected_paths[0]]
+    assert api.read_bytes(expected_paths[-1]) == expected_payloads[expected_paths[-1]]
+    _assert_quick_verify_ok(api)
     logical_total = int(config.large_file_size) * int(config.duplicate_file_count)
     logical_unique = len(base)
     return api, logical_total, logical_unique
@@ -460,6 +523,10 @@ def build_historical_duplicate_repo(repo_dir: Path, config: Phase9BenchmarkConfi
             path_in_repo="history/model.bin",
             commit_message="history duplicate {index:03d}".format(index=index),
         )
+    _assert_repo_file_set(api, ["history/model.bin"])
+    assert api.read_bytes("history/model.bin") == payload
+    assert len(api.list_repo_commits()) == int(config.history_depth) + 1
+    _assert_quick_verify_ok(api)
     return api, len(payload), len(payload)
 
 
@@ -469,26 +536,37 @@ def build_maintenance_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tup
     api = HubVaultApi(repo_dir)
     create_repo(api, large_file_threshold=int(config.chunk_threshold))
     shared = deterministic_bytes(int(config.overlap_shared_size), "maintenance-shared")
+    last_payload = b""
     for index in range(int(config.history_depth)):
         payload = shared + deterministic_bytes(int(config.overlap_unique_size), "maintenance-tail-{index}".format(index=index))
+        last_payload = payload
         api.upload_file(
             path_or_fileobj=payload,
             path_in_repo="models/model.bin",
             commit_message="maintenance version {index:03d}".format(index=index),
         )
-    _ = api.hf_hub_download("models/model.bin")
-    _ = api.snapshot_download()
+    download_path = Path(api.hf_hub_download("models/model.bin"))
+    snapshot_root = Path(api.snapshot_download())
+    assert api.read_bytes("models/model.bin") == last_payload
+    assert download_path.read_bytes() == last_payload
+    _assert_snapshot_manifest(snapshot_root, ["models/model.bin"])
+    assert (snapshot_root / "models" / "model.bin").read_bytes() == last_payload
+    _assert_quick_verify_ok(api)
     return api, logical_live_bytes(api)
 
 
 def build_verify_heavy_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tuple[HubVaultApi, int]:
     """Create a repository shaped for verify-heavy maintenance benchmarks."""
 
-    api, _paths, total_bytes, large_paths = build_mixed_model_repo(repo_dir, config)
+    api, paths, total_bytes, large_paths = build_mixed_model_repo(repo_dir, config)
+    expected_note_payloads = {}
     for index in range(int(config.merge_side_commit_count)):
+        note_path = "notes/revision-%02d.txt" % index
+        note_payload = deterministic_bytes(int(config.small_file_size), "verify-heavy-note-%02d" % index)
+        expected_note_payloads[note_path] = note_payload
         api.upload_file(
-            path_or_fileobj=deterministic_bytes(int(config.small_file_size), "verify-heavy-note-%02d" % index),
-            path_in_repo="notes/revision-%02d.txt" % index,
+            path_or_fileobj=note_payload,
+            path_in_repo=note_path,
             commit_message="verify heavy note %02d" % index,
         )
     head_commit = api.repo_info().head
@@ -496,8 +574,14 @@ def build_verify_heavy_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tu
         api.create_branch(branch="verify-review", revision=head_commit, exist_ok=True)
         api.create_tag(tag="verify-heavy-tip", revision=head_commit, exist_ok=True)
     for large_path in large_paths:
-        _ = api.hf_hub_download(large_path)
-    _ = api.snapshot_download()
+        assert Path(api.hf_hub_download(large_path)).read_bytes() == api.read_bytes(large_path)
+    snapshot_root = Path(api.snapshot_download())
+    expected_paths = paths + sorted(expected_note_payloads)
+    _assert_repo_file_set(api, expected_paths)
+    _assert_snapshot_manifest(snapshot_root, expected_paths)
+    for note_path, note_payload in expected_note_payloads.items():
+        assert api.read_bytes(note_path) == note_payload
+    _assert_quick_verify_ok(api)
     return api, total_bytes + (int(config.small_file_size) * int(config.merge_side_commit_count))
 
 
@@ -506,9 +590,11 @@ def build_history_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tuple[H
 
     api = HubVaultApi(repo_dir)
     create_repo(api, large_file_threshold=max(int(config.large_file_size) * 2, int(config.chunk_threshold) * 4))
+    last_payload = b""
     for index in range(int(config.history_depth)):
+        last_payload = deterministic_bytes(int(config.small_file_size), "history-{index}".format(index=index))
         api.upload_file(
-            path_or_fileobj=deterministic_bytes(int(config.small_file_size), "history-{index}".format(index=index)),
+            path_or_fileobj=last_payload,
             path_in_repo="history/timeline.bin",
             commit_message="history version {index:03d}".format(index=index),
         )
@@ -516,6 +602,10 @@ def build_history_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tuple[H
     if head_commit is not None:
         api.create_branch(branch="review", revision=head_commit, exist_ok=True)
         api.create_tag(tag="history-tip", revision=head_commit, exist_ok=True)
+    _assert_repo_file_set(api, ["history/timeline.bin"])
+    assert api.read_bytes("history/timeline.bin") == last_payload
+    assert len(api.list_repo_commits()) == int(config.history_depth) + 1
+    _assert_quick_verify_ok(api)
     return api, len(api.list_repo_commits())
 
 
@@ -525,15 +615,21 @@ def build_history_deep_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tu
     api = HubVaultApi(repo_dir)
     create_repo(api, large_file_threshold=max(int(config.large_file_size) * 2, int(config.chunk_threshold) * 4))
     depth = int(config.history_deep_depth)
+    last_timeline_payload = b""
+    last_metadata_path = "history/metadata/000.json"
+    last_metadata_payload = b""
     for index in range(depth):
+        last_timeline_payload = deterministic_bytes(int(config.small_file_size), "history-deep-main-%03d" % index)
+        last_metadata_path = "history/metadata/%03d.json" % (index % 16)
+        last_metadata_payload = deterministic_bytes(max(int(config.small_file_size) // 2, 256), "history-deep-meta-%03d" % index)
         operations = [
             CommitOperationAdd(
                 "history/timeline.bin",
-                deterministic_bytes(int(config.small_file_size), "history-deep-main-%03d" % index),
+                last_timeline_payload,
             ),
             CommitOperationAdd(
-                "history/metadata/%03d.json" % (index % 16),
-                deterministic_bytes(max(int(config.small_file_size) // 2, 256), "history-deep-meta-%03d" % index),
+                last_metadata_path,
+                last_metadata_payload,
             ),
         ]
         api.create_commit(
@@ -545,6 +641,10 @@ def build_history_deep_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tu
         api.create_branch(branch="review", revision=head_commit, exist_ok=True)
         api.create_branch(branch="release", revision=head_commit, exist_ok=True)
         api.create_tag(tag="history-deep-tip", revision=head_commit, exist_ok=True)
+    assert api.read_bytes("history/timeline.bin") == last_timeline_payload
+    assert api.read_bytes(last_metadata_path) == last_metadata_payload
+    assert len(api.list_repo_commits()) == depth + 1
+    _assert_quick_verify_ok(api)
     return api, depth + 1
 
 
@@ -578,6 +678,11 @@ def build_merge_ready_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tup
         operations=[CommitOperationAdd("notes/main.txt", main_note)],
         commit_message="main update",
     )
+    _assert_repo_file_set(api, ["README.md", "artifacts/model.bin", "notes/main.txt"])
+    _assert_repo_file_set(api, ["README.md", "artifacts/model.bin", "notes/feature.txt"], revision="feature")
+    assert api.read_bytes("artifacts/model.bin") == base_model
+    assert api.read_bytes("artifacts/model.bin", revision="feature") == feature_model
+    _assert_quick_verify_ok(api)
     return api, len(feature_model) + len(feature_note) + len(main_note)
 
 
@@ -607,6 +712,15 @@ def build_merge_heavy_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tup
             commit_message="main series %02d" % index,
         )
         total_bytes += int(config.small_file_size) * 2
+    expected_feature_paths = ["README.md", "artifacts/model.bin", "notes/feature.txt"] + [
+        "notes/feature-series-%02d.txt" % index for index in range(int(config.merge_side_commit_count))
+    ]
+    expected_main_paths = ["README.md", "artifacts/model.bin", "notes/main.txt"] + [
+        "notes/main-series-%02d.txt" % index for index in range(int(config.merge_side_commit_count))
+    ]
+    _assert_repo_file_set(api, expected_main_paths)
+    _assert_repo_file_set(api, expected_feature_paths, revision="feature")
+    _assert_quick_verify_ok(api)
     return api, total_bytes
 
 
@@ -619,6 +733,9 @@ def build_cache_heavy_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tup
         for large_path in large_paths:
             _ = api.hf_hub_download(large_path)
         _ = api.snapshot_download()
+    for large_path in large_paths:
+        assert Path(api.hf_hub_download(large_path)).read_bytes() == api.read_bytes(large_path)
+    _assert_quick_verify_ok(api)
     return api, large_paths, total_bytes
 
 
@@ -671,6 +788,8 @@ def collect_space_profile(
     actual_gc = api.gc(dry_run=False, prune_cache=False)
     after = api.get_storage_overview()
     full_ok = api.full_verify().ok
+    assert quick_ok is True
+    assert full_ok is True
 
     before_sections = {section.name: section for section in before.sections}
     after_sections = {section.name: section for section in after.sections}
@@ -748,6 +867,8 @@ def run_nested_tree_listing_case(workspace_root: Path, config: Phase9BenchmarkCo
         started = time.perf_counter()
         items = list(api.list_repo_tree(recursive=True))
         finished = time.perf_counter()
+        tree_file_paths = sorted(item.path for item in items if isinstance(item, RepoFile))
+        assert tree_file_paths == sorted(paths)
         return {
             "processed_bytes": 0,
             "operation_seconds": round(finished - started, 6),
@@ -769,7 +890,7 @@ def run_mixed_model_snapshot_case(workspace_root: Path, config: Phase9BenchmarkC
         snapshot_root = Path(api.snapshot_download())
         finished = time.perf_counter()
         after = api.get_storage_overview()
-        manifest = snapshot_file_manifest(snapshot_root)
+        manifest = _assert_snapshot_manifest(snapshot_root, paths)
         return {
             "processed_bytes": int(total_bytes),
             "operation_seconds": round(finished - started, 6),
@@ -808,6 +929,8 @@ def run_hf_hub_download_cold_case(workspace_root: Path, config: Phase9BenchmarkC
         path = Path(api.hf_hub_download("artifacts/model.bin"))
         finished = time.perf_counter()
         after = api.get_storage_overview()
+        assert path.read_bytes() == payload
+        assert str(path).replace("\\", "/").endswith("artifacts/model.bin")
         return {
             "processed_bytes": len(payload),
             "operation_seconds": round(finished - started, 6),
@@ -830,6 +953,10 @@ def run_hf_hub_download_warm_case(workspace_root: Path, config: Phase9BenchmarkC
         second_path = Path(api.hf_hub_download("artifacts/model.bin"))
         finished = time.perf_counter()
         after = api.get_storage_overview()
+        assert first_path.read_bytes() == payload
+        assert second_path.read_bytes() == payload
+        assert str(first_path) == str(second_path)
+        assert str(second_path).replace("\\", "/").endswith("artifacts/model.bin")
         return {
             "processed_bytes": len(payload),
             "operation_seconds": round(finished - started, 6),
@@ -852,6 +979,10 @@ def run_history_listing_case(workspace_root: Path, config: Phase9BenchmarkConfig
         refs = api.list_repo_refs()
         reflog = list(api.list_repo_reflog("main"))
         finished = time.perf_counter()
+        assert len(commits) == int(commit_count)
+        assert len(refs.branches) >= 2
+        assert len(refs.tags) >= 1
+        assert len(reflog) >= len(commits)
         return {
             "processed_bytes": 0,
             "operation_seconds": round(finished - started, 6),
@@ -875,6 +1006,10 @@ def run_history_deep_listing_case(workspace_root: Path, config: Phase9BenchmarkC
         refs = api.list_repo_refs()
         reflog = list(api.list_repo_reflog("main"))
         finished = time.perf_counter()
+        assert len(commits) == int(commit_count)
+        assert len(refs.branches) >= 3
+        assert len(refs.tags) >= 1
+        assert len(reflog) >= len(commits)
         return {
             "processed_bytes": 0,
             "operation_seconds": round(finished - started, 6),
@@ -898,6 +1033,14 @@ def run_merge_non_fast_forward_case(workspace_root: Path, config: Phase9Benchmar
         result = api.merge("feature")
         finished = time.perf_counter()
         after_history_count = len(api.list_repo_commits())
+        expected_history_increase = 2
+        assert result.status == "merged"
+        assert result.fast_forward is False
+        assert result.created_commit is True
+        assert result.conflicts == []
+        assert after_history_count == before_history_count + expected_history_increase
+        _assert_repo_file_set(api, ["README.md", "artifacts/model.bin", "notes/feature.txt", "notes/main.txt"])
+        _assert_quick_verify_ok(api)
         return {
             "processed_bytes": int(merge_shape_bytes),
             "operation_seconds": round(finished - started, 6),
@@ -920,6 +1063,16 @@ def run_merge_heavy_case(workspace_root: Path, config: Phase9BenchmarkConfig) ->
         result = api.merge("feature")
         finished = time.perf_counter()
         after_history_count = len(api.list_repo_commits())
+        expected_note_count = 2 + (2 * int(config.merge_side_commit_count))
+        expected_history_increase = int(config.merge_side_commit_count) + 2
+        actual_note_paths = [path for path in api.list_repo_files() if path.startswith("notes/")]
+        assert result.status == "merged"
+        assert result.fast_forward is False
+        assert result.created_commit is True
+        assert result.conflicts == []
+        assert after_history_count == before_history_count + expected_history_increase
+        assert len(actual_note_paths) == expected_note_count
+        _assert_quick_verify_ok(api)
         return {
             "processed_bytes": int(merge_shape_bytes),
             "operation_seconds": round(finished - started, 6),
@@ -955,6 +1108,8 @@ def run_threshold_sweep_case(workspace_root: Path, config: Phase9BenchmarkConfig
             finished = time.perf_counter()
             info = api.get_paths_info(["artifacts/payload.bin"])[0]
             assert isinstance(info, RepoFile)
+            assert api.read_bytes("artifacts/payload.bin") == payload
+            _assert_quick_verify_ok(api)
             operation_seconds = finished - started
             results.append(
                 {
@@ -994,6 +1149,8 @@ def run_cache_heavy_warm_download_case(workspace_root: Path, config: Phase9Bench
         local_path = Path(api.hf_hub_download(target_path))
         finished = time.perf_counter()
         after = api.get_storage_overview()
+        assert local_path.read_bytes() == api.read_bytes(target_path)
+        assert str(local_path).replace("\\", "/").endswith(target_path)
         return {
             "processed_bytes": int(local_path.stat().st_size),
             "operation_seconds": round(finished - started, 6),
@@ -1011,6 +1168,7 @@ def run_squash_history_case(workspace_root: Path, config: Phase9BenchmarkConfig)
 
     with benchmark_workspace(workspace_root, "phase9-squash-") as tmpdir:
         api, logical_live_total, _logical_unique = build_historical_duplicate_repo(Path(tmpdir) / "repo", config)
+        history_before = len(api.list_repo_commits())
         started = time.perf_counter()
         report = api.squash_history("main", run_gc=True, prune_cache=False)
         finished = time.perf_counter()
@@ -1018,6 +1176,10 @@ def run_squash_history_case(workspace_root: Path, config: Phase9BenchmarkConfig)
         reclaimed_size = 0
         if report.gc_report is not None:
             reclaimed_size = int(report.gc_report.reclaimed_size)
+        assert int(report.rewritten_commit_count) >= 1
+        assert history_after < history_before
+        assert report.blocking_refs == []
+        _assert_quick_verify_ok(api)
         return {
             "processed_bytes": int(logical_live_total),
             "operation_seconds": round(finished - started, 6),
@@ -1038,6 +1200,7 @@ def run_verify_heavy_case(workspace_root: Path, config: Phase9BenchmarkConfig) -
         started = time.perf_counter()
         report = api.full_verify()
         finished = time.perf_counter()
+        assert report.ok is True
         return {
             "processed_bytes": int(logical_live_total),
             "operation_seconds": round(finished - started, 6),

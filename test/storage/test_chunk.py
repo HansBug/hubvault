@@ -64,4 +64,10 @@ class TestChunkStore:
             ChunkStore(chunk_size=256, max_chunk_size=512)
 
         with pytest.raises(ValueError):
+            ChunkStore(chunk_size=2048, max_chunk_size=1024)
+
+        with pytest.raises(ValueError):
+            ChunkStore(chunk_size=512, min_chunk_size=768)
+
+        with pytest.raises(ValueError):
             ChunkStore().plan_bytes("not-bytes")
