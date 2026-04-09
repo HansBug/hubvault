@@ -62,6 +62,7 @@ from ..storage import (
     IndexEntry,
     IndexManifest,
     IndexStore,
+    PACK_MAGIC,
     PackChunkLocation,
     PackStore,
     canonical_lfs_pointer,
@@ -504,7 +505,7 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return False
 
 
-def _write_bytes_atomic(path: Path, data: bytes) -> None:
+def _write_bytes_atomic(path: Path, data: bytes, durable: bool = True) -> None:
     """
     Atomically replace a file with the provided bytes.
 
@@ -515,6 +516,9 @@ def _write_bytes_atomic(path: Path, data: bytes) -> None:
     :type path: pathlib.Path
     :param data: Bytes to write
     :type data: bytes
+    :param durable: Whether to fsync the file and parent directory before
+        returning, defaults to ``True``
+    :type durable: bool, optional
     :return: ``None``.
     :rtype: None
 
@@ -533,12 +537,14 @@ def _write_bytes_atomic(path: Path, data: bytes) -> None:
     with temp_path.open("wb") as file_:
         file_.write(data)
         file_.flush()
-        os.fsync(file_.fileno())
+        if durable:
+            os.fsync(file_.fileno())
     os.replace(str(temp_path), str(path))
-    _fsync_directory(path.parent)
+    if durable:
+        _fsync_directory(path.parent)
 
 
-def _write_text_atomic(path: Path, text: str) -> None:
+def _write_text_atomic(path: Path, text: str, durable: bool = True) -> None:
     """
     Atomically replace a UTF-8 text file.
 
@@ -549,6 +555,9 @@ def _write_text_atomic(path: Path, text: str) -> None:
     :type path: pathlib.Path
     :param text: Text content to write
     :type text: str
+    :param durable: Whether to fsync the file and parent directory before
+        returning, defaults to ``True``
+    :type durable: bool, optional
     :return: ``None``.
     :rtype: None
 
@@ -562,10 +571,10 @@ def _write_text_atomic(path: Path, text: str) -> None:
         'hello'
     """
 
-    _write_bytes_atomic(path, text.encode("utf-8"))
+    _write_bytes_atomic(path, text.encode("utf-8"), durable=durable)
 
 
-def _write_json_atomic(path: Path, payload: object) -> None:
+def _write_json_atomic(path: Path, payload: object, durable: bool = True) -> None:
     """
     Atomically replace a JSON file using canonical repository encoding.
 
@@ -576,6 +585,9 @@ def _write_json_atomic(path: Path, payload: object) -> None:
     :type path: pathlib.Path
     :param payload: JSON-serializable payload
     :type payload: object
+    :param durable: Whether to fsync the file and parent directory before
+        returning, defaults to ``True``
+    :type durable: bool, optional
     :return: ``None``.
     :rtype: None
 
@@ -589,7 +601,7 @@ def _write_json_atomic(path: Path, payload: object) -> None:
         42
     """
 
-    _write_bytes_atomic(path, _stable_json_bytes(payload))
+    _write_bytes_atomic(path, _stable_json_bytes(payload), durable=durable)
 
 
 def _read_text(path: Path) -> str:
@@ -2440,12 +2452,7 @@ class RepositoryBackend(object):
         self._ensure_repo()
         self._rollback_interrupted_ref_updates_if_needed()
         with self._read_locked():
-            snapshot = self._snapshot_for_revision(revision)
-            normalized_path = _normalize_repo_path(path_in_repo)
-            try:
-                file_object_id = snapshot[normalized_path]
-            except KeyError:
-                raise EntryNotFoundError("path not found: %s" % normalized_path)
+            file_object_id = self._file_object_id_for_revision(revision, path_in_repo)
             return self._read_file_bytes_by_object_id(file_object_id)
 
     def read_range(
@@ -2502,12 +2509,7 @@ class RepositoryBackend(object):
         self._ensure_repo()
         self._rollback_interrupted_ref_updates_if_needed()
         with self._read_locked():
-            snapshot = self._snapshot_for_revision(revision)
-            normalized_path = _normalize_repo_path(path_in_repo)
-            try:
-                file_object_id = snapshot[normalized_path]
-            except KeyError:
-                raise EntryNotFoundError("path not found: %s" % normalized_path)
+            file_object_id = self._file_object_id_for_revision(revision, path_in_repo)
             file_payload = self._read_object_payload("files", file_object_id)
             logical_size = int(file_payload["logical_size"])
             if start >= logical_size or length == 0:
@@ -2595,44 +2597,71 @@ class RepositoryBackend(object):
         manifest = IndexStore(self._repo_path / "chunks" / "index").read_manifest()
         index_store = IndexStore(self._repo_path / "chunks" / "index")
         pack_store = PackStore(self._repo_path / "chunks" / "packs")
-
-        parts = []
+        visible_entries = index_store.visible_entries(manifest=manifest)
+        overlapping_chunks = []
         for raw_chunk in file_payload.get("chunks", []):
             chunk_offset = int(raw_chunk["logical_offset"])
             chunk_size = int(raw_chunk["logical_size"])
             chunk_end = chunk_offset + chunk_size
             if chunk_end <= start or chunk_offset >= end:
                 continue
+            overlapping_chunks.append((raw_chunk, chunk_offset, chunk_size, chunk_end))
 
-            chunk_id = str(raw_chunk["chunk_id"])
-            entry = index_store.lookup(chunk_id, manifest=manifest)
-            if entry is None:
-                raise IntegrityError("chunk missing from index: %s" % chunk_id)
-            if entry.logical_size != chunk_size:
-                raise IntegrityError("chunk logical size mismatch")
-            chunk_data = pack_store.read_chunk(
-                PackChunkLocation(
-                    pack_id=entry.pack_id,
-                    offset=entry.offset,
-                    stored_size=entry.stored_size,
-                    logical_size=entry.logical_size,
-                )
-            )
-            if entry.compression != "none":
-                raise IntegrityError("unsupported chunk compression: %s" % entry.compression)
-            if len(chunk_data) != chunk_size:
-                raise IntegrityError("chunk size mismatch")
-            chunk_checksum = OBJECT_HASH + ":" + _sha256_hex(chunk_data)
-            if chunk_checksum != _integrity_sha256(str(raw_chunk["checksum"])):
-                raise IntegrityError("chunk checksum mismatch")
-            if entry.checksum != _integrity_sha256(str(raw_chunk["checksum"])):
-                raise IntegrityError("chunk index checksum mismatch")
+        open_packs = {}
 
-            local_start = max(start, chunk_offset) - chunk_offset
-            local_end = min(end, chunk_end) - chunk_offset
-            parts.append(chunk_data[local_start:local_end])
+        def _read_pack_range_cached(pack_id: str, offset: int, stored_size: int) -> bytes:
+            cached = open_packs.get(pack_id)
+            if cached is None:
+                pack_path = pack_store.pack_path(pack_id)
+                if not pack_path.exists():
+                    raise IntegrityError("pack not found: %s" % pack_id)
+                file_ = pack_path.open("rb")
+                magic = file_.read(len(PACK_MAGIC))
+                if magic != PACK_MAGIC:
+                    file_.close()
+                    raise IntegrityError("invalid pack header: %s" % pack_id)
+                pack_size = pack_path.stat().st_size
+                cached = (file_, pack_size)
+                open_packs[pack_id] = cached
+            file_, pack_size = cached
+            if offset < len(PACK_MAGIC):
+                raise IntegrityError("range overlaps pack header: %s" % pack_id)
+            if offset + stored_size > pack_size:
+                raise IntegrityError("pack truncated: %s" % pack_id)
+            file_.seek(offset)
+            data = file_.read(stored_size)
+            if len(data) != stored_size:
+                raise IntegrityError("pack truncated: %s" % pack_id)
+            return data
 
-        return b"".join(parts)
+        parts = bytearray()
+        try:
+            for raw_chunk, chunk_offset, chunk_size, chunk_end in overlapping_chunks:
+                chunk_id = str(raw_chunk["chunk_id"])
+                entry = visible_entries.get(chunk_id)
+                if entry is None:
+                    raise IntegrityError("chunk missing from index: %s" % chunk_id)
+                if entry.logical_size != chunk_size:
+                    raise IntegrityError("chunk logical size mismatch")
+                chunk_data = _read_pack_range_cached(entry.pack_id, entry.offset, entry.stored_size)
+                if entry.compression != "none":
+                    raise IntegrityError("unsupported chunk compression: %s" % entry.compression)
+                if len(chunk_data) != chunk_size:
+                    raise IntegrityError("chunk size mismatch")
+                chunk_checksum = OBJECT_HASH + ":" + _sha256_hex(chunk_data)
+                if chunk_checksum != _integrity_sha256(str(raw_chunk["checksum"])):
+                    raise IntegrityError("chunk checksum mismatch")
+                if entry.checksum != _integrity_sha256(str(raw_chunk["checksum"])):
+                    raise IntegrityError("chunk index checksum mismatch")
+
+                local_start = max(start, chunk_offset) - chunk_offset
+                local_end = min(end, chunk_end) - chunk_offset
+                parts.extend(chunk_data[local_start:local_end])
+        finally:
+            for file_, _pack_size in open_packs.values():
+                file_.close()
+
+        return bytes(parts)
 
     def hf_hub_download(
         self,
@@ -2683,40 +2712,54 @@ class RepositoryBackend(object):
         normalized_path = _normalize_repo_path(filename)
 
         with self._read_locked():
-            snapshot = self._snapshot_for_revision(resolved_revision)
-            try:
-                file_object_id = snapshot[normalized_path]
-            except KeyError:
-                raise EntryNotFoundError("path not found: %s" % normalized_path)
-
+            resolved_head = self._resolve_revision(resolved_revision)
+            public_head = self._public_commit_oid_or_none(resolved_head)
+            file_object_id = self._file_object_id_for_commit(resolved_head, normalized_path)
             file_payload = self._read_object_payload("files", file_object_id)
-            data = self._read_file_bytes_by_object_id(file_object_id)
-            self._materialize_content_pool(file_payload, data)
+            expected_sha256 = _public_sha256_hex(str(file_payload["sha256"]))
+            expected_size = int(file_payload["logical_size"])
 
             if local_dir is not None:
                 target_root = Path(local_dir)
                 self._validate_detached_target_root(target_root)
+                data = self._read_file_bytes_by_object_id(file_object_id)
                 target_path = target_root / normalized_path
                 self._ensure_detached_view(target_path, data, file_payload)
                 return str(target_path)
 
-            resolved_head = self._resolve_revision(resolved_revision)
-            public_head = self._public_commit_oid_or_none(resolved_head)
             view_key = _sha256_hex((((public_head or "") + ":" + normalized_path).encode("utf-8")))
             view_root = self._repo_path / "cache" / "files" / view_key
             target_path = view_root / normalized_path
+            view_meta_path = self._repo_path / "cache" / "views" / "files" / (view_key + ".json")
+            if self._managed_file_view_is_current(
+                view_meta_path=view_meta_path,
+                target_path=target_path,
+                revision=resolved_revision,
+                commit_id=public_head,
+                path_in_repo=normalized_path,
+                sha256=expected_sha256,
+                size=expected_size,
+            ):
+                return str(target_path)
+
+            data = self._read_file_bytes_by_object_id(file_object_id)
             self._ensure_detached_view(target_path, data, file_payload)
+            target_stat = target_path.stat()
             _write_json_atomic(
-                self._repo_path / "cache" / "views" / "files" / (view_key + ".json"),
+                view_meta_path,
                 {
                     "view_key": view_key,
                     "revision": resolved_revision,
+                    "commit_id": public_head,
                     "path_in_repo": normalized_path,
-                    "sha256": _public_sha256_hex(str(file_payload["sha256"])),
+                    "sha256": expected_sha256,
                     "oid": file_payload["oid"],
+                    "size": expected_size,
+                    "view_mtime_ns": int(target_stat.st_mtime_ns),
                     "target_path": str(target_path.relative_to(self._repo_path)),
                     "created_at": _utc_now(),
                 },
+                durable=False,
             )
             return str(target_path)
 
@@ -2772,12 +2815,6 @@ class RepositoryBackend(object):
         with self._read_locked():
             resolved_head = self._resolve_revision(selected_revision, allow_empty_ref=True)
             public_head = self._public_commit_oid_or_none(resolved_head)
-            snapshot = self._snapshot_for_commit(resolved_head)
-            selected_paths = _filter_repo_paths(
-                sorted(snapshot),
-                allow_patterns=allow_patterns,
-                ignore_patterns=ignore_patterns,
-            )
             normalized_allow = _normalize_glob_patterns(allow_patterns) or []
             normalized_ignore = _normalize_glob_patterns(ignore_patterns) or []
 
@@ -2801,7 +2838,20 @@ class RepositoryBackend(object):
                 meta_path = target_root / ".cache" / "hubvault" / "snapshot.json"
                 target_metadata_path = os.path.realpath(str(target_root))
 
+            if self._snapshot_view_is_current(
+                meta_path=meta_path,
+                target_root=target_root,
+                revision=selected_revision,
+                commit_id=public_head,
+                allow_patterns=normalized_allow,
+                ignore_patterns=normalized_ignore,
+            ):
+                if local_dir is not None:
+                    return os.path.realpath(str(target_root))
+                return str(target_root)
+
             previous_paths = []
+            previous_file_entries = {}
             if meta_path.exists():
                 try:
                     previous_meta = _read_json(meta_path)
@@ -2811,13 +2861,25 @@ class RepositoryBackend(object):
                     if not isinstance(raw_files, list):
                         raise TypeError("snapshot metadata files must be a list")
                     previous_paths = [str(item["path"]) for item in raw_files]
+                    previous_file_entries = {
+                        str(item["path"]): item
+                        for item in raw_files
+                        if isinstance(item, dict) and "path" in item
+                    }
                 except (AttributeError, KeyError, OSError, TypeError, ValueError) as err:
                     warnings.warn(
                         "Ignoring malformed detached snapshot metadata at %s: %s" % (meta_path, err),
                         RuntimeWarning,
                     )
                     previous_paths = []
+                    previous_file_entries = {}
 
+            snapshot = self._snapshot_for_commit(resolved_head)
+            selected_paths = _filter_repo_paths(
+                sorted(snapshot),
+                allow_patterns=allow_patterns,
+                ignore_patterns=ignore_patterns,
+            )
             target_root.mkdir(parents=True, exist_ok=True)
             current_paths = set(selected_paths)
             for stale_path in previous_paths:
@@ -2829,15 +2891,43 @@ class RepositoryBackend(object):
             for repo_path in selected_paths:
                 file_object_id = snapshot[repo_path]
                 file_payload = self._read_object_payload("files", file_object_id)
+                expected_sha256 = _public_sha256_hex(str(file_payload["sha256"]))
+                expected_size = int(file_payload["logical_size"])
+                target_path = target_root / repo_path
+                previous_file_info = previous_file_entries.get(repo_path)
+                if (
+                    isinstance(previous_file_info, dict)
+                    and str(previous_file_info.get("sha256")) == expected_sha256
+                    and str(previous_file_info.get("oid")) == str(file_payload["oid"])
+                    and int(previous_file_info.get("size")) == expected_size
+                    and self._detached_file_matches_metadata(
+                        target_path,
+                        size=expected_size,
+                        view_mtime_ns=previous_file_info.get("view_mtime_ns"),
+                    )
+                ):
+                    target_stat = target_path.stat()
+                    file_entries.append(
+                        {
+                            "path": repo_path,
+                            "sha256": expected_sha256,
+                            "oid": str(file_payload["oid"]),
+                            "size": expected_size,
+                            "view_mtime_ns": int(target_stat.st_mtime_ns),
+                        }
+                    )
+                    continue
+
                 data = self._read_file_bytes_by_object_id(file_object_id)
-                self._materialize_content_pool(file_payload, data)
-                self._ensure_detached_view(target_root / repo_path, data, file_payload)
+                self._ensure_detached_view(target_path, data, file_payload)
+                target_stat = target_path.stat()
                 file_entries.append(
                     {
                         "path": repo_path,
-                        "sha256": _public_sha256_hex(str(file_payload["sha256"])),
+                        "sha256": expected_sha256,
                         "oid": str(file_payload["oid"]),
-                        "size": int(file_payload["logical_size"]),
+                        "size": expected_size,
+                        "view_mtime_ns": int(target_stat.st_mtime_ns),
                     }
                 )
 
@@ -2851,7 +2941,7 @@ class RepositoryBackend(object):
                 "files": file_entries,
                 "created_at": _utc_now(),
             }
-            _write_json_atomic(meta_path, metadata)
+            _write_json_atomic(meta_path, metadata, durable=(local_dir is not None))
 
             if local_dir is not None:
                 return os.path.realpath(str(target_root))
@@ -5319,6 +5409,80 @@ class RepositoryBackend(object):
         head = self._resolve_revision(revision)
         return self._snapshot_for_commit(head)
 
+    def _file_object_id_for_revision(self, revision: str, path_in_repo: str) -> str:
+        """
+        Resolve one file object ID from a revision without flattening the tree.
+
+        :param revision: Revision to inspect
+        :type revision: str
+        :param path_in_repo: Repo-relative file path
+        :type path_in_repo: str
+        :return: File object identifier for the requested path
+        :rtype: str
+        :raises EntryNotFoundError: Raised when the path does not resolve to a file.
+        """
+
+        head = self._resolve_revision(revision)
+        return self._file_object_id_for_commit(head, path_in_repo)
+
+    def _file_object_id_for_commit(self, commit_id: Optional[str], path_in_repo: str) -> str:
+        """
+        Resolve one file object ID from a commit without flattening the tree.
+
+        :param commit_id: Commit object identifier
+        :type commit_id: Optional[str]
+        :param path_in_repo: Repo-relative file path
+        :type path_in_repo: str
+        :return: File object identifier for the requested path
+        :rtype: str
+        :raises EntryNotFoundError: Raised when the path does not resolve to a file.
+        """
+
+        normalized_path = _normalize_repo_path(path_in_repo)
+        if commit_id is None:
+            raise EntryNotFoundError("path not found: %s" % normalized_path)
+        commit_payload = self._read_object_payload("commits", commit_id)
+        return self._file_object_id_for_tree(str(commit_payload["tree_id"]), normalized_path)
+
+    def _file_object_id_for_tree(self, tree_id: str, normalized_path: str) -> str:
+        """
+        Resolve one file object ID by descending only the required tree path.
+
+        :param tree_id: Root tree object identifier
+        :type tree_id: str
+        :param normalized_path: Normalized repo-relative file path
+        :type normalized_path: str
+        :return: File object identifier for the requested path
+        :rtype: str
+        :raises EntryNotFoundError: Raised when the path does not resolve to a file.
+        :raises IntegrityError: Raised when a tree contains an unknown entry kind.
+        """
+
+        current_tree_id = tree_id
+        parts = normalized_path.split("/")
+        for index, part in enumerate(parts):
+            tree_payload = self._read_object_payload("trees", current_tree_id)
+            matched_entry = None
+            for entry in tree_payload.get("entries", []):
+                if str(entry["name"]) == part:
+                    matched_entry = entry
+                    break
+            if matched_entry is None:
+                raise EntryNotFoundError("path not found: %s" % normalized_path)
+
+            entry_type = str(matched_entry["entry_type"])
+            object_id = str(matched_entry["object_id"])
+            is_last = index == len(parts) - 1
+            if is_last:
+                if entry_type != "file":
+                    raise EntryNotFoundError("path not found: %s" % normalized_path)
+                return object_id
+            if entry_type == "file":
+                raise EntryNotFoundError("path not found: %s" % normalized_path)
+            if entry_type != "tree":
+                raise IntegrityError("unknown tree entry type")
+            current_tree_id = object_id
+
     def _snapshot_for_commit(self, commit_id: Optional[str]) -> Dict[str, str]:
         """
         Materialize a flat file snapshot for a commit.
@@ -7105,10 +7269,24 @@ class RepositoryBackend(object):
         """
 
         content_key = _public_sha256_hex(str(file_payload["sha256"]))
+        expected_size = int(file_payload["logical_size"])
         pool_path = self._repo_path / "cache" / "materialized" / OBJECT_HASH / content_key[:2] / (content_key[2:] + ".data")
         meta_path = self._repo_path / "cache" / "materialized" / "meta" / (content_key + ".json")
+        if pool_path.exists() and meta_path.exists():
+            try:
+                meta = _read_json(meta_path)
+                if (
+                    isinstance(meta, dict)
+                    and str(meta.get("content_key")) == content_key
+                    and str(meta.get("sha256")) == content_key
+                    and str(meta.get("oid")) == str(file_payload["oid"])
+                    and int(meta.get("size")) == expected_size
+                ):
+                    return
+            except (AttributeError, OSError, TypeError, ValueError):
+                pass
         if not pool_path.exists():
-            _write_bytes_atomic(pool_path, data)
+            _write_bytes_atomic(pool_path, data, durable=False)
             try:
                 pool_path.chmod(stat.S_IREAD | stat.S_IRGRP | stat.S_IROTH)
             except OSError:  # pragma: no cover - permission semantics vary
@@ -7119,9 +7297,10 @@ class RepositoryBackend(object):
                 "content_key": content_key,
                 "oid": file_payload["oid"],
                 "sha256": content_key,
-                "size": file_payload["logical_size"],
+                "size": expected_size,
                 "created_at": _utc_now(),
             },
+            durable=False,
         )
 
     def _validate_detached_target_root(self, target_root: Path) -> None:
@@ -7178,6 +7357,167 @@ class RepositoryBackend(object):
                 break
             parent = parent.parent
 
+    @staticmethod
+    def _detached_file_matches_metadata(
+        target_path: Path,
+        *,
+        size: int,
+        view_mtime_ns: Optional[int],
+    ) -> bool:
+        """
+        Return whether an existing detached file still matches cached metadata.
+
+        :param target_path: Detached file path to inspect
+        :type target_path: pathlib.Path
+        :param size: Expected file size
+        :type size: int
+        :param view_mtime_ns: Expected nanosecond mtime recorded at creation
+        :type view_mtime_ns: Optional[int]
+        :return: Whether the cached metadata still matches the current file
+        :rtype: bool
+        """
+
+        if view_mtime_ns is None:
+            return False
+        if not target_path.exists() or not target_path.is_file() or target_path.is_symlink():
+            return False
+        try:
+            target_stat = target_path.stat()
+        except OSError:
+            return False
+        return int(target_stat.st_size) == int(size) and int(target_stat.st_mtime_ns) == int(view_mtime_ns)
+
+    def _is_managed_cache_path(self, path: Path) -> bool:
+        """
+        Return whether a path points into the repository-managed cache tree.
+
+        :param path: Filesystem path to inspect
+        :type path: pathlib.Path
+        :return: Whether the path is under ``<repo>/cache/``
+        :rtype: bool
+        """
+
+        return _is_relative_to(path, self._repo_path / "cache")
+
+    def _managed_file_view_is_current(
+        self,
+        *,
+        view_meta_path: Path,
+        target_path: Path,
+        revision: str,
+        commit_id: Optional[str],
+        path_in_repo: str,
+        sha256: str,
+        size: int,
+    ) -> bool:
+        """
+        Return whether one managed detached file view can be reused as-is.
+
+        :param view_meta_path: File-view metadata path
+        :type view_meta_path: pathlib.Path
+        :param target_path: Detached file path
+        :type target_path: pathlib.Path
+        :param revision: Requested revision name
+        :type revision: str
+        :param commit_id: Public commit OID for the selected revision
+        :type commit_id: Optional[str]
+        :param path_in_repo: Repo-relative file path
+        :type path_in_repo: str
+        :param sha256: Expected public SHA-256
+        :type sha256: str
+        :param size: Expected logical file size
+        :type size: int
+        :return: Whether the managed view is still valid
+        :rtype: bool
+        """
+
+        if not view_meta_path.exists():
+            return False
+        try:
+            view_meta = _read_json(view_meta_path)
+            if not isinstance(view_meta, dict):
+                return False
+            if str(view_meta.get("revision")) != revision:
+                return False
+            if view_meta.get("commit_id") != commit_id:
+                return False
+            if str(view_meta.get("path_in_repo")) != path_in_repo:
+                return False
+            if str(view_meta.get("sha256")) != sha256:
+                return False
+            if int(view_meta.get("size")) != int(size):
+                return False
+            if str(view_meta.get("target_path")) != str(target_path.relative_to(self._repo_path)):
+                return False
+            return self._detached_file_matches_metadata(
+                target_path,
+                size=size,
+                view_mtime_ns=view_meta.get("view_mtime_ns"),
+            )
+        except (AttributeError, KeyError, OSError, TypeError, ValueError):
+            return False
+
+    def _snapshot_view_is_current(
+        self,
+        *,
+        meta_path: Path,
+        target_root: Path,
+        revision: str,
+        commit_id: Optional[str],
+        allow_patterns: Sequence[str],
+        ignore_patterns: Sequence[str],
+    ) -> bool:
+        """
+        Return whether one detached snapshot view can be reused as-is.
+
+        :param meta_path: Snapshot metadata path
+        :type meta_path: pathlib.Path
+        :param target_root: Snapshot root directory
+        :type target_root: pathlib.Path
+        :param revision: Requested revision name
+        :type revision: str
+        :param commit_id: Public commit OID for the selected revision
+        :type commit_id: Optional[str]
+        :param allow_patterns: Normalized allow patterns
+        :type allow_patterns: Sequence[str]
+        :param ignore_patterns: Normalized ignore patterns
+        :type ignore_patterns: Sequence[str]
+        :return: Whether the snapshot view is still valid
+        :rtype: bool
+        """
+
+        if not target_root.exists() or not target_root.is_dir():
+            return False
+        if not meta_path.exists():
+            return False
+        try:
+            meta = _read_json(meta_path)
+            if not isinstance(meta, dict):
+                return False
+            if str(meta.get("revision")) != revision:
+                return False
+            if meta.get("commit_id") != commit_id:
+                return False
+            if list(meta.get("allow_patterns", [])) != list(allow_patterns):
+                return False
+            if list(meta.get("ignore_patterns", [])) != list(ignore_patterns):
+                return False
+            raw_files = meta.get("files", [])
+            if not isinstance(raw_files, list):
+                return False
+            for file_info in raw_files:
+                if not isinstance(file_info, dict):
+                    return False
+                if not self._detached_file_matches_metadata(
+                    target_root / str(file_info["path"]),
+                    size=int(file_info["size"]),
+                    view_mtime_ns=file_info.get("view_mtime_ns"),
+                ):
+                    return False
+            return True
+        except (AttributeError, KeyError, OSError, TypeError, ValueError):
+            return False
+
     def _ensure_detached_view(self, target_path: Path, data: bytes, file_payload: Dict[str, object]) -> None:
         """
         Ensure a detached user-view path matches the requested file content.
@@ -7211,7 +7551,7 @@ class RepositoryBackend(object):
                 self._unlink_path(target_path)
             else:  # pragma: no cover - defensive path for unusual filesystem nodes
                 self._unlink_path(target_path)
-        _write_bytes_atomic(target_path, data)
+        _write_bytes_atomic(target_path, data, durable=(not self._is_managed_cache_path(target_path)))
 
     @staticmethod
     def _chmod_writable(path: Path) -> None:
