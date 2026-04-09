@@ -4,7 +4,7 @@
 
 执行顺序遵循一个原则：先交付最小可用、可验证、可回归的本地仓库核心，再逐步扩充大文件、维护和性能能力。
 
-在当前 Phase 0-4 已经落地的前提下，后半程不再把“功能补齐、对拍、异常安全、性能、优化技术引入和文档交付”混成一个大阶段，而是按下面顺序拆开推进：
+在当前 Phase 0-11 已经形成稳定基线的前提下，后半程不再把“功能补齐、对拍、异常安全、性能、优化技术引入、文档交付与后续性能演进”混成一个大阶段，而是按下面顺序拆开推进：
 
 1. 先补 `merge()` 本体与冲突模型
 2. 再补基于公开 API 的 Git-like 本地 CLI
@@ -12,7 +12,9 @@
 4. 再补极端场景与故障注入测试，把“最坏等效于本次操作从未发生过”压实
 5. 然后先做性能基线，把当前真实瓶颈和空间行为量出来
 6. 再只引入那些 benchmark 已证明值得、且不破坏协议的优化技术，并做前后对比
-7. 最后统一收尾文档、README、教程与交付检查
+7. 再统一收尾文档、README、教程与交付检查
+8. 然后扩充 benchmark 体系，把带宽、metadata、amplification、稳定性和环境元数据口径补完整
+9. 最后只围绕扩容 benchmark 已证明的热点做时间路径收敛，避免重新回到“靠感觉优化”
 
 ## 当前状态
 
@@ -30,7 +32,8 @@
 - 当前 Phase 5 已经落地 `merge()`、`MergeConflict`、`MergeResult`、merge DAG 历史遍历与 `test/test_phase5.py` 集成回归，并明确把冲突结果收敛成结构化返回而不是半提交异常状态。
 - 当前 Phase 6 已经落地 `hubvault` / `hv` CLI、全局 `-C`、`init/status/branch/tag/log/ls-tree/commit/merge/reset/download/snapshot/verify` 命令，以及 `test/entry/test_*.py` 与 `test/test_phase6.py` 回归。
 - 当前 Phase 10 已经落地默认 `fastcdc + blake3` 内容定义分块、写时 chunk/pack reuse，以及与 Phase 9 锚点提交 `edde3cafaaf6f1c99fa4b66912a5b3874132d79d` 的 standard/pressure A-B benchmark 对比。
-- 当前剩余工作会从 Phase 6 之后继续拆成后续五个顺序 phase，分别处理真实对拍、异常安全、性能基线、优化技术引入与文档交付，避免把 correctness 验证、性能分析、技术试验和文档收尾混做。
+- 当前 Phase 11 已完成 README、教程、docs landing page 与交付回归的文档收尾。
+- 当前剩余工作不再是基础能力补齐，而是新增的两个 follow-up phase：Phase 12 负责 benchmark 扩容与指标口径固化，Phase 13 负责用扩容 benchmark + profiling 收敛剩余时间热点。
 
 优先级排序如下：
 
@@ -46,6 +49,8 @@
 10. 性能基线 / benchmark 体系
 11. 优化技术引入 / A-B 对比 / 结果复盘
 12. 文档 / README / 教程 / 交付收尾
+13. benchmark 扩容 / 指标口径 / 长期回归产物
+14. benchmark 驱动的热点定位 / 时间路径收敛
 
 ## Phase 0. 规范冻结与脚手架
 
@@ -859,3 +864,84 @@ Phase 11 计划新增并维护以下教程主题：
 * [x] 关键示例中的路径、哈希、commit/refs 输出形状与真实实现一致。
 * [x] README 与 docs 明确说明与 HF/Git 的对齐点和保留差异。
 * [x] `make docs_en`、`make docs_zh` 和相关交付回归通过；本阶段未涉及 API 参考生成内容，因此未额外执行 `make rst_auto`。
+
+## Phase 12. Benchmark 扩容与指标固化
+
+### Goal
+
+在已有 Phase 9 baseline 与 Phase 10 A/B 对比的基础上，把 benchmark 从“够回答当前瓶颈”的基线套件扩成“可长期决策、可解释、可回归”的完整性能体系。
+
+### Status
+
+未开始。
+
+### Detailed Plan
+
+详细指标口径、外部参考基线、数据集族、产物结构和 CI 策略见 `plan/init/08-phase12-benchmark-expansion.md`。
+
+### Technical Focus
+
+Phase 12 的重点不再是“再加几个 case”，而是把 benchmark 体系补成下面几层：
+
+- 指标口径补全：对 bulk IO 保留 throughput 与 wall-clock，对 metadata-heavy 路径补 operations/s 与 tail latency，对重复/重叠数据补 write/space/cache amplification。
+- 数据集族补全：在现有 `small-tree`、`large-single`、duplicate/overlap、maintenance-heavy 之外，补 `nested-small`、`mixed-model`、`history-deep`、`merge-heavy`、`cache-heavy` 等更接近日常仓库形状的数据集。
+- 产物与环境元数据补全：让 benchmark 结果天然携带 commit id、Python 版本、平台、架构、runner 类型、dataset shape、threshold 与冷暖路径语义，便于长期比较。
+- 长期回归口径补全：不再试图压成一个总分，而是至少分成 bandwidth、metadata、maintenance、amplification、stability 五类结果，避免一个单值掩盖真实退化。
+
+### Todo
+
+* [ ] 以 Phase 9/10 现有 harness 为底座，补出 `nested-small`、`mixed-model`、`history-deep`、`merge-heavy`、`cache-heavy` 与 `verify-heavy` 数据集族。
+* [ ] 固化 Phase 12 的指标定义，至少明确 `latency_p50/p95/p99`、`latency_iqr`、`throughput_mib_per_sec`、`operations_per_sec`、`write_amplification`、`space_amplification_live`、`space_amplification_unique`、`cache_amplification` 与可选的 repo-layer `read_amplification`。
+* [ ] 继续采用 `pytest-benchmark` 的固定 rounds / pedantic 口径，并补齐 autosave / compare 的结果命名规范和产物目录结构。
+* [ ] 为 Linux 权威 baseline、Windows/macOS smoke、nightly pressure 三层执行口径补统一的 JSON summary schema 与 Markdown 摘要模板。
+* [ ] 为 benchmark 结果补环境元数据采集，至少包括 commit id、Python 版本、OS、架构、scale、dataset shape、chunk threshold 与 cold/warm 语义。
+* [ ] 明确哪些指标进入长期回归阈值，哪些指标只做趋势观察，避免把高噪声场景误设成硬门禁。
+* [ ] 把 Phase 12 的 metric glossary、MVP cut、deferred items 和 benchmark interpretation 规则固化到 `plan/init/08-phase12-benchmark-expansion.md`。
+
+### Checklist
+
+* [ ] Phase 12 的 benchmark 结果不再只有“吞吐 + 总耗时”，而是同时覆盖带宽、metadata、amplification 与稳定性。
+* [ ] benchmark 指标定义都能明确回答“分子/分母是什么、是 wall-clock 还是 operation time、是 live 还是 unique 口径”。
+* [ ] benchmark summary 不会把 bandwidth 和 metadata 混成一个总分。
+* [ ] cold / warm、bulk IO / metadata、wall-clock / operation-seconds、logical bytes / physical bytes 这些口径边界全部被写清楚。
+* [ ] 基准结果在 Linux 上可长期复用，在 Windows/macOS 上至少保留 smoke 级可运行信号。
+* [ ] 所有新增 benchmark 场景仍只通过公开 API / 公开 CLI 驱动。
+
+## Phase 13. Hotspot Profiling 与时间路径收敛
+
+### Goal
+
+基于 Phase 12 扩容后的 benchmark 与 profiling 结果，集中收敛当前仍有回退或波动的时间路径，优先解决真实用户可感知的 latency 与 metadata 热点。
+
+### Status
+
+未开始。
+
+### Detailed Plan
+
+详细热点候选、profiling 工作流、优化顺序与回归口径见 `plan/init/09-phase13-hotspot-optimization.md`。
+
+### Technical Focus
+
+Phase 13 不会重新做大范围技术试验，而是只围绕 Phase 12 已证明的热点推进：
+
+- `read_range()`：重点盯 `IndexStore.lookup()` / 可见索引构建 / 逐 chunk 校验链路。
+- `hf_hub_download()` 与 `snapshot_download()`：重点盯 detached view 复用、目录扫描与 metadata 解析。
+- `merge()` 与历史遍历：重点盯 merge-base、tree 反序列化、refs/reflog 解析与调用级缓存。
+- 小文件树路径：重点盯 `list_repo_tree()`、`read_bytes()`、快照物化中的多文件重复扫描。
+
+### Todo
+
+* [ ] 用 Phase 12 扩容后的 benchmark 结果重新排序热点，明确哪些回退要先进 profiling，哪些暂时只观察趋势。
+* [ ] 为 `read_range()`、warm `hf_hub_download()`、`snapshot_download()`、`merge_non_fast_forward`、`list_repo_commits()` 补 `cProfile` / `py-spy` / opt-in `tracemalloc` 的定向分析流程。
+* [ ] 优先落零协议风险优化，例如调用级 visible-index cache、批量 chunk lookup、单次公开调用内的 refs/tree 解析缓存、detached view 目录扫描压缩。
+* [ ] 每轮优化后都重跑同一批 Phase 12 benchmark，并把“收益、无收益、局部回退”按场景写回计划文档。
+* [ ] 明确哪些路径允许做可选的 OS-specific 实验，哪些路径必须继续保持 Python 3.7 与 Windows 兼容优先。
+
+### Checklist
+
+* [ ] Phase 13 的每一项优化都能明确指向一个已测得的 benchmark 热点，而不是泛化的“代码看起来可以更快”。
+* [ ] 所有优化都保持公开 API 行为、磁盘协议、detached view 语义、回滚语义与跨平台兼容边界不变。
+* [ ] 已知回退路径至少有一轮 profiling 证据，而不是只看 benchmark 表格猜测原因。
+* [ ] benchmark 结果中的改进和回退都能追溯到具体 commit、具体场景和具体指标。
+* [ ] 如果某个热点在零协议风险优化后收益不足，就明确停止，不再为了 benchmark 数字冒格式或兼容风险。
