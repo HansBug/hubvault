@@ -12,12 +12,14 @@ The module contains:
 
 import io
 import json
+import mmap
 import os
 import re
 import secrets
 import shutil
 import stat
 import warnings
+from collections import OrderedDict
 from contextlib import contextmanager
 from fnmatch import fnmatch
 from datetime import datetime, timezone
@@ -102,6 +104,8 @@ PUBLIC_GIT_AUTHOR_EMAIL = "hubvault@local"
 FAILPOINT_ENV = "HUBVAULT_FAILPOINT"
 FAIL_ACTION_ENV = "HUBVAULT_FAIL_ACTION"
 FAILPOINT_EXIT_CODE = 86
+RECENT_CHUNK_CACHE_MAX_BYTES = 64 * 1024 * 1024
+RECENT_OBJECT_PAYLOAD_CACHE_MAX_ENTRIES = 256
 
 
 def _utc_now() -> str:
@@ -898,6 +902,10 @@ class RepositoryBackend(object):
         """
 
         self._repo_path = Path(repo_path)
+        self._recent_chunk_cache = OrderedDict()
+        self._recent_chunk_cache_bytes = 0
+        self._recent_object_payload_cache = OrderedDict()
+        self._layout_ensured = False
 
     @property
     def _repo_lock_path(self) -> Path:
@@ -2541,6 +2549,437 @@ class RepositoryBackend(object):
             raise IntegrityError("blob payload checksum mismatch")
         return data
 
+    def _new_chunk_read_context(
+        self,
+        track_verified_chunks: bool = False,
+        allow_recent_cache: bool = True,
+    ) -> Dict[str, object]:
+        """
+        Build one reusable chunk read/verify context for the current repo state.
+
+        :param track_verified_chunks: Whether to record chunks that have already
+            been verified in this context, defaults to ``False``
+        :type track_verified_chunks: bool, optional
+        :param allow_recent_cache: Whether the context may reuse recent in-memory
+            chunk bytes cached by this backend, defaults to ``True``
+        :type allow_recent_cache: bool, optional
+        :return: Reusable chunk read context
+        :rtype: Dict[str, object]
+        """
+
+        index_root = self._repo_path / "chunks" / "index"
+        index_store = IndexStore(index_root)
+        manifest = index_store.read_manifest()
+        return {
+            "manifest": manifest,
+            "index_store": index_store,
+            "pack_store": PackStore(self._repo_path / "chunks" / "packs"),
+            "visible_entries": index_store.visible_entries(manifest=manifest),
+            "open_packs": {},
+            "verified_chunks": {} if track_verified_chunks else None,
+            "allow_recent_cache": bool(allow_recent_cache),
+        }
+
+    @staticmethod
+    def _chunk_cache_entry_signature(entry: IndexEntry) -> Tuple[str, int, int, int, str, str]:
+        """
+        Build the metadata signature used to validate one cached chunk entry.
+
+        :param entry: Visible chunk index entry
+        :type entry: IndexEntry
+        :return: Stable signature for the current entry metadata
+        :rtype: Tuple[str, int, int, int, str, str]
+        """
+
+        return (
+            str(entry.pack_id),
+            int(entry.offset),
+            int(entry.stored_size),
+            int(entry.logical_size),
+            str(entry.compression),
+            str(entry.checksum),
+        )
+
+    @staticmethod
+    def _pack_state_signature(pack_path: Path) -> Tuple[int, int]:
+        """
+        Capture the current size and mtime of one pack file.
+
+        :param pack_path: Absolute pack path
+        :type pack_path: pathlib.Path
+        :return: ``(size, mtime_ns)`` tuple for cache validation
+        :rtype: Tuple[int, int]
+        """
+
+        stat_result = pack_path.stat()
+        return int(stat_result.st_size), int(stat_result.st_mtime_ns)
+
+    def _chunk_pack_path_for_cache(self, pack_id: str, txdir: Optional[Path] = None) -> Path:
+        """
+        Resolve the pack path used for recent-cache state tracking.
+
+        :param pack_id: Pack identifier
+        :type pack_id: str
+        :param txdir: Optional transaction directory for staged packs
+        :type txdir: Optional[pathlib.Path], optional
+        :return: Best available pack path for the requested pack ID
+        :rtype: pathlib.Path
+        """
+
+        if txdir is not None:
+            staged_path = txdir / "chunks" / "packs" / (str(pack_id) + ".pack")
+            if staged_path.exists():
+                return staged_path
+        return PackStore(self._repo_path / "chunks" / "packs").pack_path(pack_id)
+
+    def _remember_recent_chunk_bytes(
+        self,
+        chunk_id: str,
+        checksum: str,
+        chunk_data: bytes,
+        entry_signature: Tuple[str, int, int, int, str, str],
+        pack_signature: Tuple[int, int],
+    ) -> None:
+        """
+        Store one recently produced or verified chunk payload in memory.
+
+        :param chunk_id: Internal chunk identifier
+        :type chunk_id: str
+        :param checksum: Internal chunk checksum
+        :type checksum: str
+        :param chunk_data: Logical chunk payload bytes
+        :type chunk_data: bytes
+        :return: ``None``.
+        :rtype: None
+        """
+
+        payload = bytes(chunk_data)
+        existing = self._recent_chunk_cache.pop(str(chunk_id), None)
+        if existing is not None:
+            self._recent_chunk_cache_bytes -= len(existing[1])
+        self._recent_chunk_cache[str(chunk_id)] = (
+            str(checksum),
+            payload,
+            tuple(entry_signature),
+            tuple(pack_signature),
+        )
+        self._recent_chunk_cache_bytes += len(payload)
+        while self._recent_chunk_cache_bytes > RECENT_CHUNK_CACHE_MAX_BYTES and self._recent_chunk_cache:
+            _evicted_chunk_id, (_evicted_checksum, evicted_payload, _entry_signature, _pack_signature) = (
+                self._recent_chunk_cache.popitem(last=False)
+            )
+            self._recent_chunk_cache_bytes -= len(evicted_payload)
+
+    def _recent_chunk_view(
+        self,
+        chunk_id: str,
+        expected_checksum: str,
+        entry: IndexEntry,
+        chunk_context: Dict[str, object],
+    ) -> Optional[memoryview]:
+        """
+        Return a cached recent chunk payload when it still matches the request.
+
+        :param chunk_id: Internal chunk identifier
+        :type chunk_id: str
+        :param expected_checksum: Expected internal chunk checksum
+        :type expected_checksum: str
+        :param entry: Visible chunk index entry
+        :type entry: IndexEntry
+        :param chunk_context: Reusable chunk read context
+        :type chunk_context: Dict[str, object]
+        :return: Cached chunk payload view, or ``None```
+        :rtype: Optional[memoryview]
+        """
+
+        cached = self._recent_chunk_cache.get(str(chunk_id))
+        if cached is None:
+            return None
+        cached_checksum, cached_payload, cached_entry_signature, cached_pack_signature = cached
+        current_entry_signature = self._chunk_cache_entry_signature(entry)
+        if (
+            str(cached_checksum) != str(expected_checksum)
+            or len(cached_payload) != int(entry.logical_size)
+            or tuple(cached_entry_signature) != current_entry_signature
+        ):
+            self._recent_chunk_cache.pop(str(chunk_id), None)
+            self._recent_chunk_cache_bytes -= len(cached_payload)
+            return None
+        try:
+            current_pack_signature = self._pack_state_signature(
+                chunk_context["pack_store"].pack_path(entry.pack_id)
+            )
+        except OSError:
+            self._recent_chunk_cache.pop(str(chunk_id), None)
+            self._recent_chunk_cache_bytes -= len(cached_payload)
+            return None
+        if tuple(cached_pack_signature) != current_pack_signature:
+            self._recent_chunk_cache.pop(str(chunk_id), None)
+            self._recent_chunk_cache_bytes -= len(cached_payload)
+            return None
+        self._recent_chunk_cache.move_to_end(str(chunk_id))
+        return memoryview(cached_payload)
+
+    @staticmethod
+    def _release_chunk_view(chunk_view: object) -> None:
+        """
+        Release a temporary chunk view when the underlying object supports it.
+
+        :param chunk_view: Bytes-like view returned from one chunk read
+        :type chunk_view: object
+        :return: ``None``.
+        :rtype: None
+        """
+
+        release = getattr(chunk_view, "release", None)
+        if release is not None:
+            release()
+
+    def _close_chunk_read_context(self, chunk_context: Dict[str, object]) -> None:
+        """
+        Close any open pack readers held by one chunk read context.
+
+        :param chunk_context: Reusable chunk read context
+        :type chunk_context: Dict[str, object]
+        :return: ``None``.
+        :rtype: None
+        """
+
+        open_packs = chunk_context.get("open_packs", {})
+        for file_, _pack_size, mapped in open_packs.values():
+            if mapped is not None:
+                mapped.close()
+            file_.close()
+
+    def _read_pack_view_cached(
+        self,
+        chunk_context: Dict[str, object],
+        pack_id: str,
+        offset: int,
+        stored_size: int,
+    ) -> memoryview:
+        """
+        Read one pack range through a reusable pack reader context.
+
+        :param chunk_context: Reusable chunk read context
+        :type chunk_context: Dict[str, object]
+        :param pack_id: Pack identifier
+        :type pack_id: str
+        :param offset: Absolute byte offset inside the pack
+        :type offset: int
+        :param stored_size: Stored chunk size in bytes
+        :type stored_size: int
+        :return: Read-only chunk view
+        :rtype: memoryview
+        :raises IntegrityError: Raised when the pack is missing or truncated.
+        """
+
+        open_packs = chunk_context["open_packs"]
+        pack_store = chunk_context["pack_store"]
+        cached = open_packs.get(pack_id)
+        if cached is None:
+            pack_path = pack_store.pack_path(pack_id)
+            if not pack_path.exists():
+                raise IntegrityError("pack not found: %s" % pack_id)
+            file_ = pack_path.open("rb")
+            magic = file_.read(len(PACK_MAGIC))
+            if magic != PACK_MAGIC:
+                file_.close()
+                raise IntegrityError("invalid pack header: %s" % pack_id)
+            pack_size = pack_path.stat().st_size
+            mapped = None
+            try:
+                mapped = mmap.mmap(file_.fileno(), 0, access=mmap.ACCESS_READ)
+            except (BufferError, OSError, ValueError):
+                mapped = None
+            cached = (file_, pack_size, mapped)
+            open_packs[pack_id] = cached
+        file_, pack_size, mapped = cached
+        if offset < len(PACK_MAGIC):
+            raise IntegrityError("range overlaps pack header: %s" % pack_id)
+        if offset + stored_size > pack_size:
+            raise IntegrityError("pack truncated: %s" % pack_id)
+        if mapped is not None:
+            return memoryview(mapped)[offset:offset + stored_size]
+        if hasattr(os, "pread"):
+            data = os.pread(file_.fileno(), stored_size, offset)
+        else:
+            file_.seek(offset)
+            data = file_.read(stored_size)
+        if len(data) != stored_size:
+            raise IntegrityError("pack truncated: %s" % pack_id)
+        return memoryview(data)
+
+    @staticmethod
+    def _chunk_verified_state_matches(entry: IndexEntry, verified_state: Optional[Tuple[int, str]]) -> bool:
+        """
+        Return whether cached verified chunk metadata still matches one entry.
+
+        :param entry: Visible chunk index entry
+        :type entry: IndexEntry
+        :param verified_state: Cached ``(logical_size, checksum)`` pair
+        :type verified_state: Optional[Tuple[int, str]]
+        :return: Whether the cached verification state still matches
+        :rtype: bool
+        """
+
+        if verified_state is None:
+            return False
+        return (
+            int(verified_state[0]) == int(entry.logical_size)
+            and str(verified_state[1]) == str(entry.checksum)
+        )
+
+    def _read_verified_chunk_view(
+        self,
+        entry: IndexEntry,
+        expected_checksum: str,
+        chunk_context: Dict[str, object],
+    ) -> memoryview:
+        """
+        Read one chunk payload and verify its checksum against the expected ID.
+
+        :param entry: Visible chunk index entry
+        :type entry: IndexEntry
+        :param expected_checksum: Expected internal checksum string
+        :type expected_checksum: str
+        :param chunk_context: Reusable chunk read context
+        :type chunk_context: Dict[str, object]
+        :return: Verified chunk payload view
+        :rtype: memoryview
+        :raises IntegrityError: Raised when chunk metadata or pack bytes do not
+            match the recorded checksum.
+        """
+
+        if entry.compression != "none":
+            raise IntegrityError("unsupported chunk compression: %s" % entry.compression)
+        if chunk_context.get("allow_recent_cache", True):
+            recent_view = self._recent_chunk_view(
+                str(entry.chunk_id),
+                str(expected_checksum),
+                entry,
+                chunk_context,
+            )
+            if recent_view is not None:
+                verified_chunks = chunk_context.get("verified_chunks")
+                if isinstance(verified_chunks, dict):
+                    verified_chunks[str(entry.chunk_id)] = (int(entry.logical_size), str(entry.checksum))
+                return recent_view
+
+        chunk_view = self._read_pack_view_cached(
+            chunk_context,
+            entry.pack_id,
+            entry.offset,
+            entry.stored_size,
+        )
+        try:
+            if len(chunk_view) != entry.logical_size:
+                raise IntegrityError("chunk size mismatch")
+            checksum = OBJECT_HASH + ":" + _sha256_hex(chunk_view)
+            if checksum != str(expected_checksum):
+                raise IntegrityError("chunk checksum mismatch")
+            if str(entry.checksum) != str(expected_checksum):
+                raise IntegrityError("chunk index checksum mismatch")
+            if chunk_context.get("allow_recent_cache", True):
+                pack_path = chunk_context["pack_store"].pack_path(entry.pack_id)
+                self._remember_recent_chunk_bytes(
+                    str(entry.chunk_id),
+                    str(expected_checksum),
+                    chunk_view,
+                    self._chunk_cache_entry_signature(entry),
+                    self._pack_state_signature(pack_path),
+                )
+            verified_chunks = chunk_context.get("verified_chunks")
+            if isinstance(verified_chunks, dict):
+                verified_chunks[str(entry.chunk_id)] = (int(entry.logical_size), str(entry.checksum))
+            return chunk_view
+        except BaseException:
+            self._release_chunk_view(chunk_view)
+            raise
+
+    def _verify_chunk_storage_entry(self, entry: IndexEntry, chunk_context: Dict[str, object]) -> None:
+        """
+        Verify one visible chunk index entry through the current pack context.
+
+        :param entry: Visible chunk index entry
+        :type entry: IndexEntry
+        :param chunk_context: Reusable chunk read context
+        :type chunk_context: Dict[str, object]
+        :return: ``None``.
+        :rtype: None
+        """
+
+        verified_chunks = chunk_context.get("verified_chunks")
+        if isinstance(verified_chunks, dict):
+            cached_state = verified_chunks.get(str(entry.chunk_id))
+            if self._chunk_verified_state_matches(entry, cached_state):
+                return
+        chunk_view = self._read_verified_chunk_view(entry, str(entry.checksum), chunk_context)
+        self._release_chunk_view(chunk_view)
+
+    def _remember_recent_object_payload(
+        self,
+        object_type: str,
+        object_id: str,
+        payload: object,
+        path: Path,
+    ) -> None:
+        """
+        Store one recently written or read JSON payload with file-state guards.
+
+        :param object_type: Stored object collection name
+        :type object_type: str
+        :param object_id: Object identifier
+        :type object_id: str
+        :param payload: Decoded logical payload
+        :type payload: object
+        :param path: Current filesystem path of the JSON container
+        :type path: pathlib.Path
+        :return: ``None``.
+        :rtype: None
+        """
+
+        if not isinstance(payload, dict):
+            return
+        cache_key = "%s:%s" % (str(object_type), str(object_id))
+        self._recent_object_payload_cache.pop(cache_key, None)
+        self._recent_object_payload_cache[cache_key] = (
+            dict(payload),
+            self._pack_state_signature(path),
+        )
+        while len(self._recent_object_payload_cache) > RECENT_OBJECT_PAYLOAD_CACHE_MAX_ENTRIES:
+            self._recent_object_payload_cache.popitem(last=False)
+
+    def _recent_object_payload(self, object_type: str, object_id: str, path: Path) -> Optional[Dict[str, object]]:
+        """
+        Return one cached JSON payload when the object file is unchanged.
+
+        :param object_type: Stored object collection name
+        :type object_type: str
+        :param object_id: Object identifier
+        :type object_id: str
+        :param path: Current filesystem path of the JSON container
+        :type path: pathlib.Path
+        :return: Cached logical payload, or ``None`` if not reusable
+        :rtype: Optional[Dict[str, object]]
+        """
+
+        cache_key = "%s:%s" % (str(object_type), str(object_id))
+        cached = self._recent_object_payload_cache.get(cache_key)
+        if cached is None:
+            return None
+        cached_payload, cached_signature = cached
+        try:
+            current_signature = self._pack_state_signature(path)
+        except OSError:
+            self._recent_object_payload_cache.pop(cache_key, None)
+            return None
+        if tuple(cached_signature) != current_signature:
+            self._recent_object_payload_cache.pop(cache_key, None)
+            return None
+        self._recent_object_payload_cache.move_to_end(cache_key)
+        return dict(cached_payload)
+
     def _read_chunked_file_bytes(self, file_payload: Dict[str, object]) -> bytes:
         """
         Reconstruct a chunked file from pack storage.
@@ -2553,20 +2992,44 @@ class RepositoryBackend(object):
             file-level checksums do not match.
         """
 
-        data = self._read_chunked_file_range(
-            file_payload,
-            start=0,
-            length=int(file_payload["logical_size"]),
-        )
-        data_sha256 = _sha256_hex(data)
+        logical_size = int(file_payload["logical_size"])
+        file_hasher = sha256()
+        data = bytearray(logical_size)
+        write_offset = 0
+        chunk_context = self._new_chunk_read_context(track_verified_chunks=True)
+        try:
+            visible_entries = chunk_context["visible_entries"]
+            for raw_chunk in file_payload.get("chunks", []):
+                chunk_id = str(raw_chunk["chunk_id"])
+                chunk_size = int(raw_chunk["logical_size"])
+                expected_checksum = _integrity_sha256(str(raw_chunk["checksum"]))
+                entry = visible_entries.get(chunk_id)
+                if entry is None:
+                    raise IntegrityError("chunk missing from index: %s" % chunk_id)
+                if entry.logical_size != chunk_size:
+                    raise IntegrityError("chunk logical size mismatch")
+                chunk_view = self._read_verified_chunk_view(entry, expected_checksum, chunk_context)
+                try:
+                    file_hasher.update(chunk_view)
+                    data[write_offset:write_offset + chunk_size] = chunk_view
+                    write_offset += chunk_size
+                finally:
+                    self._release_chunk_view(chunk_view)
+        finally:
+            self._close_chunk_read_context(chunk_context)
+
+        if write_offset != logical_size:
+            raise IntegrityError("file logical size mismatch")
+
+        data_sha256 = file_hasher.hexdigest()
         if data_sha256 != _public_sha256_hex(str(file_payload["sha256"])):
             raise IntegrityError("file sha256 mismatch")
-        expected_oid = chunk_git_blob_oid(canonical_lfs_pointer(data_sha256, len(data)))
+        expected_oid = chunk_git_blob_oid(canonical_lfs_pointer(data_sha256, logical_size))
         if expected_oid != str(file_payload["oid"]):
             raise IntegrityError("file oid mismatch")
         if str(file_payload["etag"]) != data_sha256:
             raise IntegrityError("file etag mismatch")
-        return data
+        return bytes(data)
 
     def _read_chunked_file_range(
         self,
@@ -2594,10 +3057,8 @@ class RepositoryBackend(object):
             return b""
 
         end = min(logical_size, start + length)
-        manifest = IndexStore(self._repo_path / "chunks" / "index").read_manifest()
-        index_store = IndexStore(self._repo_path / "chunks" / "index")
-        pack_store = PackStore(self._repo_path / "chunks" / "packs")
-        visible_entries = index_store.visible_entries(manifest=manifest)
+        chunk_context = self._new_chunk_read_context(track_verified_chunks=False)
+        visible_entries = chunk_context["visible_entries"]
         overlapping_chunks = []
         for raw_chunk in file_payload.get("chunks", []):
             chunk_offset = int(raw_chunk["logical_offset"])
@@ -2607,34 +3068,8 @@ class RepositoryBackend(object):
                 continue
             overlapping_chunks.append((raw_chunk, chunk_offset, chunk_size, chunk_end))
 
-        open_packs = {}
-
-        def _read_pack_range_cached(pack_id: str, offset: int, stored_size: int) -> bytes:
-            cached = open_packs.get(pack_id)
-            if cached is None:
-                pack_path = pack_store.pack_path(pack_id)
-                if not pack_path.exists():
-                    raise IntegrityError("pack not found: %s" % pack_id)
-                file_ = pack_path.open("rb")
-                magic = file_.read(len(PACK_MAGIC))
-                if magic != PACK_MAGIC:
-                    file_.close()
-                    raise IntegrityError("invalid pack header: %s" % pack_id)
-                pack_size = pack_path.stat().st_size
-                cached = (file_, pack_size)
-                open_packs[pack_id] = cached
-            file_, pack_size = cached
-            if offset < len(PACK_MAGIC):
-                raise IntegrityError("range overlaps pack header: %s" % pack_id)
-            if offset + stored_size > pack_size:
-                raise IntegrityError("pack truncated: %s" % pack_id)
-            file_.seek(offset)
-            data = file_.read(stored_size)
-            if len(data) != stored_size:
-                raise IntegrityError("pack truncated: %s" % pack_id)
-            return data
-
-        parts = bytearray()
+        parts = bytearray(end - start)
+        write_offset = 0
         try:
             for raw_chunk, chunk_offset, chunk_size, chunk_end in overlapping_chunks:
                 chunk_id = str(raw_chunk["chunk_id"])
@@ -2643,23 +3078,23 @@ class RepositoryBackend(object):
                     raise IntegrityError("chunk missing from index: %s" % chunk_id)
                 if entry.logical_size != chunk_size:
                     raise IntegrityError("chunk logical size mismatch")
-                chunk_data = _read_pack_range_cached(entry.pack_id, entry.offset, entry.stored_size)
-                if entry.compression != "none":
-                    raise IntegrityError("unsupported chunk compression: %s" % entry.compression)
-                if len(chunk_data) != chunk_size:
-                    raise IntegrityError("chunk size mismatch")
-                chunk_checksum = OBJECT_HASH + ":" + _sha256_hex(chunk_data)
-                if chunk_checksum != _integrity_sha256(str(raw_chunk["checksum"])):
-                    raise IntegrityError("chunk checksum mismatch")
-                if entry.checksum != _integrity_sha256(str(raw_chunk["checksum"])):
-                    raise IntegrityError("chunk index checksum mismatch")
-
+                chunk_view = self._read_verified_chunk_view(
+                    entry,
+                    _integrity_sha256(str(raw_chunk["checksum"])),
+                    chunk_context,
+                )
                 local_start = max(start, chunk_offset) - chunk_offset
                 local_end = min(end, chunk_end) - chunk_offset
-                parts.extend(chunk_data[local_start:local_end])
+                chunk_slice = chunk_view[local_start:local_end]
+                try:
+                    slice_size = local_end - local_start
+                    parts[write_offset:write_offset + slice_size] = chunk_slice
+                    write_offset += slice_size
+                finally:
+                    self._release_chunk_view(chunk_slice)
+                    self._release_chunk_view(chunk_view)
         finally:
-            for file_, _pack_size in open_packs.values():
-                file_.close()
+            self._close_chunk_read_context(chunk_context)
 
         return bytes(parts)
 
@@ -3690,73 +4125,91 @@ class RepositoryBackend(object):
 
         ref_targets = self._ref_targets_unlocked()
         checked_refs.extend(sorted(ref_targets))
-        for ref_name, head in sorted(ref_targets.items()):
-            if head is None:
-                continue
-            try:
-                self._verify_commit_closure(head)
-            except IntegrityError as err:
-                errors.append("%s: %s" % (ref_name, err))
-
-        for object_type in ("commits", "trees", "files", "blobs"):
-            for object_id in self._iter_object_ids_unlocked(object_type):
-                try:
-                    self._verify_object_container_unlocked(object_type, object_id)
-                except IntegrityError as err:
-                    errors.append("%s %s: %s" % (object_type[:-1], object_id, err))
-
+        chunk_context = self._new_chunk_read_context(track_verified_chunks=True, allow_recent_cache=False)
+        verified_commits = set()
+        verified_trees = set()
+        verified_files = set()
         try:
-            manifest = IndexStore(self._repo_path / "chunks" / "index").read_manifest()
-            pack_store = PackStore(self._repo_path / "chunks" / "packs")
-            index_store = IndexStore(self._repo_path / "chunks" / "index")
-            for level in ("L0", "L1", "L2"):
-                for segment_name in manifest.levels.get(level, tuple()):
-                    entries = index_store.load_segment(level, segment_name)
-                    for entry in entries:
-                        chunk_data = pack_store.read_chunk(
-                            PackChunkLocation(
-                                pack_id=entry.pack_id,
-                                offset=entry.offset,
-                                stored_size=entry.stored_size,
-                                logical_size=entry.logical_size,
-                            )
-                        )
-                        if entry.compression != "none":
-                            raise IntegrityError("unsupported chunk compression: %s" % entry.compression)
-                        if len(chunk_data) != entry.logical_size:
-                            raise IntegrityError("chunk size mismatch")
-                        checksum = OBJECT_HASH + ":" + _sha256_hex(chunk_data)
-                        if checksum != entry.checksum:
-                            raise IntegrityError("chunk checksum mismatch")
-        except IntegrityError as err:
-            errors.append("chunk storage: %s" % err)
+            for ref_name, head in sorted(ref_targets.items()):
+                if head is None:
+                    continue
+                try:
+                    self._verify_commit_closure(
+                        head,
+                        verified_commits=verified_commits,
+                        verified_trees=verified_trees,
+                        verified_files=verified_files,
+                        chunk_context=chunk_context,
+                    )
+                except IntegrityError as err:
+                    errors.append("%s: %s" % (ref_name, err))
 
-        for view_meta_path in sorted((self._repo_path / "cache" / "views" / "files").glob("*.json")):
-            try:
-                view_meta = _read_json(view_meta_path)
-                target_path = self._repo_path / str(view_meta["target_path"])
-                if target_path.exists():
-                    data_sha256 = _sha256_hex(target_path.read_bytes())
-                    if data_sha256 != _public_sha256_hex(str(view_meta["sha256"])):
-                        warnings.append("stale file view: %s" % view_meta_path.name)
-            except (AttributeError, KeyError, OSError, TypeError, ValueError) as err:  # pragma: no cover
-                warnings.append("failed to inspect file view %s: %s" % (view_meta_path.name, err))
+            for object_type in ("commits", "trees", "files", "blobs"):
+                for object_id in self._iter_object_ids_unlocked(object_type):
+                    try:
+                        self._verify_object_container_unlocked(object_type, object_id)
+                    except IntegrityError as err:
+                        errors.append("%s %s: %s" % (object_type[:-1], object_id, err))
 
-        for view_meta_path in sorted((self._repo_path / "cache" / "views" / "snapshots").glob("*.json")):
             try:
-                view_meta = _read_json(view_meta_path)
-                target_root = self._repo_path / str(view_meta["target_path"])
-                for file_info in view_meta.get("files", []):
-                    target_path = target_root / str(file_info["path"])
-                    if not target_path.exists():
-                        warnings.append("stale snapshot view: %s" % view_meta_path.name)
-                        break
-                    data_sha256 = _sha256_hex(target_path.read_bytes())
-                    if data_sha256 != str(file_info["sha256"]):
-                        warnings.append("stale snapshot view: %s" % view_meta_path.name)
-                        break
-            except (AttributeError, KeyError, OSError, TypeError, ValueError) as err:  # pragma: no cover
-                warnings.append("failed to inspect snapshot view %s: %s" % (view_meta_path.name, err))
+                manifest = chunk_context["manifest"]
+                index_store = chunk_context["index_store"]
+                for level in ("L0", "L1", "L2"):
+                    for segment_name in manifest.levels.get(level, tuple()):
+                        entries = index_store.load_segment(level, segment_name)
+                        for entry in entries:
+                            self._verify_chunk_storage_entry(entry, chunk_context)
+            except IntegrityError as err:
+                errors.append("chunk storage: %s" % err)
+
+            for view_meta_path in sorted((self._repo_path / "cache" / "views" / "files").glob("*.json")):
+                try:
+                    view_meta = _read_json(view_meta_path)
+                    target_path = self._repo_path / str(view_meta["target_path"])
+                    try:
+                        expected_size = int(view_meta["size"])
+                    except (KeyError, TypeError, ValueError):
+                        expected_size = -1
+                    if target_path.exists():
+                        if expected_size >= 0 and self._detached_file_matches_metadata(
+                            target_path,
+                            size=expected_size,
+                            view_mtime_ns=view_meta.get("view_mtime_ns"),
+                        ):
+                            continue
+                        data_sha256 = _sha256_hex(target_path.read_bytes())
+                        if data_sha256 != _public_sha256_hex(str(view_meta["sha256"])):
+                            warnings.append("stale file view: %s" % view_meta_path.name)
+                except (AttributeError, KeyError, OSError, TypeError, ValueError) as err:  # pragma: no cover
+                    warnings.append("failed to inspect file view %s: %s" % (view_meta_path.name, err))
+
+            for view_meta_path in sorted((self._repo_path / "cache" / "views" / "snapshots").glob("*.json")):
+                try:
+                    view_meta = _read_json(view_meta_path)
+                    target_root = self._repo_path / str(view_meta["target_path"])
+                    for file_info in view_meta.get("files", []):
+                        target_path = target_root / str(file_info["path"])
+                        try:
+                            expected_size = int(file_info["size"])
+                        except (KeyError, TypeError, ValueError):
+                            expected_size = -1
+                        if not target_path.exists():
+                            warnings.append("stale snapshot view: %s" % view_meta_path.name)
+                            break
+                        if expected_size >= 0 and self._detached_file_matches_metadata(
+                            target_path,
+                            size=expected_size,
+                            view_mtime_ns=file_info.get("view_mtime_ns"),
+                        ):
+                            continue
+                        data_sha256 = _sha256_hex(target_path.read_bytes())
+                        if data_sha256 != str(file_info["sha256"]):
+                            warnings.append("stale snapshot view: %s" % view_meta_path.name)
+                            break
+                except (AttributeError, KeyError, OSError, TypeError, ValueError) as err:  # pragma: no cover
+                    warnings.append("failed to inspect snapshot view %s: %s" % (view_meta_path.name, err))
+        finally:
+            self._close_chunk_read_context(chunk_context)
 
         txn_root = self._repo_path / "txn"
         if txn_root.exists():
@@ -4774,6 +5227,9 @@ class RepositoryBackend(object):
             >>> backend._ensure_layout()  # doctest: +SKIP
         """
 
+        manifest_path = self._repo_path / "chunks" / "index" / "MANIFEST"
+        if self._layout_ensured and self._repo_lock_path.parent.is_dir() and manifest_path.is_file():
+            return
         for relative in [
             "refs/heads",
             "refs/tags",
@@ -4800,9 +5256,9 @@ class RepositoryBackend(object):
             "chunks/index/L2",
         ]:
             (self._repo_path / relative).mkdir(parents=True, exist_ok=True)
-        manifest_path = self._repo_path / "chunks" / "index" / "MANIFEST"
         if not manifest_path.exists():
             IndexStore(self._repo_path / "chunks" / "index").write_manifest(IndexManifest.empty())
+        self._layout_ensured = True
 
     def _ensure_repo(self) -> None:
         """
@@ -5260,6 +5716,7 @@ class RepositoryBackend(object):
         path = self._stage_object_json_path(txdir, object_type, object_id)
         if not path.exists():
             _write_bytes_atomic(path, container_bytes)
+        self._remember_recent_object_payload(object_type, object_id, payload, path)
         return object_id
 
     def _stage_blob_object(self, txdir: Path, payload: object, data: bytes) -> str:
@@ -5386,10 +5843,15 @@ class RepositoryBackend(object):
             path = self._object_json_path(object_type, object_id)
         if not path.exists():
             raise RevisionNotFoundError("object not found: %s" % object_id)
+        cached_payload = self._recent_object_payload(object_type, object_id, path)
+        if cached_payload is not None:
+            return cached_payload
         container = _read_json(path)
         if not isinstance(container, dict) or "payload" not in container:
             raise IntegrityError("invalid object container")
-        return dict(container["payload"])
+        payload = dict(container["payload"])
+        self._remember_recent_object_payload(object_type, object_id, payload, path)
+        return payload
 
     def _snapshot_for_revision(self, revision: str) -> Dict[str, str]:
         """
@@ -5911,24 +6373,26 @@ class RepositoryBackend(object):
             new_chunk_ids.add(part.descriptor.chunk_id)
 
         index_entries = []
+        staged_recent_entries = {}
         file_chunks = []
         if new_parts:
             pack_id = self._next_pack_id(txdir)
             pack_store = PackStore(txdir / "chunks" / "packs")
             pack_result = pack_store.write_pack(pack_id, [part.data for part in new_parts])
+            pack_signature = self._pack_state_signature(Path(pack_result.pack_path))
             for part, location in zip(new_parts, pack_result.chunks):
                 descriptor = part.descriptor
-                index_entries.append(
-                    IndexEntry(
-                        chunk_id=descriptor.chunk_id,
-                        pack_id=location.pack_id,
-                        offset=location.offset,
-                        stored_size=location.stored_size,
-                        logical_size=descriptor.logical_size,
-                        compression=descriptor.compression,
-                        checksum=descriptor.checksum,
-                    )
+                entry = IndexEntry(
+                    chunk_id=descriptor.chunk_id,
+                    pack_id=location.pack_id,
+                    offset=location.offset,
+                    stored_size=location.stored_size,
+                    logical_size=descriptor.logical_size,
+                    compression=descriptor.compression,
+                    checksum=descriptor.checksum,
                 )
+                index_entries.append(entry)
+                staged_recent_entries[str(descriptor.chunk_id)] = (entry, pack_signature)
 
         for part in chunk_plan.parts:
             descriptor = part.descriptor
@@ -5961,6 +6425,24 @@ class RepositoryBackend(object):
             "content_object_id": None,
             "chunks": file_chunks,
         }
+        for part in chunk_plan.parts:
+            cached_entry = visible_index.get(part.descriptor.chunk_id)
+            pack_signature = None
+            if cached_entry is None:
+                staged_recent = staged_recent_entries.get(str(part.descriptor.chunk_id))
+                if staged_recent is None:
+                    continue
+                cached_entry, pack_signature = staged_recent
+            if pack_signature is None:
+                pack_path = self._chunk_pack_path_for_cache(cached_entry.pack_id, txdir=txdir)
+                pack_signature = self._pack_state_signature(pack_path)
+            self._remember_recent_chunk_bytes(
+                part.descriptor.chunk_id,
+                part.descriptor.checksum,
+                part.data,
+                self._chunk_cache_entry_signature(cached_entry),
+                pack_signature,
+            )
         file_object_id = self._stage_json_object(txdir, "files", file_payload)
         return None, file_object_id, file_payload
 
@@ -6441,7 +6923,14 @@ class RepositoryBackend(object):
         body = "\n".join(lines[1:]).lstrip("\n")
         return title, body
 
-    def _verify_commit_closure(self, commit_id: str) -> None:
+    def _verify_commit_closure(
+        self,
+        commit_id: str,
+        verified_commits: Optional[set] = None,
+        verified_trees: Optional[set] = None,
+        verified_files: Optional[set] = None,
+        chunk_context: Optional[Dict[str, object]] = None,
+    ) -> None:
         """
         Verify commit reachability and the transitive closure of parent links.
 
@@ -6458,23 +6947,37 @@ class RepositoryBackend(object):
             >>> backend._verify_commit_closure("sha256:" + "a" * 64)  # doctest: +SKIP
         """
 
+        if verified_commits is None:
+            verified_commits = set()
         visited = set()
         pending = [commit_id]
 
         while pending:
             current_commit_id = pending.pop()
-            if current_commit_id in visited:
+            if current_commit_id in visited or current_commit_id in verified_commits:
                 continue
             visited.add(current_commit_id)
             try:
                 commit_payload = self._read_object_payload("commits", current_commit_id)
                 tree_id = str(commit_payload["tree_id"])
-                self._verify_tree(tree_id)
+                self._verify_tree(
+                    tree_id,
+                    verified_trees=verified_trees,
+                    verified_files=verified_files,
+                    chunk_context=chunk_context,
+                )
                 pending.extend(str(parent_id) for parent_id in commit_payload.get("parents", []))
+                verified_commits.add(current_commit_id)
             except (FileNotFoundError, KeyError, TypeError, ValueError, RevisionNotFoundError) as err:
                 raise IntegrityError("invalid commit closure at %s: %s" % (current_commit_id, err))
 
-    def _verify_tree(self, tree_id: str) -> None:
+    def _verify_tree(
+        self,
+        tree_id: str,
+        verified_trees: Optional[set] = None,
+        verified_files: Optional[set] = None,
+        chunk_context: Optional[Dict[str, object]] = None,
+    ) -> None:
         """
         Verify a tree object and all referenced descendants.
 
@@ -6491,21 +6994,41 @@ class RepositoryBackend(object):
             >>> backend._verify_tree("sha256:" + "a" * 64)  # doctest: +SKIP
         """
 
+        if verified_trees is None:
+            verified_trees = set()
+        if tree_id in verified_trees:
+            return
+
         try:
             tree_payload = self._read_object_payload("trees", tree_id)
             for entry in tree_payload.get("entries", []):
                 entry_type = entry["entry_type"]
                 object_id = entry["object_id"]
                 if entry_type == "file":
-                    self._verify_file_object(object_id)
+                    self._verify_file_object(
+                        object_id,
+                        verified_files=verified_files,
+                        chunk_context=chunk_context,
+                    )
                 elif entry_type == "tree":
-                    self._verify_tree(object_id)
+                    self._verify_tree(
+                        object_id,
+                        verified_trees=verified_trees,
+                        verified_files=verified_files,
+                        chunk_context=chunk_context,
+                    )
                 else:
                     raise IntegrityError("unknown tree entry type")
+            verified_trees.add(tree_id)
         except (FileNotFoundError, KeyError, TypeError, ValueError, RevisionNotFoundError) as err:
             raise IntegrityError("invalid tree %s: %s" % (tree_id, err))
 
-    def _verify_file_object(self, file_object_id: str) -> None:
+    def _verify_file_object(
+        self,
+        file_object_id: str,
+        verified_files: Optional[set] = None,
+        chunk_context: Optional[Dict[str, object]] = None,
+    ) -> None:
         """
         Verify a file object and its referenced content.
 
@@ -6522,12 +7045,15 @@ class RepositoryBackend(object):
             >>> backend._verify_file_object("sha256:" + "a" * 64)  # doctest: +SKIP
         """
 
+        if verified_files is None:
+            verified_files = set()
+        if file_object_id in verified_files:
+            return
+
         try:
             payload = self._read_object_payload("files", file_object_id)
             if str(payload.get("storage_kind")) == "chunked":
-                data = self._read_chunked_file_bytes(payload)
-                if len(data) != int(payload["logical_size"]):
-                    raise IntegrityError("file logical size mismatch")
+                self._verify_chunked_file_payload(payload, chunk_context=chunk_context)
                 stored_pointer_size = payload.get("pointer_size")
                 if stored_pointer_size is not None:
                     expected_pointer_size = len(
@@ -6538,6 +7064,7 @@ class RepositoryBackend(object):
                     )
                     if int(stored_pointer_size) != expected_pointer_size:
                         raise IntegrityError("file pointer size mismatch")
+                verified_files.add(file_object_id)
                 return
 
             blob_object_id = str(payload["content_object_id"])
@@ -6553,8 +7080,64 @@ class RepositoryBackend(object):
                 raise IntegrityError("blob payload sha256 mismatch")
             if _git_blob_oid(data) != payload["oid"]:
                 raise IntegrityError("file oid mismatch")
+            verified_files.add(file_object_id)
         except (FileNotFoundError, KeyError, TypeError, ValueError, RevisionNotFoundError) as err:
             raise IntegrityError("invalid file object %s: %s" % (file_object_id, err))
+
+    def _verify_chunked_file_payload(
+        self,
+        file_payload: Dict[str, object],
+        chunk_context: Optional[Dict[str, object]] = None,
+    ) -> None:
+        """
+        Verify a chunked file payload without materializing its logical bytes.
+
+        :param file_payload: File object payload with ``storage_kind="chunked"``
+        :type file_payload: Dict[str, object]
+        :param chunk_context: Optional reusable chunk read context
+        :type chunk_context: Optional[Dict[str, object]]
+        :return: ``None``.
+        :rtype: None
+        :raises IntegrityError: Raised when chunk or file metadata is invalid.
+        """
+
+        owns_context = chunk_context is None
+        if chunk_context is None:
+            chunk_context = self._new_chunk_read_context(track_verified_chunks=True, allow_recent_cache=False)
+
+        file_hasher = sha256()
+        total_size = 0
+        try:
+            visible_entries = chunk_context["visible_entries"]
+            for raw_chunk in file_payload.get("chunks", []):
+                chunk_id = str(raw_chunk["chunk_id"])
+                chunk_size = int(raw_chunk["logical_size"])
+                expected_checksum = _integrity_sha256(str(raw_chunk["checksum"]))
+                entry = visible_entries.get(chunk_id)
+                if entry is None:
+                    raise IntegrityError("chunk missing from index: %s" % chunk_id)
+                if entry.logical_size != chunk_size:
+                    raise IntegrityError("chunk logical size mismatch")
+                chunk_view = self._read_verified_chunk_view(entry, expected_checksum, chunk_context)
+                try:
+                    file_hasher.update(chunk_view)
+                    total_size += len(chunk_view)
+                finally:
+                    self._release_chunk_view(chunk_view)
+
+            if total_size != int(file_payload["logical_size"]):
+                raise IntegrityError("file logical size mismatch")
+            data_sha256 = file_hasher.hexdigest()
+            if data_sha256 != _public_sha256_hex(str(file_payload["sha256"])):
+                raise IntegrityError("file sha256 mismatch")
+            expected_oid = chunk_git_blob_oid(canonical_lfs_pointer(data_sha256, total_size))
+            if expected_oid != str(file_payload["oid"]):
+                raise IntegrityError("file oid mismatch")
+            if str(file_payload["etag"]) != data_sha256:
+                raise IntegrityError("file etag mismatch")
+        finally:
+            if owns_context:
+                self._close_chunk_read_context(chunk_context)
 
     def _create_txdir(self, revision: str, expected_head: Optional[str]) -> Path:
         """

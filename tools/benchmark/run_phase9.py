@@ -1,6 +1,7 @@
 """Run the hubvault benchmark suite and emit a curated JSON summary."""
 
 import argparse
+import gc
 import json
 import math
 import os
@@ -10,9 +11,10 @@ import subprocess
 import sys
 import tempfile
 import time
+import tracemalloc
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Dict, List, Sequence
+from typing import Callable, Dict, List, Optional, Sequence
 
 from hubvault import HubVaultApi
 
@@ -46,6 +48,11 @@ from tools.benchmark.common import (
     snapshot_file_manifest,
     to_mib,
 )
+
+try:
+    import resource
+except ImportError:  # pragma: no cover - Windows does not provide resource.
+    resource = None
 
 
 def _percentile(samples: Sequence[float], percentile: float) -> float:
@@ -127,6 +134,116 @@ def _git_metadata() -> Dict[str, object]:
         "dirty": bool(dirty),
         "repo_root": str(repo_root),
     }
+
+
+def _read_proc_status_memory_bytes(field_name: str) -> int:
+    """Return one Linux ``/proc/self/status`` memory field in bytes."""
+
+    status_path = Path("/proc/self/status")
+    if not status_path.exists():
+        return 0
+    try:
+        lines = status_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return 0
+    prefix = str(field_name) + ":"
+    for line in lines:
+        if not line.startswith(prefix):
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            return 0
+        try:
+            return int(parts[1]) * 1024
+        except ValueError:
+            return 0
+    return 0
+
+
+def _ps_rss_bytes() -> int:
+    """Return the current process RSS in bytes through ``ps`` when available."""
+
+    try:
+        output = subprocess.check_output(
+            ["ps", "-o", "rss=", "-p", str(os.getpid())],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return 0
+    try:
+        return int(output.strip()) * 1024
+    except ValueError:
+        return 0
+
+
+def _windows_process_memory_bytes() -> Dict[str, int]:
+    """Return current and peak working-set bytes on Windows."""
+
+    if os.name != "nt":
+        return {"rss_bytes": 0, "peak_rss_bytes": 0}
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except ImportError:  # pragma: no cover - stdlib import should exist on Windows.
+        return {"rss_bytes": 0, "peak_rss_bytes": 0}
+
+    class _ProcessMemoryCounters(ctypes.Structure):
+        _fields_ = [
+            ("cb", wintypes.DWORD),
+            ("PageFaultCount", wintypes.DWORD),
+            ("PeakWorkingSetSize", ctypes.c_size_t),
+            ("WorkingSetSize", ctypes.c_size_t),
+            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+            ("PagefileUsage", ctypes.c_size_t),
+            ("PeakPagefileUsage", ctypes.c_size_t),
+        ]
+
+    counters = _ProcessMemoryCounters()
+    counters.cb = ctypes.sizeof(_ProcessMemoryCounters)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    psapi = ctypes.WinDLL("psapi", use_last_error=True)
+    process_handle = kernel32.GetCurrentProcess()
+    ok = psapi.GetProcessMemoryInfo(process_handle, ctypes.byref(counters), counters.cb)
+    if not ok:
+        return {"rss_bytes": 0, "peak_rss_bytes": 0}
+    return {
+        "rss_bytes": int(counters.WorkingSetSize),
+        "peak_rss_bytes": int(counters.PeakWorkingSetSize),
+    }
+
+
+def _current_rss_bytes() -> int:
+    """Return current resident memory bytes on the current platform."""
+
+    proc_value = _read_proc_status_memory_bytes("VmRSS")
+    if proc_value > 0:
+        return proc_value
+    windows_value = _windows_process_memory_bytes().get("rss_bytes", 0)
+    if windows_value > 0:
+        return windows_value
+    return _ps_rss_bytes()
+
+
+def _peak_rss_bytes() -> int:
+    """Return peak resident memory bytes on the current platform."""
+
+    proc_value = _read_proc_status_memory_bytes("VmHWM")
+    if proc_value > 0:
+        return proc_value
+    windows_value = _windows_process_memory_bytes().get("peak_rss_bytes", 0)
+    if windows_value > 0:
+        return windows_value
+    if resource is not None:
+        usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        if usage > 0:
+            if sys.platform.startswith("darwin"):
+                return int(usage)
+            return int(usage) * 1024
+    return _current_rss_bytes()
 
 
 def _dataset_shapes(config: Phase9BenchmarkConfig) -> Dict[str, Dict[str, object]]:
@@ -408,6 +525,49 @@ def _threshold_policy() -> Dict[str, object]:
     }
 
 
+def _memory_policy() -> Dict[str, object]:
+    """Return the current memory-observation semantics."""
+
+    return {
+        "observation_mode": "separate_subprocess_per_scenario",
+        "timing_isolated_from_memory_probe": True,
+        "metrics": {
+            "peak_rss_bytes": "Peak resident set / working set observed by the OS during one isolated scenario run.",
+            "peak_rss_over_baseline_bytes": "Peak resident set above the subprocess baseline RSS before the scenario starts.",
+            "retained_rss_delta_bytes": "Current RSS after one scenario run minus the subprocess baseline RSS; useful for spotting retained process growth.",
+            "peak_traced_bytes": "Peak traced Python heap reported by tracemalloc during one isolated scenario run.",
+            "retained_traced_bytes": "Traced Python allocations still live after the scenario finishes and an explicit gc.collect().",
+        },
+        "notes": [
+            "RSS / working-set metrics reflect whole-process memory, while tracemalloc covers Python-managed heap only.",
+            "Memory probes run in fresh subprocesses so peak RSS remains scenario-local instead of inheriting prior benchmark peaks.",
+        ],
+    }
+
+
+def _memory_observation_scenarios(scenario_set: str) -> List[str]:
+    """Return the scenarios that receive dedicated memory observation."""
+
+    full = [
+        "host_io_read_baseline",
+        "mixed_model_snapshot",
+        "large_read_range",
+        "hf_hub_download_cold",
+        "hf_hub_download_warm",
+        "cache_heavy_warm_download",
+        "history_deep_listing",
+        "verify_heavy_full_verify",
+    ]
+    pressure = [
+        "host_io_read_baseline",
+        "large_read_range",
+        "hf_hub_download_cold",
+        "hf_hub_download_warm",
+        "cache_heavy_warm_download",
+    ]
+    return pressure if str(scenario_set) == "pressure" else full
+
+
 def _round_metric(value: float) -> float:
     """Round metric values to the curated summary precision."""
 
@@ -524,6 +684,37 @@ def _measure_seconds(func: Callable[[], Dict[str, object]], rounds: int, warmup_
             statistics.pstdev(operations_samples) if len(operations_samples) > 1 else 0.0
         )
     return result
+
+
+def _measure_memory_observation(func: Callable[[], Dict[str, object]]) -> Dict[str, object]:
+    """Measure one scenario in memory-observation mode."""
+
+    gc.collect()
+    baseline_rss_bytes = _current_rss_bytes()
+    tracemalloc.start(1)
+    if hasattr(tracemalloc, "reset_peak"):
+        tracemalloc.reset_peak()
+    started = time.perf_counter()
+    metrics = dict(func() or {})
+    finished = time.perf_counter()
+    gc.collect()
+    retained_traced_bytes, peak_traced_bytes = tracemalloc.get_traced_memory()
+    tracemalloc_overhead_bytes = tracemalloc.get_tracemalloc_memory()
+    tracemalloc.stop()
+    current_rss_bytes = _current_rss_bytes()
+    peak_rss_bytes = _peak_rss_bytes()
+    return {
+        "observed_seconds": _round_metric(finished - started),
+        "processed_bytes": int(metrics.get("processed_bytes", 0)),
+        "operation_count": int(metrics.get("operation_count", 0)),
+        "peak_rss_bytes": int(peak_rss_bytes),
+        "peak_rss_over_baseline_bytes": int(max(0, peak_rss_bytes - baseline_rss_bytes)),
+        "retained_rss_delta_bytes": int(current_rss_bytes - baseline_rss_bytes),
+        "peak_traced_bytes": int(peak_traced_bytes),
+        "retained_traced_bytes": int(retained_traced_bytes),
+        "tracemalloc_overhead_bytes": int(tracemalloc_overhead_bytes),
+        "dataset_family": metrics.get("dataset_family", ""),
+    }
 
 
 def _small_batch_commit_scenario(workspace_root: Path, config: Phase9BenchmarkConfig) -> Dict[str, object]:
@@ -874,6 +1065,31 @@ def _build_category_summaries(results: Dict[str, Dict[str, object]]) -> Dict[str
             for row in rows
             if "space_amplification_unique_after_gc" in row.get("metrics", {})
         ]
+        peak_rss_values = [
+            float(row.get("memory_observation", {}).get("peak_rss_bytes", 0.0))
+            for row in rows
+            if "peak_rss_bytes" in row.get("memory_observation", {})
+        ]
+        peak_rss_over_baseline_values = [
+            float(row.get("memory_observation", {}).get("peak_rss_over_baseline_bytes", 0.0))
+            for row in rows
+            if "peak_rss_over_baseline_bytes" in row.get("memory_observation", {})
+        ]
+        retained_rss_values = [
+            float(row.get("memory_observation", {}).get("retained_rss_delta_bytes", 0.0))
+            for row in rows
+            if "retained_rss_delta_bytes" in row.get("memory_observation", {})
+        ]
+        peak_traced_values = [
+            float(row.get("memory_observation", {}).get("peak_traced_bytes", 0.0))
+            for row in rows
+            if "peak_traced_bytes" in row.get("memory_observation", {})
+        ]
+        retained_traced_values = [
+            float(row.get("memory_observation", {}).get("retained_traced_bytes", 0.0))
+            for row in rows
+            if "retained_traced_bytes" in row.get("memory_observation", {})
+        ]
         summary = {
             "scenario_count": len(names),
             "scenarios": names,
@@ -897,34 +1113,45 @@ def _build_category_summaries(results: Dict[str, Dict[str, object]]) -> Dict[str
             summary["median_space_amplification_live_after_gc"] = _round_metric(_median_or_zero(live_space_amps))
         if unique_space_amps:
             summary["median_space_amplification_unique_after_gc"] = _round_metric(_median_or_zero(unique_space_amps))
+        if peak_rss_values:
+            summary["median_peak_rss_bytes"] = int(_median_or_zero(peak_rss_values))
+        if peak_rss_over_baseline_values:
+            summary["median_peak_rss_over_baseline_bytes"] = int(_median_or_zero(peak_rss_over_baseline_values))
+        if retained_rss_values:
+            summary["median_retained_rss_delta_bytes"] = int(_median_or_zero(retained_rss_values))
+        if peak_traced_values:
+            summary["median_peak_traced_bytes"] = int(_median_or_zero(peak_traced_values))
+        if retained_traced_values:
+            summary["median_retained_traced_bytes"] = int(_median_or_zero(retained_traced_values))
         category_summaries[category] = summary
     return category_summaries
 
 
+def _run_memory_probe(scale: str, scenario_name: str) -> Dict[str, object]:
+    """Run one scenario in a fresh subprocess and return its memory observation."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    command = [
+        sys.executable,
+        "-m",
+        "tools.benchmark.run_phase9",
+        "--scale",
+        str(scale),
+        "--probe-scenario",
+        str(scenario_name),
+    ]
+    output = subprocess.check_output(
+        command,
+        cwd=str(repo_root),
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    payload = json.loads(output)
+    return dict(payload.get("memory_observation", {}))
+
+
 def main() -> int:
     """Run the benchmark suite."""
-
-    parser = argparse.ArgumentParser(description="Run the hubvault benchmark suite.")
-    parser.add_argument(
-        "--scale",
-        default="standard",
-        choices=("smoke", "standard", "nightly", "stress", "pressure"),
-    )
-    parser.add_argument(
-        "--scenario-set",
-        default="full",
-        choices=("full", "pressure"),
-        help="Choose the full benchmark suite or the large-file pressure subset.",
-    )
-    parser.add_argument("--rounds", type=int, default=None, help="Override the configured benchmark rounds.")
-    parser.add_argument("--warmup-rounds", type=int, default=None, help="Override warmup rounds.")
-    parser.add_argument("--output", default=None, help="Optional summary JSON output path.")
-    parser.add_argument("--manifest-output", default=None, help="Optional manifest JSON output path.")
-    args = parser.parse_args()
-
-    config = Phase9BenchmarkConfig.from_scale(args.scale)
-    rounds = int(args.rounds) if args.rounds is not None else int(config.rounds)
-    warmup_rounds = int(args.warmup_rounds) if args.warmup_rounds is not None else int(config.warmup_rounds)
 
     full_scenarios = [
         ("small_batch_commit", _small_batch_commit_scenario),
@@ -965,7 +1192,51 @@ def main() -> int:
         ("shifted_overlap_live_space", _shifted_overlap_space_scenario),
         ("historical_duplicate_space", _historical_duplicate_space_scenario),
     ]
+    scenario_map = dict(full_scenarios + pressure_scenarios)
+
+    parser = argparse.ArgumentParser(description="Run the hubvault benchmark suite.")
+    parser.add_argument(
+        "--scale",
+        default="standard",
+        choices=("smoke", "standard", "nightly", "stress", "pressure"),
+    )
+    parser.add_argument(
+        "--scenario-set",
+        default="full",
+        choices=("full", "pressure"),
+        help="Choose the full benchmark suite or the large-file pressure subset.",
+    )
+    parser.add_argument("--rounds", type=int, default=None, help="Override the configured benchmark rounds.")
+    parser.add_argument("--warmup-rounds", type=int, default=None, help="Override warmup rounds.")
+    parser.add_argument("--output", default=None, help="Optional summary JSON output path.")
+    parser.add_argument("--manifest-output", default=None, help="Optional manifest JSON output path.")
+    parser.add_argument("--probe-scenario", default=None, help=argparse.SUPPRESS)
+    args = parser.parse_args()
+
+    config = Phase9BenchmarkConfig.from_scale(args.scale)
+    rounds = int(args.rounds) if args.rounds is not None else int(config.rounds)
+    warmup_rounds = int(args.warmup_rounds) if args.warmup_rounds is not None else int(config.warmup_rounds)
     scenarios = full_scenarios if args.scenario_set == "full" else pressure_scenarios
+
+    if args.probe_scenario is not None:
+        scenario = scenario_map.get(str(args.probe_scenario))
+        if scenario is None:
+            parser.error("unknown probe scenario: %s" % args.probe_scenario)
+        with tempfile.TemporaryDirectory(prefix="hubvault-phase12-memory-probe-") as tmpdir:
+            workspace_root = Path(tmpdir)
+            observation = _measure_memory_observation(lambda: scenario(workspace_root, config))
+        print(
+            json.dumps(
+                {
+                    "scenario": str(args.probe_scenario),
+                    "scale": config.scale,
+                    "memory_observation": observation,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
 
     with tempfile.TemporaryDirectory(prefix="hubvault-phase12-run-") as tmpdir:
         workspace_root = Path(tmpdir)
@@ -977,6 +1248,9 @@ def main() -> int:
                 warmup_rounds=warmup_rounds,
             )
             results[name] = _decorate_result(name, measured)
+    for scenario_name in _memory_observation_scenarios(args.scenario_set):
+        if scenario_name in results:
+            results[scenario_name]["memory_observation"] = _run_memory_probe(config.scale, scenario_name)
 
     generated_at_utc = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     category_summaries = _build_category_summaries(results)
@@ -1011,6 +1285,8 @@ def main() -> int:
         "categories": _category_map(),
         "category_summaries": category_summaries,
         "io_reference": _build_io_reference_summary(results),
+        "memory_policy": _memory_policy(),
+        "memory_observed_scenarios": _memory_observation_scenarios(args.scenario_set),
         "threshold_policy": _threshold_policy(),
         "results": results,
     }
@@ -1040,6 +1316,8 @@ def main() -> int:
             "config": summary["config"],
             "dataset_shapes": summary["dataset_shapes"],
             "categories": summary["categories"],
+            "memory_policy": summary["memory_policy"],
+            "memory_observed_scenarios": summary["memory_observed_scenarios"],
             "threshold_policy": summary["threshold_policy"],
             "summary_output": str(output_path) if output_path is not None else "",
         }
