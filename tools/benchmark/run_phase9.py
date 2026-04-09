@@ -2,7 +2,10 @@
 
 import argparse
 import json
+import math
+import platform
 import statistics
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -29,11 +32,45 @@ from tools.benchmark.common import (
     run_hf_hub_download_warm_case,
     run_history_listing_case,
     run_merge_non_fast_forward_case,
+    run_nested_tree_listing_case,
     run_squash_history_case,
     run_threshold_sweep_case,
     snapshot_file_manifest,
     to_mib,
 )
+
+
+def _percentile(samples: List[float], percentile: float) -> float:
+    """Return a percentile using linear interpolation."""
+
+    ordered = sorted(float(sample) for sample in samples)
+    if not ordered:
+        return 0.0
+    if len(ordered) == 1:
+        return ordered[0]
+    rank = (float(percentile) / 100.0) * float(len(ordered) - 1)
+    lower_index = int(math.floor(rank))
+    upper_index = int(math.ceil(rank))
+    if lower_index == upper_index:
+        return ordered[lower_index]
+    lower_value = ordered[lower_index]
+    upper_value = ordered[upper_index]
+    weight = rank - float(lower_index)
+    return lower_value + ((upper_value - lower_value) * weight)
+
+
+def _machine_signature() -> Dict[str, object]:
+    """Return environment metadata for one benchmark run."""
+
+    return {
+        "python_version": platform.python_version(),
+        "python_implementation": platform.python_implementation(),
+        "platform_system": platform.system(),
+        "platform_release": platform.release(),
+        "platform_machine": platform.machine(),
+        "platform_processor": platform.processor(),
+        "python_executable": sys.executable,
+    }
 
 
 def _measure_seconds(func: Callable[[], Dict[str, object]], rounds: int, warmup_rounds: int) -> Dict[str, object]:
@@ -51,20 +88,38 @@ def _measure_seconds(func: Callable[[], Dict[str, object]], rounds: int, warmup_
         samples.append(ended - started)
 
     median_seconds = statistics.median(samples)
+    p25_seconds = _percentile(samples, 25.0)
+    p50_seconds = _percentile(samples, 50.0)
+    p75_seconds = _percentile(samples, 75.0)
+    p95_seconds = _percentile(samples, 95.0)
+    p99_seconds = _percentile(samples, 99.0)
     result = {
         "rounds": len(samples),
         "seconds": {
             "median": round(median_seconds, 6),
             "min": round(min(samples), 6),
             "max": round(max(samples), 6),
+            "p25": round(p25_seconds, 6),
+            "p50": round(p50_seconds, 6),
+            "p75": round(p75_seconds, 6),
+            "p95": round(p95_seconds, 6),
+            "p99": round(p99_seconds, 6),
+            "iqr": round(p75_seconds - p25_seconds, 6),
             "samples": [round(item, 6) for item in samples],
         },
+        "latency_p50_seconds": round(p50_seconds, 6),
+        "latency_p95_seconds": round(p95_seconds, 6),
+        "latency_p99_seconds": round(p99_seconds, 6),
+        "latency_iqr_seconds": round(p75_seconds - p25_seconds, 6),
         "metrics": metrics or {},
     }
     processed_bytes = int((metrics or {}).get("processed_bytes", 0))
     operation_seconds = float((metrics or {}).get("operation_seconds", median_seconds))
     if processed_bytes > 0 and operation_seconds > 0.0:
         result["throughput_mib_per_sec"] = round(to_mib(processed_bytes) / operation_seconds, 6)
+    operation_count = int((metrics or {}).get("operation_count", 0))
+    if operation_count > 0 and operation_seconds > 0.0:
+        result["operations_per_sec"] = round(float(operation_count) / operation_seconds, 6)
     return result
 
 
@@ -76,6 +131,7 @@ def _small_batch_commit_scenario(workspace_root: Path, config: Phase9BenchmarkCo
             "processed_bytes": total_bytes,
             "repo_total_bytes": int(overview.total_size),
             "reachable_bytes": int(overview.reachable_size),
+            "operation_count": len(paths),
             "live_file_count": len(paths),
         }
 
@@ -89,6 +145,7 @@ def _small_read_all_scenario(workspace_root: Path, config: Phase9BenchmarkConfig
         return {
             "processed_bytes": processed,
             "operation_seconds": round(finished - started, 6),
+            "operation_count": len(paths),
             "reported_read_seconds": round(finished - started, 6),
             "live_file_count": len(paths),
             "logical_live_bytes": total_bytes,
@@ -105,10 +162,16 @@ def _snapshot_download_scenario(workspace_root: Path, config: Phase9BenchmarkCon
         return {
             "processed_bytes": total_bytes,
             "operation_seconds": round(finished - started, 6),
+            "operation_count": len(manifest),
             "reported_snapshot_seconds": round(finished - started, 6),
             "snapshot_file_count": len(manifest),
             "live_file_count": len(paths),
         }
+
+
+def _nested_tree_listing_scenario(workspace_root: Path, config: Phase9BenchmarkConfig) -> Dict[str, object]:
+    return run_nested_tree_listing_case(workspace_root, config)
+
 
 
 def _large_upload_scenario(workspace_root: Path, config: Phase9BenchmarkConfig) -> Dict[str, object]:
@@ -236,6 +299,7 @@ def main() -> int:
     full_scenarios = [
         ("small_batch_commit", _small_batch_commit_scenario),
         ("small_read_all", _small_read_all_scenario),
+        ("nested_tree_listing", _nested_tree_listing_scenario),
         ("snapshot_download_small", _snapshot_download_scenario),
         ("large_upload", _large_upload_scenario),
         ("large_read_range", _large_read_range_scenario),
@@ -279,6 +343,8 @@ def main() -> int:
             "warmup_rounds": warmup_rounds,
             "small_file_count": config.small_file_count,
             "small_file_size": config.small_file_size,
+            "nested_directory_count": config.nested_directory_count,
+            "nested_files_per_directory": config.nested_files_per_directory,
             "large_file_size": config.large_file_size,
             "duplicate_file_count": config.duplicate_file_count,
             "overlap_shared_size": config.overlap_shared_size,
@@ -289,6 +355,7 @@ def main() -> int:
             "range_start": config.range_start,
             "range_length": config.range_length,
         },
+        "machine": _machine_signature(),
         "results": results,
     }
     summary["conclusions"] = infer_space_conclusions(results)

@@ -72,6 +72,8 @@ def main() -> int:
         after_extra = _extra_info(after)
         interesting_keys = (
             "processed_bytes",
+            "operation_count",
+            "operations_per_sec",
             "logical_live_bytes",
             "operation_seconds",
             "cache_delta_bytes",

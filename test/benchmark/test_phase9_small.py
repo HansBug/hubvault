@@ -2,6 +2,7 @@ import pytest
 from pathlib import Path
 
 from tools.benchmark.common import (
+    build_nested_small_repo,
     build_small_repo,
     read_all_small_files,
     run_small_batch_commit_case,
@@ -30,6 +31,7 @@ class TestPhase9SmallBenchmarks:
             {
                 "scenario": "small_read_all_files",
                 "processed_bytes": processed,
+                "operation_count": len(paths),
                 "live_file_count": len(paths),
                 "logical_live_bytes": total_bytes,
             }
@@ -37,6 +39,27 @@ class TestPhase9SmallBenchmarks:
         benchmark.pedantic(
             read_all_small_files,
             args=(api, paths),
+            rounds=phase9_config.rounds,
+            warmup_rounds=phase9_config.warmup_rounds,
+            iterations=1,
+        )
+
+    def test_phase12_benchmark_nested_tree_listing_recursive(self, benchmark, tmp_path, phase9_config):
+        api, paths, total_bytes = build_nested_small_repo(tmp_path / "nested-tree", phase9_config)
+        items = list(api.list_repo_tree(recursive=True))
+
+        benchmark.extra_info.update(
+            {
+                "scenario": "nested_tree_listing_recursive",
+                "processed_bytes": 0,
+                "operation_count": len(items),
+                "tree_entry_count": len(items),
+                "live_file_count": len(paths),
+                "logical_live_bytes": total_bytes,
+            }
+        )
+        benchmark.pedantic(
+            lambda: list(api.list_repo_tree(recursive=True)),
             rounds=phase9_config.rounds,
             warmup_rounds=phase9_config.warmup_rounds,
             iterations=1,
@@ -50,6 +73,7 @@ class TestPhase9SmallBenchmarks:
             manifest = snapshot_file_manifest(Path(snapshot_root))
             return {
                 "processed_bytes": total_bytes,
+                "operation_count": len(manifest),
                 "snapshot_file_count": len(manifest),
             }
 

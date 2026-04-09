@@ -21,6 +21,8 @@ class Phase9BenchmarkConfig:
     scale: str
     small_file_count: int
     small_file_size: int
+    nested_directory_count: int
+    nested_files_per_directory: int
     large_file_size: int
     duplicate_file_count: int
     overlap_shared_size: int
@@ -43,6 +45,8 @@ class Phase9BenchmarkConfig:
                 scale="smoke",
                 small_file_count=32,
                 small_file_size=4 * 1024,
+                nested_directory_count=4,
+                nested_files_per_directory=8,
                 large_file_size=6 * MIB,
                 duplicate_file_count=4,
                 overlap_shared_size=4 * MIB,
@@ -60,6 +64,8 @@ class Phase9BenchmarkConfig:
                 scale="pressure",
                 small_file_count=64,
                 small_file_size=8 * 1024,
+                nested_directory_count=8,
+                nested_files_per_directory=8,
                 large_file_size=512 * MIB,
                 duplicate_file_count=3,
                 overlap_shared_size=384 * MIB,
@@ -77,6 +83,8 @@ class Phase9BenchmarkConfig:
                 scale="stress",
                 small_file_count=256,
                 small_file_size=8 * 1024,
+                nested_directory_count=32,
+                nested_files_per_directory=8,
                 large_file_size=16 * MIB,
                 duplicate_file_count=10,
                 overlap_shared_size=12 * MIB,
@@ -93,6 +101,8 @@ class Phase9BenchmarkConfig:
             scale="standard",
             small_file_count=128,
             small_file_size=4 * 1024,
+            nested_directory_count=16,
+            nested_files_per_directory=8,
             large_file_size=12 * MIB,
             duplicate_file_count=6,
             overlap_shared_size=8 * MIB,
@@ -223,6 +233,34 @@ def generate_small_tree_entries(config: Phase9BenchmarkConfig) -> List[Tuple[str
     return entries
 
 
+def generate_nested_small_entries(config: Phase9BenchmarkConfig) -> List[Tuple[str, bytes]]:
+    """Build a deterministic nested small-file tree payload set."""
+
+    entries = []
+    nested_directory_count = int(config.nested_directory_count)
+    nested_files_per_directory = int(config.nested_files_per_directory)
+    index = 0
+    for directory_index in range(nested_directory_count):
+        cluster = directory_index // 4
+        shard = directory_index % 4
+        for file_index in range(nested_files_per_directory):
+            path = (
+                "dataset/cluster-{cluster:03d}/shard-{shard:03d}/bucket-{directory:03d}/file-{index:04d}.bin".format(
+                    cluster=cluster,
+                    shard=shard,
+                    directory=directory_index,
+                    index=index,
+                )
+            )
+            payload = deterministic_bytes(
+                int(config.small_file_size),
+                "nested-small-{directory}-{file}".format(directory=directory_index, file=file_index),
+            )
+            entries.append((path, payload))
+            index += 1
+    return entries
+
+
 def create_repo(api: HubVaultApi, large_file_threshold: int) -> None:
     """Create a repository with a chosen chunk threshold."""
 
@@ -246,6 +284,19 @@ def build_small_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tuple[Hub
     api.create_commit(
         operations=[CommitOperationAdd(path, data) for path, data in entries],
         commit_message="seed small tree",
+    )
+    return api, [path for path, _ in entries], sum(len(data) for _, data in entries)
+
+
+def build_nested_small_repo(repo_dir: Path, config: Phase9BenchmarkConfig) -> Tuple[HubVaultApi, List[str], int]:
+    """Create a repository populated with a deeply nested small-file tree."""
+
+    api = HubVaultApi(repo_dir)
+    create_repo(api, large_file_threshold=max(int(config.large_file_size) * 2, int(config.chunk_threshold) * 4))
+    entries = generate_nested_small_entries(config)
+    api.create_commit(
+        operations=[CommitOperationAdd(path, data) for path, data in entries],
+        commit_message="seed nested small tree",
     )
     return api, [path for path, _ in entries], sum(len(data) for _, data in entries)
 
@@ -525,11 +576,30 @@ def run_small_batch_commit_case(workspace_root: Path, config: Phase9BenchmarkCon
         overview = api.get_storage_overview()
         return {
             "processed_bytes": int(total_bytes),
+            "operation_count": len(paths),
             "live_file_count": len(paths),
             "repo_total_bytes": int(overview.total_size),
             "reachable_bytes": int(overview.reachable_size),
             "blob_bytes": int(section_size(api, "objects.blobs.data")),
             "cache_bytes": int(overview.reclaimable_cache_size),
+        }
+
+
+def run_nested_tree_listing_case(workspace_root: Path, config: Phase9BenchmarkConfig) -> Dict[str, object]:
+    """Execute recursive tree listing over a nested small-file repository."""
+
+    with benchmark_workspace(workspace_root, "phase12-nested-tree-") as tmpdir:
+        api, paths, total_bytes = build_nested_small_repo(Path(tmpdir) / "repo", config)
+        started = time.perf_counter()
+        items = list(api.list_repo_tree(recursive=True))
+        finished = time.perf_counter()
+        return {
+            "processed_bytes": 0,
+            "operation_seconds": round(finished - started, 6),
+            "operation_count": len(items),
+            "tree_entry_count": len(items),
+            "live_file_count": len(paths),
+            "logical_live_bytes": int(total_bytes),
         }
 
 
@@ -561,6 +631,7 @@ def run_hf_hub_download_cold_case(workspace_root: Path, config: Phase9BenchmarkC
         return {
             "processed_bytes": len(payload),
             "operation_seconds": round(finished - started, 6),
+            "operation_count": 1,
             "downloaded_bytes": int(path.stat().st_size),
             "cache_delta_bytes": int(after.reclaimable_cache_size - before.reclaimable_cache_size),
             "suffix_preserved": str(path).replace("\\", "/").endswith("artifacts/model.bin"),
@@ -581,6 +652,7 @@ def run_hf_hub_download_warm_case(workspace_root: Path, config: Phase9BenchmarkC
         return {
             "processed_bytes": len(payload),
             "operation_seconds": round(finished - started, 6),
+            "operation_count": 1,
             "downloaded_bytes": int(second_path.stat().st_size),
             "cache_delta_bytes": int(after.reclaimable_cache_size - before.reclaimable_cache_size),
             "reused_view_path": str(first_path) == str(second_path),
@@ -601,6 +673,7 @@ def run_history_listing_case(workspace_root: Path, config: Phase9BenchmarkConfig
         return {
             "processed_bytes": 0,
             "operation_seconds": round(finished - started, 6),
+            "operation_count": len(commits) + len(refs.branches) + len(refs.tags) + len(reflog),
             "commit_count": len(commits),
             "expected_commit_count": int(commit_count),
             "branch_count": len(refs.branches),
