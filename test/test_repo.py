@@ -183,6 +183,28 @@ def _write_json(path, payload):
     path.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")), encoding="utf-8")
 
 
+def _create_empty_legacy_repo(repo_dir):
+    repo_dir = Path(repo_dir)
+    (repo_dir / "refs" / "heads").mkdir(parents=True, exist_ok=True)
+    (repo_dir / "FORMAT").write_text("hubvault-repo/v1\n", encoding="utf-8")
+    (repo_dir / "repo.json").write_text(
+        json.dumps(
+            {
+                "default_branch": "main",
+                "file_mode": "whole-blob-first",
+                "format_version": 1,
+                "large_file_threshold": 16777216,
+                "metadata": {},
+                "object_hash": "sha256",
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+    (repo_dir / "refs" / "heads" / "main").write_text("", encoding="utf-8")
+
+
 def _wait_for_path(path, timeout=10.0):
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -397,6 +419,44 @@ class TestRepoSemantics:
         assert not any("stale file view" in warning for warning in report.warnings)
 
         assert_rebuilt()
+
+    def test_legacy_repo_reopen_repairs_incomplete_sqlite_bootstrap(self, tmp_path):
+        repo_dir = tmp_path / "legacy-repo"
+        _create_empty_legacy_repo(repo_dir)
+
+        sqlite_path = repo_dir / SQLITE_METADATA_FILENAME
+        with sqlite3.connect(str(sqlite_path)) as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS schema_info (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            conn.execute("INSERT OR REPLACE INTO schema_info (key, value) VALUES (?, ?)", ("schema_version", "1"))
+            conn.execute("CREATE TABLE IF NOT EXISTS repo_meta (key TEXT PRIMARY KEY, value_json TEXT NOT NULL)")
+            conn.commit()
+
+        api = HubVaultApi(repo_dir)
+        info = api.repo_info()
+
+        assert info.default_branch == "main"
+        assert info.head is None
+        assert api.list_repo_tree() == []
+        assert api.quick_verify().ok is True
+
+        created = api.create_commit(
+            operations=[CommitOperationAdd("notes.txt", b"legacy repaired\n")],
+            commit_message="repair legacy sqlite bootstrap",
+        )
+        assert api.repo_info().head == created.oid
+        assert api.read_bytes("notes.txt") == b"legacy repaired\n"
+
+    def test_repo_raises_integrity_error_for_incomplete_sqlite_truth_without_legacy_fallback(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+
+        with sqlite3.connect(str(tmp_path / "repo" / SQLITE_METADATA_FILENAME)) as conn:
+            conn.execute("DELETE FROM repo_meta")
+            conn.commit()
+
+        broken_api = HubVaultApi(tmp_path / "repo")
+        with pytest.raises(IntegrityError, match="sqlite metadata store is incomplete"):
+            broken_api.repo_info()
 
     def test_copy_delete_reset_and_repo_move_keep_working(self, tmp_path):
         repo_dir = tmp_path / "repo"

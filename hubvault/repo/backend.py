@@ -17,6 +17,7 @@ import os
 import re
 import secrets
 import shutil
+import sqlite3
 import stat
 import warnings
 from collections import OrderedDict
@@ -1010,6 +1011,33 @@ class RepositoryBackend(object):
             connection.rollback()
             connection.close()
 
+    def _sqlite_metadata_is_bootstrapped(self) -> bool:
+        """
+        Return whether the SQLite truth-store has completed repo bootstrap.
+
+        :return: Whether the SQLite metadata store has all required repo keys
+        :rtype: bool
+        """
+
+        if not self._metadata_store.exists():
+            return False
+
+        def callback(connection):
+            return self._metadata_store.has_required_repo_meta(connection)
+
+        try:
+            if self._active_metadata_connection is not None:
+                return bool(callback(self._metadata_connection()))
+            connection = self._metadata_store.open_connection(readonly=True)
+            try:
+                connection.execute("BEGIN")
+                return bool(callback(connection))
+            finally:
+                connection.rollback()
+                connection.close()
+        except sqlite3.DatabaseError:
+            return False
+
     @contextmanager
     def _read_locked(self):
         """
@@ -1345,7 +1373,6 @@ class RepositoryBackend(object):
                             "metadata": {},
                         },
                     )
-                    IndexStore(self._repo_path / "chunks" / "index").write_manifest(IndexManifest.empty())
                     self._write_ref(default_branch, None)
                     connection.commit()
                     self._create_initial_commit_unlocked(default_branch)
@@ -5495,11 +5522,19 @@ class RepositoryBackend(object):
         if not self._is_repo():
             raise RepositoryNotFoundError("repository not found")
         self._ensure_layout()
-        if not self._metadata_store.exists():
+        needs_sqlite_migration = (not self._metadata_store.exists()) or (
+            self._repo_config_path.is_file() and not self._sqlite_metadata_is_bootstrapped()
+        )
+        if needs_sqlite_migration:
             with self._write_locked():
-                if not self._metadata_store.exists():
+                needs_sqlite_migration = (not self._metadata_store.exists()) or (
+                    self._repo_config_path.is_file() and not self._sqlite_metadata_is_bootstrapped()
+                )
+                if needs_sqlite_migration:
                     self._recover_transactions()
                     self._migrate_legacy_repo_to_sqlite_unlocked()
+        if self._metadata_store.exists() and not self._sqlite_metadata_is_bootstrapped():
+            raise IntegrityError("sqlite metadata store is incomplete")
 
     def _legacy_repo_config(self) -> Dict[str, object]:
         """
@@ -5622,8 +5657,10 @@ class RepositoryBackend(object):
         :rtype: None
         """
 
-        if self._metadata_store.exists():
+        if self._metadata_store.exists() and self._sqlite_metadata_is_bootstrapped():
             return
+        if not self._repo_config_path.is_file():
+            raise IntegrityError("sqlite metadata store is incomplete")
         legacy_config = self._legacy_repo_config()
         branch_names = self._list_ref_names_under(self._repo_path / "refs" / "heads")
         tag_names = self._list_ref_names_under(self._repo_path / "refs" / "tags")
@@ -5643,11 +5680,17 @@ class RepositoryBackend(object):
             )
         chunk_entries = self._legacy_visible_chunk_entries_unlocked()
 
-        self._metadata_store.initialize_empty()
-        connection = self._metadata_store.open_connection(readonly=False)
+        owns_connection = False
+        if self._active_metadata_connection is not None:
+            connection = self._metadata_connection()
+        else:
+            self._metadata_store.initialize_empty()
+            connection = self._metadata_store.open_connection(readonly=False)
+            owns_connection = True
         try:
             with self._temporary_active_metadata_connection(connection, readonly=False):
                 self._metadata_store.ensure_schema(connection)
+                self._metadata_store.clear_truth_tables(connection)
                 self._metadata_store.set_repo_meta(connection, legacy_config)
                 timestamp = _utc_now()
                 for branch_name in branch_names:
@@ -5692,9 +5735,11 @@ class RepositoryBackend(object):
                     for object_id, payload in object_payloads[object_type].items():
                         self._metadata_store.set_object_payload(connection, object_type, object_id, payload)
                 self._metadata_store.set_chunk_entries(connection, chunk_entries)
-                connection.commit()
+                if owns_connection:
+                    connection.commit()
         finally:
-            connection.close()
+            if owns_connection:
+                connection.close()
 
     def _repo_config(self) -> Dict[str, object]:
         """
@@ -7995,10 +8040,10 @@ class RepositoryBackend(object):
         """
 
         if not txdir.exists():
-            if self._metadata_store.exists():
+            if self._sqlite_metadata_is_bootstrapped():
                 self._metadata_store.delete_tx_log(self._metadata_connection(), txdir.name)
             return
-        if self._metadata_store.exists():
+        if self._sqlite_metadata_is_bootstrapped():
             self._recover_sqlite_transaction_unlocked(txdir)
             return
         if (txdir / "REF_UPDATE.json").exists():
@@ -8016,7 +8061,7 @@ class RepositoryBackend(object):
         :rtype: None
         """
 
-        if self._metadata_store.exists():
+        if self._sqlite_metadata_is_bootstrapped():
             self._metadata_store.delete_tx_log(self._metadata_connection(), txdir.name)
         self._cleanup_txdir(txdir)
 
@@ -8043,7 +8088,7 @@ class RepositoryBackend(object):
         :rtype: None
         """
 
-        if self._metadata_store.exists():
+        if self._sqlite_metadata_is_bootstrapped():
             return
         if reflog_existed_before:
             reflog_path.parent.mkdir(parents=True, exist_ok=True)
@@ -8132,7 +8177,7 @@ class RepositoryBackend(object):
         :rtype: Optional[str]
         """
 
-        if self._metadata_store.exists():
+        if self._sqlite_metadata_is_bootstrapped():
             row = self._metadata_store.get_tx_log(self._metadata_connection(), txdir.name)
             if row is None:
                 return None
@@ -8175,7 +8220,7 @@ class RepositoryBackend(object):
             path = self._ref_path(ref_name)
             if ref_existed_before:
                 self._write_ref(ref_name, old_head)
-            elif self._metadata_store.exists():
+            elif self._sqlite_metadata_is_bootstrapped():
                 self._metadata_store.delete_ref(self._metadata_connection(), "branch", ref_name)
             elif path.exists():
                 self._delete_ref_file(path, self._repo_path / "refs" / "heads")
@@ -8185,7 +8230,7 @@ class RepositoryBackend(object):
             path = self._tag_ref_path(ref_name)
             if ref_existed_before and old_head is not None:
                 self._write_tag_ref(ref_name, old_head)
-            elif self._metadata_store.exists():
+            elif self._sqlite_metadata_is_bootstrapped():
                 self._metadata_store.delete_ref(self._metadata_connection(), "tag", ref_name)
             elif path.exists():
                 self._delete_ref_file(path, self._repo_path / "refs" / "tags")
@@ -8208,7 +8253,7 @@ class RepositoryBackend(object):
             >>> backend._recover_ref_update_transaction(Path("/tmp/demo-repo/txn/demo"))  # doctest: +SKIP
         """
 
-        if self._metadata_store.exists():
+        if self._sqlite_metadata_is_bootstrapped():
             self._recover_sqlite_transaction_unlocked(txdir)
             return
 
@@ -8297,7 +8342,7 @@ class RepositoryBackend(object):
             >>> backend._cleanup_txdir(Path("/tmp/demo-repo/txn/demo"))  # doctest: +SKIP
         """
 
-        if self._metadata_store.exists():
+        if self._sqlite_metadata_is_bootstrapped():
             self._metadata_store.delete_tx_log(self._metadata_connection(), txdir.name)
         if txdir.exists():
             self._remove_tree(txdir)
@@ -8311,7 +8356,7 @@ class RepositoryBackend(object):
         :rtype: bool
         """
 
-        if self._metadata_store.exists():
+        if self._sqlite_metadata_is_bootstrapped():
             if self._active_metadata_connection is not None:
                 if self._metadata_store.list_tx_logs(self._metadata_connection()):
                     return True
@@ -8342,7 +8387,7 @@ class RepositoryBackend(object):
             return
         with self._write_locked():
             txn_root = self._repo_path / "txn"
-            if self._metadata_store.exists():
+            if self._sqlite_metadata_is_bootstrapped():
                 if txn_root.exists():
                     for txdir in sorted(txn_root.iterdir()):
                         if txdir.is_dir():
@@ -8370,7 +8415,7 @@ class RepositoryBackend(object):
         """
 
         txn_root = self._repo_path / "txn"
-        if self._metadata_store.exists():
+        if self._sqlite_metadata_is_bootstrapped():
             if txn_root.exists():
                 for txdir in sorted(txn_root.iterdir()):
                     if txdir.is_dir():

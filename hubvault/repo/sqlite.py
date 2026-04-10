@@ -34,6 +34,14 @@ from ..storage import IndexEntry
 
 SQLITE_METADATA_FILENAME = "metadata.sqlite3"
 SQLITE_SCHEMA_VERSION = 1
+REQUIRED_REPO_META_KEYS = (
+    "format_version",
+    "default_branch",
+    "object_hash",
+    "file_mode",
+    "large_file_threshold",
+    "metadata",
+)
 
 
 def _stable_json_text(data: object) -> str:
@@ -322,6 +330,20 @@ class SQLiteMetadataStore:
 
         cursor = connection.execute("SELECT key, value_json FROM repo_meta ORDER BY key")
         return dict((str(row["key"]), _decode_json_text(str(row["value_json"]))) for row in cursor.fetchall())
+
+    def has_required_repo_meta(self, connection: sqlite3.Connection) -> bool:
+        """
+        Return whether the repo metadata store is fully bootstrapped.
+
+        :param connection: Open SQLite connection
+        :type connection: sqlite3.Connection
+        :return: Whether all required repo metadata keys are present
+        :rtype: bool
+        """
+
+        cursor = connection.execute("SELECT key FROM repo_meta")
+        keys = set(str(row["key"]) for row in cursor.fetchall())
+        return all(key in keys for key in REQUIRED_REPO_META_KEYS)
 
     def set_repo_meta(self, connection: sqlite3.Connection, values: Dict[str, object]) -> None:
         """
@@ -787,6 +809,29 @@ class SQLiteMetadataStore:
         """
 
         connection.execute("DELETE FROM txn_log WHERE txid = ?", (str(txid),))
+
+    def clear_truth_tables(self, connection: sqlite3.Connection) -> None:
+        """
+        Remove all persisted truth rows while preserving the schema.
+
+        :param connection: Open SQLite connection
+        :type connection: sqlite3.Connection
+        :return: ``None``.
+        :rtype: None
+        """
+
+        for table_name in (
+            "repo_meta",
+            "refs",
+            "reflog",
+            "txn_log",
+            "chunk_visible",
+            "objects_commits",
+            "objects_trees",
+            "objects_files",
+            "objects_blobs",
+        ):
+            connection.execute("DELETE FROM %s" % table_name)
 
     def set_chunk_entries(self, connection: sqlite3.Connection, entries: Sequence[IndexEntry]) -> None:
         """
