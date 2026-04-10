@@ -1,7 +1,7 @@
 hbutils>=0.10.1
-fasteners>=0.20
 fastcdc>=1.7.0
 blake3>=0.3,<2
+portalocker>=2.6,<3
 tqdm
 click>=7
 typing_extensions>=4; python_version < "3.10"

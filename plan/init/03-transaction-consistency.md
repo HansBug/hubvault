@@ -26,7 +26,7 @@ locks/repo.lock
 
 实现约束：
 
-- 使用 `fasteners.InterProcessReaderWriterLock`
+- 使用基于 `portalocker` 的 shared/exclusive 文件锁
 - `repo_info()`、`list_repo_tree()`、`read_bytes()`、`hf_hub_download()`、`snapshot_download()` 等读操作持有共享读锁
 - `create_commit()`、`reset_ref()`、`create_branch()`、`delete_branch()`、`create_tag()`、`delete_tag()` 等写操作持有独占写锁
 - 多个纯读请求允许并发
@@ -36,7 +36,7 @@ locks/repo.lock
 对齐说明：
 
 - `huggingface_hub` 本地缓存层实际使用的是 `filelock`
-- 由于 `hubvault` 明确要求“纯读可并发、写时阻塞全部读写”，因此本地仓库层改用提供跨进程 RW 语义的 `fasteners`
+- Phase 14 之后，`hubvault` 继续维持 repo-root 内单一 `repo.lock` 协议，但具体实现改为 shared/exclusive 文件锁，从而让同进程线程、同机多进程和共享路径访问都走同一套文件锁边界
 
 ### 2.2 GC / squash 维护锁
 

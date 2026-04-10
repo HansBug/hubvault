@@ -280,9 +280,10 @@ locks/
 
 规则：
 
-- `repo.lock` 由 `fasteners.InterProcessReaderWriterLock` 持有
+- `repo.lock` 由基于 `portalocker` 的 shared/exclusive 文件锁持有
 - 同一时刻允许多个 reader 共享读锁，但只允许一个 writer 持有写锁
 - writer 持锁期间，其他读写请求都必须阻塞
+- 同进程线程、同机多进程和共享路径上的其它节点进程都复用同一个 `repo.lock` 文件锁协议
 - 锁文件本身只是同步原语，不保存任何仓库正确性所依赖的业务状态
 - `locks/` 下除 `repo.lock` 以外不应再出现任何其它锁协议产物；出现即视为异常文件系统垃圾并直接清理或报错处理
 

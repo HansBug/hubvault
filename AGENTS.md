@@ -115,10 +115,10 @@ modification cannot corrupt committed repo data. Effective repository mutations 
 APIs such as commit/upload/delete flows.
 
 Repository synchronization must rely on mature third-party file-lock primitives instead of custom heartbeat/owner-file
-lock protocols. The current repo-level baseline is a cross-process reader-writer lock built on
-`fasteners.InterProcessReaderWriterLock`, chosen because this local repository requires shared reads plus exclusive
-writes; do not reintroduce ad-hoc lock directories, PID probes, owner metadata, or any other home-grown lock protocol as
-correctness-critical mechanisms.
+lock protocols. The current repo-level baseline is a repo-local shared/exclusive file lock built on `portalocker`,
+chosen because this local repository requires one file-lock protocol that is honored consistently by in-process
+threads, separate processes, and other nodes accessing the same shared filesystem path; do not reintroduce ad-hoc lock
+directories, PID probes, owner metadata, or any other home-grown lock protocol as correctness-critical mechanisms.
 
 Interrupted write transactions must be treated as rolled back, not rolled forward. If a write is interrupted before its
 durable completion marker is reached, recovery must restore the pre-operation ref state and leave the repo equivalent to

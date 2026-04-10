@@ -28,7 +28,7 @@ from hashlib import sha1, sha256
 from pathlib import Path, PurePosixPath
 from typing import Callable, Dict, List, Optional, Sequence, Tuple, Union
 
-from fasteners import InterProcessReaderWriterLock
+import portalocker
 
 from ..errors import (
     ConflictError,
@@ -933,9 +933,13 @@ class RepositoryBackend(object):
         :rtype: Iterator[None]
         """
 
-        lock = InterProcessReaderWriterLock(str(self._repo_lock_path))
-        with lock.read_lock():
-            yield
+        self._repo_lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._repo_lock_path.open("a+b") as lock_file:
+            portalocker.lock(lock_file, portalocker.LOCK_SH)
+            try:
+                yield
+            finally:
+                portalocker.unlock(lock_file)
 
     @contextmanager
     def _write_locked(self):
@@ -946,9 +950,13 @@ class RepositoryBackend(object):
         :rtype: Iterator[None]
         """
 
-        lock = InterProcessReaderWriterLock(str(self._repo_lock_path))
-        with lock.write_lock():
-            yield
+        self._repo_lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._repo_lock_path.open("a+b") as lock_file:
+            portalocker.lock(lock_file, portalocker.LOCK_EX)
+            try:
+                yield
+            finally:
+                portalocker.unlock(lock_file)
 
     def _read_staged_or_published_object_payload(self, txdir: Optional[Path], object_type: str, object_id: str) -> Dict[str, object]:
         """
