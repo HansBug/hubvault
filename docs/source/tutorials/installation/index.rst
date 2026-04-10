@@ -20,6 +20,12 @@ The local repository format is self-contained. A repository is a directory on
 disk; it does not require a server, daemon, external database service, or
 global registry.
 
+That low requirement is part of the intended value: ``hubvault`` can maintain
+large deep-learning artifacts without Docker, Kubernetes, a hosted Hub, or an
+external object storage service such as OSS or S3. It is useful when those
+systems would be too much operational overhead, would not work offline, or
+would be constrained by free-tier resource limits.
+
 Runtime requirements
 --------------------
 

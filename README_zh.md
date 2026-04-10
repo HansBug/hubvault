@@ -71,6 +71,28 @@ hubvault -C demo-repo verify
 
 `hubvault` 和 `hv` 指向同一个 CLI 入口。当前命令面包括 `init`、`commit`、`branch`、`tag`、`merge`、`log`、`ls-tree`、`download`、`snapshot`、`verify`、`reset`、`status`。
 
+## 它适合什么
+
+`hubvault` 适合那些想维护深度学习 artifacts，但不想先搭一整套重型基础设施的场景。它让你把大模型权重、数据集、评测结果、实验产物放进一个本地持久化仓库里，而这个仓库本身仍然只是一个可以整体移动的普通目录。
+
+它最强的地方在于系统要求极低：不需要 Docker，不需要 Kubernetes，不需要远端 Hub 服务，不需要额外对象存储（例如 OSS / S3），也不需要 repo 外数据库。对于离线环境、预算敏感场景、或者已经遇到 Hugging Face 这类托管服务免费资源限制的使用者，`hubvault` 提供的是一个 repo-local 的替代方案。
+
+它尤其适合你需要这些能力时使用：
+
+- 持久维护多代深度学习大规模数据和模型 artifacts
+- 用显式 commit、refs、回滚和校验替代临时缓存目录
+- 需要原子写入语义，中断写入应回滚，而不是留下半发布状态
+- 需要稳定的已提交数据，以及不会误改仓库真相的 detached 读取路径
+- 需要通过 `get_storage_overview()`、`gc()`、`squash_history()` 自定义资源释放策略
+- 需要 Hugging Face 风格文件操作，但底层是本地 embedded repository
+
+`hubvault` 不是下面这些东西:
+
+- 不是远端 Hub 服务
+- 不是 Git remote / PR / code review 系统
+- 不是 Git workspace 或 staging area 替代品
+- 不是返回仓库真相文件路径给你随便改的可写缓存
+
 ## 性能快照
 
 下面是当前 benchmark 快照中的实测值。测试环境是 Linux `x86_64`，CPython `3.10.10`。表格直接列出实测吞吐，并把它和同一轮测试里的本机顺序读写基线放在一起。
@@ -108,22 +130,6 @@ hubvault -C demo-repo verify
 | 小文件全量读路径 | `read_bytes` | `5.76 MiB/s`，`1473.64 ops/s` | `0.91 s` |
 
 直接结论是：大文件上传已经比较接近本机写入基线，范围读和冷下载是实打实的搬字节场景并带有仓库层开销，热下载主要体现缓存和 view 复用能力。当前最值得继续优化的是小文件热读，以及 warm path 里的 metadata 短路。
-
-## 它适合什么
-
-`hubvault` 适合下面这类场景:
-
-- 需要一个能移动、能归档、能恢复、能直接重开的本地 artifact 仓库
-- 需要显式历史、refs、回滚和校验，而不是一个临时缓存目录
-- 需要 Hugging Face 风格文件操作，但底层是本地 embedded repository
-- 需要安全的 detached read path，避免下载出来的文件被误改后污染仓库真相
-
-`hubvault` 不是下面这些东西:
-
-- 不是远端 Hub 服务
-- 不是 Git remote / PR / code review 系统
-- 不是 Git workspace 或 staging area 替代品
-- 不是返回仓库真相文件路径给你随便改的可写缓存
 
 ## 你现在能得到什么
 

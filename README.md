@@ -71,6 +71,28 @@ hubvault -C demo-repo verify
 
 `hubvault` and `hv` point to the same CLI entry point. Current commands include `init`, `commit`, `branch`, `tag`, `merge`, `log`, `ls-tree`, `download`, `snapshot`, `verify`, `reset`, and `status`.
 
+## What hubvault Is For
+
+`hubvault` is for users who need a durable repository for deep learning artifacts without first operating heavyweight infrastructure. It lets you keep large model weights, datasets, evaluation outputs, and experiment bundles in a local repository that still behaves like a normal movable directory.
+
+The strongest fit is environments where a hosted Hub, a Docker or Kubernetes stack, or an external object storage service such as OSS or S3 would add too much operational cost, would not work offline, or would be constrained by free-tier resource limits. `hubvault` gives you a repo-local alternative: no server process, no cluster, no repo-external metadata database, and no object-store bucket are required.
+
+It is especially useful when you need:
+
+- persistent maintenance of large deep-learning artifacts across many generations
+- explicit commits, refs, rollback, and verification instead of an ad-hoc cache directory
+- atomic repository mutations where interrupted writes roll back rather than leaving a half-published state
+- stable committed data with detached read paths, so downloaded files cannot silently mutate repository truth
+- customizable resource release through `get_storage_overview()`, `gc()`, and `squash_history()`
+- Hugging Face style file operations on top of a local embedded repository
+
+`hubvault` is not:
+
+- a hosted Hub service
+- a Git remote / PR / review platform
+- a Git workspace or staging-area replacement
+- a writable cache that returns raw repository-truth file paths
+
 ## Performance Snapshot
 
 The numbers below are current benchmark snapshot values from a Linux `x86_64` machine running CPython `3.10.10`. They are shown as absolute measured throughput, together with the same-run local filesystem sequential read/write baselines.
@@ -108,22 +130,6 @@ These workloads are not pure byte-stream reads or writes, so comparing them dire
 | Small-file read-all path | `read_bytes` | `5.76 MiB/s`, `1473.64 ops/s` | `0.91 s` |
 
 The practical reading is straightforward: large uploads are close to the measured write baseline, range reads and cold downloads are real byte-moving workloads with non-trivial repository overhead, and warm downloads are cache/view-hit paths. The clearest remaining performance work is small-file hot reads and warm-path metadata short-circuiting.
-
-## What hubvault Is For
-
-`hubvault` fits these use cases:
-
-- local artifact repositories that can be moved, archived, restored, and reopened directly
-- explicit history, refs, rollback, and verification rather than an ad-hoc cache directory
-- Hugging Face style file operations on top of a local embedded repository
-- safe detached read paths so downloaded files cannot silently mutate repository truth
-
-`hubvault` is not:
-
-- a hosted Hub service
-- a Git remote / PR / review platform
-- a Git workspace or staging-area replacement
-- a writable cache that returns raw repository-truth file paths
 
 ## What You Get Today
 

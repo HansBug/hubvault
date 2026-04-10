@@ -6,6 +6,11 @@ real history, detached caches, and multiple generations of artifacts. The
 maintenance APIs are public on purpose: they are part of normal operation, not
 hidden implementation details.
 
+That matters because ``hubvault`` is meant to be a low-infrastructure durable
+repository for large ML data. Verification, rollback-oriented atomic writes,
+and explicit resource-release APIs are part of the product, not optional
+operational extras.
+
 .. contents:: On this page
     :local:
 

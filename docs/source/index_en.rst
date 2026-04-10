@@ -29,6 +29,24 @@ hubvault currently ships a working local repository surface with:
 * Verification, storage analysis, garbage collection, and history squashing
 * A git-like CLI exposed as both ``hubvault`` and ``hv``
 
+Where it fits best
+------------------
+
+hubvault is designed for deep-learning artifact repositories that should remain
+useful without first operating heavyweight infrastructure. It is a good fit
+when you need to persist large model weights, datasets, evaluation outputs, or
+experiment bundles, but a hosted Hub, a Docker or Kubernetes stack, or an
+external object storage service such as OSS or S3 would add too much
+operational cost, would not work offline, or would be constrained by free-tier
+resource limits.
+
+In that setting, hubvault provides a repo-local repository with atomic
+mutations, stable committed data, rollback-oriented recovery, detached read
+views, verification, garbage collection, storage overview, and history
+squashing. The point is not to replace every remote collaboration service; it
+is to give one directory enough repository semantics to maintain large ML data
+locally and predictably.
+
 What makes the project different
 --------------------------------
 
@@ -38,6 +56,7 @@ hubvault is intentionally opinionated about a few things:
 * **Read paths are detached views.** A file returned by ``hf_hub_download()`` is safe to read, but editing it must not mutate committed truth.
 * **Writes are explicit.** The system does not pretend there is a mutable working tree.
 * **Maintenance is public.** Verification, storage analysis, GC, and history squashing are first-class APIs.
+* **Infrastructure stays small.** You do not need Docker, Kubernetes, a daemon, an external object store, or a hosted service just to keep a durable artifact repository.
 
 Design constraints
 ------------------
