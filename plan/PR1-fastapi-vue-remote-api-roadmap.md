@@ -926,20 +926,20 @@ MVP 建议收敛为：
 
 ### Todo
 
-* [ ] 实现 `repo`、`content`、`refs`、`history` 的只读路由。
-* [ ] 实现 schema / serde 第一版，覆盖所有只读模型。
-* [ ] 实现单文件下载路由。
-* [ ] 实现 range 读取路由。
-* [ ] 实现 `snapshot-plan` 路由。
-* [ ] 增加 `test/server/test_routes_repo.py`、`test/server/test_routes_content.py`、`test/server/test_routes_refs.py`、`test/server/test_routes_history.py`。
+* [x] 实现 `repo`、`content`、`refs`、`history` 的只读路由。
+* [x] 实现 schema / serde 第一版，覆盖所有只读模型。
+* [x] 实现单文件下载路由。
+* [x] 实现 range 读取路由。
+* [x] 实现 `snapshot-plan` 路由。
+* [x] 增加 `test/server/test_routes_repo.py`、`test/server/test_routes_content.py`、`test/server/test_routes_refs.py`、`test/server/test_routes_history.py`。
 
 ### Checklist
 
-* [ ] `ro` token 可以完整浏览 repo 与历史。
-* [ ] 单文件下载路径仍保留 repo 相对路径后缀。
-* [ ] range 读取与本地 API 行为一致。
-* [ ] 快照下载计划可被 remote client 消费。
-* [ ] `make unittest` 通过。
+* [x] `ro` token 可以完整浏览 repo 与历史。
+* [x] 单文件下载路径仍保留 repo 相对路径后缀。
+* [x] range 读取与本地 API 行为一致。
+* [x] 快照下载计划可被 remote client 消费。
+* [x] `make unittest` 通过。
 
 ## Phase 5. Remote 只读 client、错误映射与缓存
 
@@ -949,21 +949,21 @@ MVP 建议收敛为：
 
 ### Todo
 
-* [ ] 实现 `remote/client.py` HTTP 传输层。
-* [ ] 实现 `remote/serde.py` 和 `remote/errors.py`。
-* [ ] 实现 `remote/cache.py`。
-* [ ] 实现 remote extras 缺失时的延迟导入与友好报错，不让公开 import surface 在模块导入阶段崩溃。
-* [ ] 对齐 `repo_info`、`get_paths_info`、`list_repo_tree`、`list_repo_files`、`list_repo_commits`、`list_repo_refs`、`list_repo_reflog`、`read_bytes`、`read_range`、`hf_hub_download`、`snapshot_download`。
-* [ ] 实现 `open_file()` 的远程文件对象包装。
-* [ ] 增加 `test/remote/test_api.py`、`test/remote/test_serde.py`、`test/remote/test_cache.py`、`test/remote/test_errors.py` 与 remote import-stability 回归。
+* [x] 实现 `remote/client.py` HTTP 传输层。
+* [x] 实现 `remote/serde.py` 和 `remote/errors.py`。
+* [x] 实现 `remote/cache.py`。
+* [x] 实现 remote extras 缺失时的延迟导入与友好报错，不让公开 import surface 在模块导入阶段崩溃。
+* [x] 对齐 `repo_info`、`get_paths_info`、`list_repo_tree`、`list_repo_files`、`list_repo_commits`、`list_repo_refs`、`list_repo_reflog`、`read_bytes`、`read_range`、`hf_hub_download`、`snapshot_download`。
+* [x] 实现 `open_file()` 的远程文件对象包装。
+* [x] 增加 `test/remote/test_api.py`、`test/remote/test_serde.py`、`test/remote/test_cache.py`、`test/remote/test_errors.py` 与 remote import-stability 回归。
 
 ### Checklist
 
-* [ ] remote 只读方法返回模型字段与本地 API 对齐。
-* [ ] remote 异常映射稳定，不泄漏底层 HTTP client 细节。
-* [ ] 远程下载缓存与快照缓存路径语义稳定。
-* [ ] 缺少 remote extras 时，remote 公开 import 保持稳定，实际调用时返回明确安装提示。
-* [ ] `make unittest` 通过。
+* [x] remote 只读方法返回模型字段与本地 API 对齐。
+* [x] remote 异常映射稳定，不泄漏底层 HTTP client 细节。
+* [x] 远程下载缓存与快照缓存路径语义稳定。
+* [x] 缺少 remote extras 时，remote 公开 import 保持稳定，实际调用时返回明确安装提示。
+* [x] `make unittest` 通过。
 
 ## Phase 6. Vue 前端只读壳与静态托管
 

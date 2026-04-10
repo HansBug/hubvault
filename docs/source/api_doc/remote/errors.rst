@@ -18,3 +18,15 @@ HubVaultRemoteTransportError
 .. autoclass:: HubVaultRemoteTransportError
 
 
+HubVaultRemoteProtocolError
+-----------------------------------------------------
+
+.. autoclass:: HubVaultRemoteProtocolError
+
+
+HubVaultRemoteAuthError
+-----------------------------------------------------
+
+.. autoclass:: HubVaultRemoteAuthError
+
+

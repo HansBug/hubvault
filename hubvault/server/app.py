@@ -17,10 +17,15 @@ from typing import Optional
 from ..api import HubVaultApi
 from ..optional import import_optional_dependency
 from ..repo import LARGE_FILE_THRESHOLD
+from ..repo.backend import RepositoryBackend
 from .config import ServerConfig
 from .deps import get_token_authorizer
 from .exception_handlers import register_exception_handlers
+from .routes.content import create_content_router
+from .routes.history import create_history_router
 from .routes.meta import create_meta_router
+from .routes.refs import create_refs_router
+from .routes.repo import create_repo_router
 
 
 def _coerce_config(config: Optional[ServerConfig], **kwargs) -> ServerConfig:
@@ -58,16 +63,20 @@ def _prepare_repo_api(config: ServerConfig) -> HubVaultApi:
         does not exist and ``config.init`` is disabled.
     """
 
-    api = HubVaultApi(config.repo_path)
+    api = HubVaultApi(config.repo_path, revision=config.initial_branch if config.init else "main")
     if config.init:
-        api.create_repo(
+        repo_info = api.create_repo(
             exist_ok=True,
             default_branch=config.initial_branch,
             large_file_threshold=config.large_file_threshold or LARGE_FILE_THRESHOLD,
         )
-    else:
-        api.repo_info()
-    return api
+        return HubVaultApi(config.repo_path, revision=repo_info.default_branch)
+
+    # Existing repositories may use a non-``main`` default branch, so resolve
+    # repository-wide metadata without assuming the API wrapper's default
+    # revision first.
+    repo_info = RepositoryBackend(config.repo_path).repo_info(revision=None)
+    return HubVaultApi(config.repo_path, revision=repo_info.default_branch)
 
 
 def _static_webui_dir() -> Path:
@@ -194,6 +203,10 @@ def create_app(config: Optional[ServerConfig] = None, **kwargs):
 
     register_exception_handlers(app)
     app.include_router(create_meta_router(config=config, api=api, authorizer=authorizer))
+    app.include_router(create_repo_router(api=api, authorizer=authorizer))
+    app.include_router(create_content_router(api=api, authorizer=authorizer))
+    app.include_router(create_refs_router(api=api, authorizer=authorizer))
+    app.include_router(create_history_router(api=api, authorizer=authorizer))
 
     if config.ui_enabled:
         _register_frontend_routes(app, static_dir)
