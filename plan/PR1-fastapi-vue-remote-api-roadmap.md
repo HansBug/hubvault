@@ -195,6 +195,17 @@ test/
 - 不让平台相关加速扩展成为 correctness 必需项
 - 即使 extras 未安装，基础本地 API 和 CLI 仍可工作
 
+### 可选依赖 import 纪律
+
+必须明确区分“可导入”和“可执行”两个层次：
+
+- `import hubvault`、现有本地 CLI、现有本地 API 不能因为未安装 `hubvault[api]` 或 `hubvault[remote]` 而失败
+- `from hubvault.server import ServerConfig, create_app, launch` 与 `from hubvault.remote.api import HubVaultRemoteApi` 应尽量保持 import-time 稳定，不在模块导入阶段强依赖 FastAPI、ASGI runtime、HTTP client
+- 真正需要第三方依赖的动作应在调用点或 runtime 装配点延迟导入，并给出明确安装提示，例如 `pip install hubvault[api]` 或 `pip install hubvault[remote]`
+- `hubvault/__init__.py`、`hubvault/entry/*.py`、以及其它基础安装下常驻导入的模块，不得在顶层直接 import FastAPI、Starlette、uvicorn、httpx 之类 extras 依赖
+- 类型注解如需引用 extras 类型，优先使用 `typing.TYPE_CHECKING`、字符串注解或本地 protocol，避免把第三方依赖变成 import-time 前提
+- 允许 `hubvault/server/routes/*`、`hubvault/server/app.py`、`hubvault/remote/client.py` 这类 runtime 实现模块在实际使用时要求 extras，但公开薄导出层必须先把 import 边界处理好
+
 ### Node 依赖
 
 前端构建和测试依赖只放在 `webui/package.json`，不进入 Python 运行时依赖。
@@ -248,6 +259,7 @@ app = create_app(
 - 上述公开启动面定义在 `hubvault.server`，而不是 `hubvault.entry`
 - `launch(...)` 只是 quick-start helper，本质上仍然围绕 `ServerConfig` + app factory 组装
 - import 启动与 CLI 启动必须共用同一套 `ServerConfig`
+- 未安装 `hubvault[api]` 时，`hubvault.server` 的公开 import 不应在导入阶段崩溃，而应在实际调用 `create_app(...)` / `launch(...)` 时给出安装提示
 
 ### CLI 快速启动
 
@@ -294,6 +306,7 @@ hubvault serve /path/to/repo \
 - 未安装 `hubvault[api]` 或 `hubvault[full]` 时，`serve` 命令必须给出明确安装提示
 - `hubvault serve` 只负责命令行参数体验与 quick-start 调用，不承载 server runtime 主实现
 - 如果保留 `python -m hubvault.server`，其参数语义必须与 `hubvault serve` 保持一致
+- 缺少 API extras 时失败点必须落在命令执行阶段，而不是 CLI 模块导入阶段
 
 ### 标准 ASGI 部署
 
@@ -315,6 +328,7 @@ gunicorn "hubvault.server.asgi:create_app()" \
 - `hubvault.server.asgi:create_app` 必须从环境变量或显式参数读取配置
 - `uvicorn` / `gunicorn` 风格的 import string 必须直接指向 `hubvault.server` 公开 runtime，而不是 `hubvault.entry`
 - Python import 启动、CLI 启动和 ASGI factory 启动必须共用同一套 `ServerConfig`
+- 缺少 API extras 时，ASGI import target 应返回明确的安装错误，而不是在 unrelated import 链上抛出难以理解的 `ModuleNotFoundError`
 
 ## 路由树设计
 
@@ -621,6 +635,16 @@ api = HubVaultRemoteApi(
 - server / remote 测试优先走真实 HTTP 契约，不直接碰 backend 私有实现
 - 前端测试分成单元测试、组件测试、构建后烟雾测试三层
 - 打包测试必须验证 wheel / sdist / PyInstaller 可执行文件都带上前端资源
+- 默认基础环境下的 `make unittest` 不能因为 API / remote extras 缺失而 collection 失败
+- CI 至少拆成 base install 与 full install 两类 Python 测试环境
+
+## 可选依赖测试纪律
+
+- `test/server/**`、`test/remote/**`、以及依赖前端构建产物的测试，不得在模块顶层无保护地导入 extras 依赖
+- 这些测试应在文件入口、fixture 或公共 helper 中先做 `pytest.importorskip(...)` 或等价依赖探测，再导入对应 runtime 模块
+- base install 环境的目标是验证“未安装 extras 时基础能力仍可运行且 import 不炸”
+- full install 环境的目标是验证 server、remote、frontend、打包链路的完整行为
+- 新增一类显式的 import-stability 回归，覆盖 `import hubvault`、CLI 入口导入、`from hubvault.server import ...`、`from hubvault.remote.api import ...` 在缺少 extras 时的语义
 
 ### Server 测试分层
 
@@ -723,6 +747,7 @@ api = HubVaultRemoteApi(
 - `hubvault serve --mode frontend`
 - `make build` 后的可执行文件可启动服务
 - 可执行文件在 `frontend` 模式下能返回首页和 `/api/v1/meta/service`
+- base install 下 `import hubvault`、导入现有 CLI、以及收集默认 unittest 用例都不会因为缺少 extras 而失败
 
 ## 打包与发布设计
 
@@ -734,6 +759,7 @@ api = HubVaultRemoteApi(
 - `extras_require` 继续由 `requirements-*.txt` 自动生成
 - 需要额外新增 `requirements-full.txt`
 - 不创建新的发布名
+- extras 只控制依赖安装，不允许把缺少 extras 变成基础导入路径的崩溃点
 
 ### 前端资源进入 wheel / sdist
 
@@ -777,7 +803,8 @@ api = HubVaultRemoteApi(
 
 实现完成后至少应跑：
 
-- `make unittest`
+- base install 下的 `make unittest`
+- full install 下的 `make unittest`
 - `make package`
 - `make build`
 - `make test_cli`
@@ -828,12 +855,14 @@ MVP 建议收敛为：
 * [ ] 冻结 `HubVaultRemoteApi` 公开命名，并决定是否提供 `HubVaultRemoteAPI` 别名。
 * [ ] 冻结“同一个 PyPI 包、同一个可执行文件”原则。
 * [ ] 冻结 API、frontend、remote 共用同一 FastAPI app 的原则。
+* [ ] 冻结“extras 缺失时公开 import 仍稳定、失败点后移到调用期”的原则。
 
 ### Checklist
 
 * [ ] 文档中不再出现 `api+frontend` 这种旧模式命名。
 * [ ] `frontend` 默认模式已经在 CLI 和部署说明里一致体现。
 * [ ] `hubvault.entry` 不再被表述为 server runtime 的唯一承载位置。
+* [ ] 可选依赖的 import 边界已经定清，不会把缺依赖问题扩散到基础安装路径。
 * [ ] 命名、模式和范围足够稳定，可以支撑后续直接实现。
 
 ## Phase 2. 依赖拆分、目录落位与打包骨架
@@ -847,6 +876,7 @@ MVP 建议收敛为：
 * [ ] 新增 `requirements-api.txt`、`requirements-remote.txt`、`requirements-full.txt`。
 * [ ] 新增 `hubvault/server/`、`hubvault/remote/`、`hubvault/entry/server.py` 骨架。
 * [ ] 在 `hubvault/server/` 下补齐 `__init__.py`、`__main__.py`、`launch.py` 的公开启动面骨架。
+* [ ] 增加统一的 missing-extra 提示与延迟导入骨架，避免顶层 import 触发 FastAPI / HTTP client 依赖。
 * [ ] 新增 `webui/` 前端源码目录与 `hubvault/server/static/webui/` 静态产物目录。
 * [ ] 补齐 `setup.py` / `MANIFEST.in` / 其它打包配置，使前端静态资源能进入包产物。
 * [ ] 为 `make build` 准备静态资源收集方案。
@@ -858,6 +888,7 @@ MVP 建议收敛为：
 * [ ] wheel / sdist / PyInstaller 的资源收集路径已经定清。
 * [ ] 前端源码与前端产物职责分离。
 * [ ] `hubvault.server` 的 import 路径和 `hubvault serve` 的适配关系已经定清。
+* [ ] base install 下 `import hubvault` 与默认 unittest 收集不会因为 extras 缺失而失败。
 
 ## Phase 3. 服务配置、启动入口与鉴权骨架
 
@@ -871,10 +902,11 @@ MVP 建议收敛为：
 * [ ] 实现 `server/asgi.py`、`server/app.py` 与 `server/launch.py`，分别承载 ASGI import target、app factory 与 quick-start helper。
 * [ ] 实现 `server/__init__.py` 与 `server/__main__.py`，暴露薄 public API 与模块级命令入口。
 * [ ] 实现 `entry/server.py` 并把 `serve` 注册到 CLI，但保持其为 `hubvault.server` 的薄适配层。
+* [ ] 实现 API extras 缺失时的延迟导入与友好报错，不让 CLI / import surface 在模块导入阶段崩溃。
 * [ ] 实现 `server/auth.py` 与权限依赖。
 * [ ] 实现 `server/exception_handlers.py`。
 * [ ] 实现 `/api/v1/meta/service` 和 `/api/v1/meta/whoami`。
-* [ ] 增加 `test/server/test_config.py`、`test/server/test_launch.py`、`test/server/test_auth.py`、`test/entry/test_server.py`。
+* [ ] 增加 `test/server/test_config.py`、`test/server/test_launch.py`、`test/server/test_auth.py`、`test/entry/test_server.py`、基础安装下的 import-stability 回归。
 
 ### Checklist
 
@@ -882,6 +914,7 @@ MVP 建议收敛为：
 * [ ] `hubvault serve --mode api` 可以成功起服务。
 * [ ] `hubvault serve --mode frontend` 可以成功起服务。
 * [ ] `uvicorn` / `gunicorn` 风格的 import string 可以在不经过 `hubvault.entry` 的情况下起服务。
+* [ ] 缺少 API extras 时，server 相关公开 import 保持稳定，实际调用时返回明确安装提示。
 * [ ] `ro` / `rw` token 行为已可区分。
 * [ ] 无 token、坏 token、权限不足的错误语义稳定。
 
@@ -919,15 +952,17 @@ MVP 建议收敛为：
 * [ ] 实现 `remote/client.py` HTTP 传输层。
 * [ ] 实现 `remote/serde.py` 和 `remote/errors.py`。
 * [ ] 实现 `remote/cache.py`。
+* [ ] 实现 remote extras 缺失时的延迟导入与友好报错，不让公开 import surface 在模块导入阶段崩溃。
 * [ ] 对齐 `repo_info`、`get_paths_info`、`list_repo_tree`、`list_repo_files`、`list_repo_commits`、`list_repo_refs`、`list_repo_reflog`、`read_bytes`、`read_range`、`hf_hub_download`、`snapshot_download`。
 * [ ] 实现 `open_file()` 的远程文件对象包装。
-* [ ] 增加 `test/remote/test_api.py`、`test/remote/test_serde.py`、`test/remote/test_cache.py`、`test/remote/test_errors.py`。
+* [ ] 增加 `test/remote/test_api.py`、`test/remote/test_serde.py`、`test/remote/test_cache.py`、`test/remote/test_errors.py` 与 remote import-stability 回归。
 
 ### Checklist
 
 * [ ] remote 只读方法返回模型字段与本地 API 对齐。
 * [ ] remote 异常映射稳定，不泄漏底层 HTTP client 细节。
 * [ ] 远程下载缓存与快照缓存路径语义稳定。
+* [ ] 缺少 remote extras 时，remote 公开 import 保持稳定，实际调用时返回明确安装提示。
 * [ ] `make unittest` 通过。
 
 ## Phase 6. Vue 前端只读壳与静态托管
@@ -1008,15 +1043,18 @@ MVP 建议收敛为：
 
 * [ ] 更新 `README.md`、`README_zh.md`，补 `serve`、`frontend` 模式、`HubVaultRemoteApi` 示例。
 * [ ] 更新 docs，补 service / remote / web UI 使用说明。
+* [ ] 在 README / docs 中明确 base install、`hubvault[api]`、`hubvault[remote]`、`hubvault[full]` 的安装与缺依赖报错语义。
 * [ ] 如涉及公开模块和 docstring，执行 `make rst_auto`。
 * [ ] 跑并记录：
-  - `make unittest`
+  - base install 下的 `make unittest`
+  - full install 下的 `make unittest`
   - `make package`
   - `make build`
   - `make test_cli`
   - `cd webui && npm run test`
   - `cd webui && npm run build`
 * [ ] 检查 sdist / wheel / 可执行文件都包含前端资源。
+* [ ] 检查基础安装环境下 `import hubvault`、现有 CLI 与默认 unittest 收集保持稳定。
 * [ ] 补充发布注意事项，明确前端构建和静态资源同步流程。
 
 ### Checklist
