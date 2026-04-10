@@ -2,44 +2,43 @@ CLI Workflow
 ============
 
 This guide explains how to use the public CLI as a practical day-to-day
-interface. The command names and general hand-feel are intentionally close to
-Git, but the CLI still represents hubvault's own repository model.
+interface. The commands intentionally feel Git-like, but they still reflect
+``hubvault``'s own repository model rather than a mutable Git workspace.
 
 .. contents:: On this page
     :local:
 
-The most important CLI rule
----------------------------
+The one CLI rule to remember
+----------------------------
 
-hubvault does **not** provide a mutable workspace. That means:
+``hubvault`` has **no mutable workspace**. That means:
 
 * there is no staging area
-* there is no ``git add`` equivalent that merely prepares state
-* a ``commit`` command directly describes the repository mutation you want
+* there is no "prepare now, commit later" ``git add`` step
+* the ``commit`` command itself directly describes the repository mutation
 
-This is the single biggest difference to keep in mind when reading the command
-examples below.
+If you keep that in mind, the CLI becomes much easier to reason about.
 
-Command names and targeting a repo
-----------------------------------
+Targeting a repository
+----------------------
 
 The CLI is installed under two equivalent names:
 
 * ``hubvault``
 * ``hv``
 
-This guide uses ``hubvault`` for readability. Use ``-C`` to target a repository
-from outside its root:
+This guide uses ``hubvault`` for readability. Use ``-C`` to target a
+repository explicitly:
 
 .. code-block:: shell
 
     hubvault -C demo-repo status
 
-That pattern is recommended for scripts because it makes the target repo
-explicit in every command.
+That pattern is recommended for scripts because the target repository is always
+visible in the command itself.
 
-Step 1: initialize and create the first real commit
----------------------------------------------------
+Step 1: initialize the repository
+---------------------------------
 
 Create a repository:
 
@@ -48,8 +47,14 @@ Create a repository:
     hubvault init demo-repo
     # Initialized empty HubVault repository in demo-repo
 
-The repository already contains an ``Initial commit`` at this point. Next,
-create a normal content commit:
+``init`` creates the repository and its initial empty history root. You can
+also change the default branch name with ``-b`` or set a custom
+``--large-file-threshold`` when needed.
+
+Step 2: make your first real content commit
+-------------------------------------------
+
+Create a file locally and commit it explicitly:
 
 .. code-block:: shell
 
@@ -57,60 +62,115 @@ create a normal content commit:
     hubvault -C demo-repo commit -m "add weights" --add artifacts/model.bin=./model.bin
     # [main <commit>] add weights
 
-The ``commit`` command accepts explicit operations instead of scanning a mutable
-workspace:
+The ``commit`` command accepts explicit operations:
 
 * ``--add <repo_path>=<local_path>``
 * ``--delete <repo_path>``
 * ``--copy <src>=<dest>``
 
-Step 2: branch and commit on another ref
-----------------------------------------
+There is no hidden workspace scan. What you specify is what the commit does.
 
-Create a feature branch and commit to it explicitly:
+Step 3: inspect status, history, and tree state
+-----------------------------------------------
 
-.. code-block:: shell
-
-    hubvault -C demo-repo branch feature
-    printf '# CLI demo\n' > README.md
-    hubvault -C demo-repo commit -r feature -m "add readme" --add README.md=./README.md
-    # [feature <commit>] add readme
-
-Using ``-r`` or ``--revision`` is the CLI equivalent of choosing a target branch
-for the commit API.
-
-Step 3: merge, inspect history, and list trees
-----------------------------------------------
-
-Merge the feature branch back:
+Use the read-only commands to inspect current state:
 
 .. code-block:: shell
 
-    hubvault -C demo-repo merge feature --target main
-    # Updating <old>..<new>
-    # Fast-forward
-
-Then inspect the result:
-
-.. code-block:: shell
+    hubvault -C demo-repo status
 
     hubvault -C demo-repo log --oneline
-    # <commit> add readme
     # <commit> add weights
     # <commit> Initial commit
 
     hubvault -C demo-repo ls-tree -r
-    # 100644 blob <oid>  README.md
     # 040000 tree <oid>  artifacts
     # 100644 blob <oid>  artifacts/model.bin
 
 The exact IDs differ per run, but the output shape is stable and intentionally
 Git-like.
 
-Step 4: use read-facing commands safely
----------------------------------------
+Step 4: branch and commit elsewhere
+-----------------------------------
 
-When you need a real path on disk, use ``download`` or ``snapshot``:
+Create a feature branch:
+
+.. code-block:: shell
+
+    hubvault -C demo-repo branch feature
+
+List branches:
+
+.. code-block:: shell
+
+    hubvault -C demo-repo branch
+
+Show the current branch:
+
+.. code-block:: shell
+
+    hubvault -C demo-repo branch --show-current
+
+Now commit directly to ``feature``:
+
+.. code-block:: shell
+
+    printf '# CLI demo\n' > README.md
+    hubvault -C demo-repo commit -r feature -m "add readme" --add README.md=./README.md
+    # [feature <commit>] add readme
+
+Using ``-r`` or ``--revision`` is the CLI way to choose which branch receives
+the commit.
+
+Step 5: create and inspect tags
+-------------------------------
+
+Create a tag at a chosen revision:
+
+.. code-block:: shell
+
+    hubvault -C demo-repo tag v0.1.0 feature -m "feature preview"
+
+List tags:
+
+.. code-block:: shell
+
+    hubvault -C demo-repo tag -l
+
+Delete a tag when you no longer need it:
+
+.. code-block:: shell
+
+    hubvault -C demo-repo tag -d v0.1.0
+
+Tags are useful for stable release-like labels, validated checkpoints, or
+important review points.
+
+Step 6: merge back into main
+----------------------------
+
+Merge the feature branch into ``main``:
+
+.. code-block:: shell
+
+    hubvault -C demo-repo merge feature --target main
+
+Depending on history shape, the command may:
+
+* fast-forward ``main``
+* create a merge commit
+* report a structured conflict and leave ``main`` unchanged
+
+Inspect the post-merge history:
+
+.. code-block:: shell
+
+    hubvault -C demo-repo log main --oneline -n 5
+
+Step 7: use download and snapshot safely
+----------------------------------------
+
+When you need a real path on disk, use the read-facing commands:
 
 .. code-block:: shell
 
@@ -120,11 +180,11 @@ When you need a real path on disk, use ``download`` or ``snapshot``:
     hubvault -C demo-repo snapshot
     # .../snapshot/<id>/...
 
-Just like the Python API, these are detached user views. They are meant for
-reading, exporting, or handing off to another tool, not for mutating committed
-repository truth in place.
+These are detached user views, just like the Python API. They are safe for
+reading, exporting, or handing to another tool. They are not writable aliases
+of committed repository truth.
 
-Step 5: verify the repository
+Step 8: verify the repository
 -----------------------------
 
 Run verification after meaningful write operations:
@@ -137,38 +197,62 @@ Run verification after meaningful write operations:
     hubvault -C demo-repo verify --full
     # Full verification OK
 
-Use the quick mode for a cheap normal post-write check, and the full mode when
-you want deeper object/store validation.
+Use quick mode for routine post-write checks. Use full mode for deeper
+maintenance or before archival handoff.
 
-What this CLI deliberately does not do
---------------------------------------
+What the CLI deliberately does not do
+-------------------------------------
 
-The CLI looks similar to Git, but hubvault intentionally avoids fake parity:
+The CLI looks similar to Git, but it intentionally avoids fake parity:
 
-* no workspace status for unstaged file edits
-* no ``checkout`` into a mutable tree
-* no remote/push/pull commands
+* no mutable checkout tree
+* no staging area
+* no remote / pull / push workflow
 * no hidden mutation through download paths
 
-That keeps the CLI honest about the underlying storage model.
+That keeps the CLI honest about the repository model it is actually driving.
 
-Companion runnable example
---------------------------
+Complete CLI session
+--------------------
 
-Full runnable shell script:
+.. code-block:: shell
 
-.. literalinclude:: cli_workflow.demo.sh
-    :language: shell
-    :linenos:
+    hubvault init demo-repo
+    # Initialized empty HubVault repository in demo-repo
 
-Observed output:
+    printf 'weights-v1' > model.bin
+    hubvault -C demo-repo commit -m "add weights" --add artifacts/model.bin=./model.bin
+    # [main <commit>] add weights
 
-.. literalinclude:: cli_workflow.demo.sh.txt
-    :language: text
-    :linenos:
+    hubvault -C demo-repo branch feature
+
+    printf '# CLI demo\n' > README.md
+    hubvault -C demo-repo commit -r feature -m "add readme" --add README.md=./README.md
+    # [feature <commit>] add readme
+
+    hubvault -C demo-repo tag v0.1.0 feature -m "feature preview"
+
+    hubvault -C demo-repo merge feature --target main
+    # Either fast-forward or merge-commit output, depending on history shape
+
+    hubvault -C demo-repo log --oneline -n 5
+    # <commit> ...
+
+    hubvault -C demo-repo ls-tree -r
+    # 100644 blob <oid>  README.md
+    # 040000 tree <oid>  artifacts
+    # 100644 blob <oid>  artifacts/model.bin
+
+    hubvault -C demo-repo download README.md
+    # .../README.md
+
+    hubvault -C demo-repo snapshot
+    # .../snapshot/<id>/...
+
+    hubvault -C demo-repo verify
+    # Quick verification OK
 
 .. note::
 
-   The companion script demonstrates a fast-forward merge path. A divergent
-   history can instead produce a merge commit or a structured conflict result,
-   as shown in the Python workflow tutorial.
+   Exact commit IDs and materialized cache paths vary between runs. The stable
+   part is the command shape and the repository semantics.

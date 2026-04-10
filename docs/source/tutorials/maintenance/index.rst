@@ -2,8 +2,9 @@ Verification, GC, and History Squashing
 =======================================
 
 This guide explains how to keep a repository healthy after it has accumulated
-real history and real data. The maintenance APIs are public on purpose: they are
-part of normal operations, not hidden implementation details.
+real history, detached caches, and multiple generations of artifacts. The
+maintenance APIs are public on purpose: they are part of normal operation, not
+hidden implementation details.
 
 .. contents:: On this page
     :local:
@@ -11,20 +12,24 @@ part of normal operations, not hidden implementation details.
 When to use this guide
 ----------------------
 
-Use these APIs when one of the following becomes true:
+Use the maintenance APIs when one or more of these becomes true:
 
 * you have written multiple generations of large files
-* detached downloads or snapshots have filled the managed cache
-* you need a health check before archiving or handing off a repository
-* you want to reclaim bytes without guessing which directories are safe to delete
+* detached downloads or snapshots have consumed noticeable cache space
+* you want a health check before archiving or handing off a repository
+* you need to reclaim bytes without guessing which internal directories are safe to delete
 
-The maintenance workflow has four distinct parts: verify, analyze, reclaim, and
-rewrite history when needed.
+The maintenance flow has four distinct questions:
+
+1. Is the repository healthy?
+2. Where is the space going?
+3. What is already safe to reclaim?
+4. Is old reachable history the real blocker?
 
 Step 1: start with verification
 -------------------------------
 
-hubvault exposes two public verification levels:
+``hubvault`` exposes two public verification levels:
 
 .. code-block:: python
 
@@ -38,13 +43,18 @@ hubvault exposes two public verification levels:
 
 Use them differently:
 
-* ``quick_verify()`` is the normal cheap integrity check after ordinary writes
-* ``full_verify()`` is the deeper pass for maintenance windows, suspicious states, or before archival handoff
+* ``quick_verify()`` is the cheap integrity check after ordinary writes
+* ``full_verify()`` is the deeper pass for maintenance windows, suspicious
+  states, migration checks, or archival handoff
 
-Step 2: inspect where space is going
-------------------------------------
+The usual pattern is simple: quick after normal mutation, full before major
+cleanup or handoff.
 
-Before deleting anything, ask the repository for a storage breakdown:
+Step 2: inspect storage before deleting anything
+------------------------------------------------
+
+Before deleting files manually, ask the repository for a structured storage
+overview:
 
 .. code-block:: python
 
@@ -53,30 +63,41 @@ Before deleting anything, ask the repository for a storage breakdown:
     print(overview.total_size > 0)
     # True
 
+    print(overview.reachable_size >= 0)
+    # True
+
     print(overview.historical_retained_size >= 0)
+    # True
+
+    print(overview.reclaimable_gc_size >= 0)
     # True
 
     print(overview.reclaimable_cache_size >= 0)
     # True
 
-    print(overview.recommendations[:2])
-    # ['...', '...']  # exact text varies by repository state
-
-The important fields answer different questions:
+These fields answer different questions:
 
 * ``total_size``: how large is the repository footprint overall?
-* ``historical_retained_size``: how many bytes are still retained by old history?
+* ``reachable_size``: how much data is required to preserve current live refs?
+* ``historical_retained_size``: how much space is still kept by old reachable
+  history?
+* ``reclaimable_gc_size``: how much can plain GC reclaim right now?
 * ``reclaimable_cache_size``: how much detached-view cache can be dropped safely?
-* ``reclaimable_gc_size``: how much space is already safe for GC to reclaim?
-* ``recommendations``: what maintenance action does hubvault recommend next?
+* ``reclaimable_temporary_size``: how much temporary or quarantine residue can
+  be cleaned?
 
-This gives you a basis for deciding whether cache pruning alone is enough or
-whether history rewriting is required.
+You also get:
 
-Step 3: preview garbage collection first
-----------------------------------------
+* ``sections``: per-area storage breakdown
+* ``recommendations``: ordered maintenance suggestions based on the current state
 
-Do not guess. Run GC in dry-run mode first:
+That is the basis for deciding whether a simple GC is enough or whether history
+rewriting is required.
+
+Step 3: preview GC first
+------------------------
+
+Run GC in dry-run mode before mutating anything:
 
 .. code-block:: python
 
@@ -85,17 +106,20 @@ Do not guess. Run GC in dry-run mode first:
     print(dry_gc.dry_run)
     # True
 
-    print(dry_gc.notes[:2])
-    # ['dry-run: ...', '...']  # exact notes vary
+    print(dry_gc.reclaimed_size >= 0)
+    # True
 
-This tells you what hubvault would reclaim without mutating repository state.
-That preview is especially useful when you are deciding whether to proceed with
-cache pruning immediately.
+    print(dry_gc.notes[:2])
+    # ['dry-run: ...', '...']  # exact notes vary by repository state
+
+Dry-run mode tells you what ``hubvault`` would reclaim without changing
+repository state. That is especially useful when deciding whether cache pruning
+alone is enough.
 
 Step 4: run GC for already reclaimable data
 -------------------------------------------
 
-If the dry run looks correct, execute it for real:
+If the dry run looks correct, execute the real pass:
 
 .. code-block:: python
 
@@ -107,14 +131,24 @@ If the dry run looks correct, execute it for real:
     print(gc_report.removed_file_count >= 0)
     # True
 
-Plain GC only reclaims data that is already safe to remove. If old history is
-still reachable, those bytes remain retained on purpose.
+    print(gc_report.reclaimed_cache_size >= 0)
+    # True
 
-Step 5: squash history when retention is the blocker
-----------------------------------------------------
+Plain GC only reclaims data that is already safe to remove:
 
-Large repositories often retain most of their space in old branch history. When
-that happens, use ``squash_history()`` explicitly:
+* unreachable object data
+* unreachable chunk / pack data
+* rebuildable detached cache data
+* temporary or quarantine residue that no longer needs to be kept
+
+If old history is still reachable from a branch, GC intentionally keeps it.
+
+Step 5: use history squashing when old history is the blocker
+-------------------------------------------------------------
+
+Large repositories often retain most of their space in still-reachable branch
+history. When that becomes the dominant storage cost, use
+``squash_history()`` explicitly:
 
 .. code-block:: python
 
@@ -131,41 +165,91 @@ that happens, use ``squash_history()`` explicitly:
     print(squash.dropped_ancestor_count >= 0)
     # True
 
-This operation rewrites the selected branch so old retained history becomes
-unreachable and can then be reclaimed safely. It is the public, explicit answer
-to "I need the current repository state, but I no longer need the full old
-lineage on this branch."
+    print(squash.blocking_refs)
+    # []  # or other refs that still retain old lineage
 
-How to decide what to run
--------------------------
+``squash_history()`` keeps the branch tip's visible file state while making
+older branch lineage unreachable from that branch. When ``run_gc=True``, the
+method follows up with GC immediately so newly unreachable data can be reclaimed.
 
-A good practical order is:
+How to choose the right action
+------------------------------
+
+A practical order is:
 
 1. run ``quick_verify()`` after normal writes
-2. run ``full_verify()`` when doing serious maintenance or archival checks
-3. inspect ``get_storage_overview()`` before deleting anything
-4. run ``gc(dry_run=True)`` before real cleanup
-5. use ``squash_history()`` only when old reachable history is the real space consumer
+2. run ``full_verify()`` before serious maintenance or archival handoff
+3. inspect ``get_storage_overview()``
+4. preview ``gc(dry_run=True)``
+5. run real ``gc()``
+6. use ``squash_history()`` only when old reachable history is the real space consumer
 
-This avoids both under-cleaning and unsafe manual cleanup.
+That order prevents both under-cleaning and unsafe manual cleanup.
 
-Companion runnable example
---------------------------
+What not to do
+--------------
 
-Full runnable script:
+Avoid these habits:
 
-.. literalinclude:: maintenance.demo.py
-    :language: python
-    :linenos:
+* deleting internal directories because they "look temporary"
+* deleting cache, chunk, or object files by hand without checking overview/GC
+* assuming GC rewrites reachable history
+* assuming squashing is just an optimization with no history consequences
 
-Observed output:
+Use the public maintenance APIs. They already know how to preserve repository
+truth while cleaning safe-to-remove state.
 
-.. literalinclude:: maintenance.demo.py.txt
-    :language: text
-    :linenos:
+Complete maintenance example
+----------------------------
+
+.. code-block:: python
+
+    from hubvault import HubVaultApi
+
+    api = HubVaultApi("maintenance-repo")
+    api.create_repo(large_file_threshold=32)
+    api.upload_file(
+        path_or_fileobj=b"A" * 64,
+        path_in_repo="model.bin",
+        commit_message="seed v1",
+    )
+    api.upload_file(
+        path_or_fileobj=b"B" * 64,
+        path_in_repo="model.bin",
+        commit_message="seed v2",
+    )
+    api.hf_hub_download("model.bin")    # populate one detached view
+
+    quick = api.quick_verify()
+    print(quick.ok)                     # True
+
+    full = api.full_verify()
+    print(full.ok)                      # True
+
+    overview = api.get_storage_overview()
+    print(overview.total_size > 0)      # True
+    print(overview.reclaimable_cache_size >= 0)     # True
+    print(overview.reclaimable_gc_size >= 0)        # True
+
+    dry_gc = api.gc(dry_run=True, prune_cache=True)
+    print(dry_gc.dry_run)               # True
+    print(dry_gc.reclaimed_size >= 0)   # True
+
+    gc_report = api.gc(dry_run=False, prune_cache=True)
+    print(gc_report.reclaimed_size >= 0)        # True
+    print(gc_report.removed_file_count >= 0)    # True
+
+    squash = api.squash_history(
+        "main",
+        commit_message="squash main history",
+        run_gc=True,
+        prune_cache=True,
+    )
+    print(squash.rewritten_commit_count >= 1)   # True
+    print(squash.dropped_ancestor_count >= 0)   # True
 
 .. note::
 
-   Exact byte counts vary across platforms, Python versions, and filesystems.
-   Focus on the meaning of each field and on the ordering of the maintenance
-   actions.
+   Exact byte counts differ across platforms, Python versions, and filesystems.
+   The stable part is the meaning of each field and the ordering of the
+   maintenance actions.

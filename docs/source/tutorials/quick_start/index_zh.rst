@@ -1,39 +1,32 @@
 快速开始
 ========
 
-这个教程串起最短但真正有用的一条 Python API 路径：
-
-* 创建本地仓库
-* 通过公开 API 写入几次 commit
-* 查看文件清单与提交历史
-* 生成 detached 单文件下载视图和快照视图
-* 执行一次校验
-
-这里不再只给一个脚本就结束，而是按步骤解释每一步为什么这么做、结果代表
-什么含义。完整可执行示例放在文末作为 companion。
+这个教程串起最短但真正有用的一条 Python API 路径。你会创建仓库、提交文件、
+查看历史、读取已提交内容，并为下游工具生成 detached 读取视图。
 
 .. contents:: 本页内容
     :local:
 
-先建立正确的心智模型
---------------------
+一分钟心智模型
+--------------
 
-使用 hubvault 前，最重要的一点是先接受它不是一个 mutable workspace：
+``hubvault`` 不是 mutable workspace。先记住三条规则：
 
-* 写入必须经过显式的公开 commit API
-* 读取基于某个 revision，默认通常是 ``main``
-* 当你需要真实文件路径时，下载 API 返回的是 detached 用户视图
+* 写入是显式 commit
+* 读取会解析某个 revision，通常是 ``main``
+* 下载 API 返回 detached 用户视图，而不是仓库内部可写路径
 
-只要先把这三点记住，后面的 API 会非常顺手。
+这个模型让仓库可以作为一个目录安全移动、归档和重新打开。
 
 步骤 1：创建仓库
 ----------------
 
-从空目录开始初始化：
+从空目录开始：
 
 .. code-block:: python
 
     from pathlib import Path
+
     from hubvault import HubVaultApi
 
     repo_dir = Path("demo-repo")
@@ -46,19 +39,13 @@
     print(info.head is not None)
     # True
 
-第二行很关键。``create_repo()`` 并不是只创建目录结构，它会立刻生成一个空的
-``Initial commit``，因此仓库从一开始就有合法历史根，不存在“尚未初始化历史”
-这种额外状态。
+``create_repo()`` 会创建仓库布局，并立刻生成一个空的 ``Initial commit``。
+仓库从一开始就有合法历史根，因此普通历史 API 可以直接使用。
 
-步骤 2：通过公开提交 API 写入内容
-----------------------------------
+步骤 2：添加单个文件
+--------------------
 
-常见的公开写入路径有两种：
-
-* 用 :meth:`hubvault.api.HubVaultApi.upload_file` 做单文件便捷提交
-* 用 :meth:`hubvault.api.HubVaultApi.create_commit` 搭配操作列表构造显式 commit
-
-先用 ``upload_file()`` 写入模型文件：
+最常见的单文件写入路径是 :meth:`hubvault.api.HubVaultApi.upload_file`：
 
 .. code-block:: python
 
@@ -71,7 +58,14 @@
     print(weights_commit.commit_message)
     # add model weights
 
-再用 ``create_commit()`` 显式增加 README：
+这个方法会直接写入一个真实 commit。它不是把文件放进 staging area 等待后续
+操作。
+
+步骤 3：创建显式多操作提交
+--------------------------
+
+当你希望自己组织 commit 操作列表时，使用
+:meth:`hubvault.api.HubVaultApi.create_commit`：
 
 .. code-block:: python
 
@@ -85,40 +79,56 @@
     print(len(readme_commit.oid))
     # 40
 
-此时历史里已经有三次提交：
+commit ID 是 Git 兼容的 40 位十六进制标识。返回值是公开的
+:class:`hubvault.models.CommitInfo`，用于描述 commit 创建结果。
 
-* 自动生成的 ``Initial commit``
-* ``add model weights``
-* ``add readme``
+步骤 4：查看文件和历史
+----------------------
 
-步骤 3：检查仓库当前状态
-------------------------
-
-提交完成后，马上用公开读 API 看结果：
+现在通过读 API 检查仓库状态：
 
 .. code-block:: python
 
     print(api.list_repo_files())
     # ['README.md', 'artifacts/model.safetensors']
 
-    print([item.title for item in api.list_repo_commits(formatted=True)])
+    commits = api.list_repo_commits(formatted=True)
+    print([item.title for item in commits])
     # ['add readme', 'add model weights', 'Initial commit']
 
     print(api.read_bytes("README.md").decode("utf-8").strip())
     # # Demo repo
 
-这三类查询分别回答三个不同问题：
+这些 API 分别回答：
 
-* ``list_repo_files()``：当前 revision 下到底有哪些文件？
-* ``list_repo_commits()``：当前状态是由哪些提交形成的？
-* ``read_bytes()``：某个已提交文件的精确内容是什么？
+* ``list_repo_files()``：这个 revision 下有哪些文件？
+* ``list_repo_commits()``：当前状态由哪些历史形成？
+* ``read_bytes()``：某个文件的已提交字节内容是什么？
 
-步骤 4：生成 detached 读取视图
-------------------------------
+步骤 5：查看路径元数据
+----------------------
 
-有些场景需要真实文件路径或真实目录树，这时使用下载 API：
+当你需要公开元数据而不是文件内容时，使用 ``get_paths_info()``：
 
-单文件下载：
+.. code-block:: python
+
+    readme_info, model_info = api.get_paths_info(
+        ["README.md", "artifacts/model.safetensors"]
+    )
+
+    print(readme_info.path)
+    # README.md
+
+    print(model_info.sha256 is not None)
+    # True
+
+公开文件模型会暴露面向用户的 ``oid`` / ``blob_id`` / ``sha256``，调用者不需要
+理解内部存储布局。
+
+步骤 6：生成 detached 视图
+--------------------------
+
+有些工具需要真实路径。单文件用 ``hf_hub_download()``：
 
 .. code-block:: python
 
@@ -127,7 +137,7 @@
     print(Path(download_path).as_posix().endswith("artifacts/model.safetensors"))
     # True
 
-快照下载：
+整个树用 ``snapshot_download()``：
 
 .. code-block:: python
 
@@ -140,17 +150,13 @@
     print(files)
     # ['README.md', 'artifacts/model.safetensors']
 
-这里最重要的语义不是“能下载”，而是“下载结果是 detached 的”。也就是说：
+这些路径是 detached 视图。修改或删除它们不会破坏已提交仓库数据，需要时可以
+重新生成。
 
-* 这些路径可以像普通文件那样读取
-* 但它们不是仓库真值的可写别名
-* 即便用户改写或删除这些文件，也不会破坏已提交数据
-* 需要时可以再次从仓库真值重建
+步骤 7：校验仓库
+----------------
 
-步骤 5：执行一次校验
---------------------
-
-普通写入完成后，最低成本的完整性检查是 ``quick_verify()``：
+完成有意义的写入后，跑一次低成本完整性检查：
 
 .. code-block:: python
 
@@ -158,47 +164,95 @@
     print(report.ok)
     # True
 
-这适合作为日常的“刚刚做完写操作，现在确认仓库状态仍然健康”的检查。
-更深入的维护路径会在后面的维护教程里展开。
+普通操作后使用 ``quick_verify()``。维护窗口、归档交接或怀疑仓库状态异常时，
+再使用 ``full_verify()``。
 
-这个例子真正展示了什么
-----------------------
+这个例子展示了什么
+------------------
 
-虽然这个 quick start 很短，但它已经覆盖了几个关键公开承诺：
+quick start 覆盖了最重要的公开保证：
 
-* 仓库在 ``create_repo()`` 后立刻可用
-* commit 通过公开 API 显式创建，并返回公开模型
-* commit ID 是真实的 40 位十六进制标识
-* 下载路径保留 repo 相对后缀
-* 下载和快照都是与仓库真值隔离的 detached 视图
+* 仓库创建后立刻可用
+* 修改只通过显式公开写 API 发生
+* commit ID 是 Git 兼容标识
+* 读 API 基于 revision
+* 下载和快照路径保留 repo 相对后缀
+* detached 视图不能修改已提交真相
 
-容易犯的错
-----------
+常见误区
+--------
 
-不要把 hubvault 当成普通工作区：
+不要做这些假设：
 
-* 不要修改下载出来的文件并期望仓库自动被修改
-* 不要期待存在未提交 workspace
-* 不要把缓存里的临时路径当成永久稳定的内部结构
+* 修改下载出来的文件会改变仓库
+* 存在隐藏的 mutable workspace
+* cache 路径是永久公开存储
+* 需要手工编辑仓库内部文件
 
-如果你希望仓库真正发生变化，就必须显式调用公开写 API。
+如果你希望仓库持久变化，就创建 commit。
 
-配套可执行示例
---------------
+完整示例
+--------
 
-完整脚本：
+.. code-block:: python
 
-.. literalinclude:: quick_start.demo.py
-    :language: python
-    :linenos:
+    from pathlib import Path
 
-实际输出：
+    from hubvault import CommitOperationAdd, HubVaultApi
 
-.. literalinclude:: quick_start.demo.py.txt
-    :language: text
-    :linenos:
+    repo_dir = Path("demo-repo")
+    api = HubVaultApi(repo_dir)
+
+    info = api.create_repo()
+    print(info.default_branch)          # main
+    print(info.head is not None)        # True
+
+    weights_commit = api.upload_file(
+        path_or_fileobj=b"weights-v1",
+        path_in_repo="artifacts/model.safetensors",
+        commit_message="add model weights",
+    )
+    print(weights_commit.commit_message)    # add model weights
+
+    readme_commit = api.create_commit(
+        operations=[CommitOperationAdd("README.md", b"# Demo repo\n")],
+        commit_message="add readme",
+    )
+    print(len(readme_commit.oid))       # 40
+
+    print(api.list_repo_files())
+    # ['README.md', 'artifacts/model.safetensors']
+
+    commits = api.list_repo_commits(formatted=True)
+    print([item.title for item in commits])
+    # ['add readme', 'add model weights', 'Initial commit']
+
+    print(api.read_bytes("README.md").decode("utf-8").strip())
+    # # Demo repo
+
+    readme_info, model_info = api.get_paths_info(
+        ["README.md", "artifacts/model.safetensors"]
+    )
+    print(readme_info.path)             # README.md
+    print(model_info.sha256 is not None)    # True
+
+    download_path = api.hf_hub_download("artifacts/model.safetensors")
+    print(Path(download_path).as_posix().endswith("artifacts/model.safetensors"))
+    # True
+
+    snapshot_dir = Path(api.snapshot_download())
+    files = sorted(
+        str(path.relative_to(snapshot_dir)).replace("\\\\", "/")
+        for path in snapshot_dir.rglob("*")
+        if path.is_file()
+    )
+    print(files)
+    # ['README.md', 'artifacts/model.safetensors']
+
+    report = api.quick_verify()
+    print(report.ok)                    # True
 
 .. note::
 
-   每次运行时，commit ID 和临时缓存路径都会变化；稳定的是输出结构和这些
-   API 的公开语义。
+   每次运行时 commit ID 和 cache 路径都会变化；稳定的是公开行为：显式提交、
+   基于 revision 的读取，以及 detached 视图。

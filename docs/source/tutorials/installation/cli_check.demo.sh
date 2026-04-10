@@ -1,2 +1,0 @@
-hubvault -v
-hv -v
