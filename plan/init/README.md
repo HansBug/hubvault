@@ -29,7 +29,7 @@
 - 已落地的 Phase 5 `merge()`、结构化 `MergeConflict` / `MergeResult`、merge DAG 历史遍历，以及对应的 `test/test_phase5.py` 全周期 merge 集成回归
 - 已落地的 Phase 6 Git-like 本地 CLI，以及对应的 `test/entry/test_*.py` 命令回归与 `test/test_phase6.py` 全周期 CLI 集成回归
 - 已落地的 Phase 7 对拍基线：公开 commit/tree/blob/hash 语义与真实 `git` / Git-LFS pointer 行为对齐，并提供可选的 `huggingface_hub` live smoke test
-- 已落地的 Phase 8 异常安全基线：中断写事务保持 rollback-only 恢复语义，仓库在最坏情况下等效于“本次操作从未发生过”
+- 已落地的 Phase 8 异常安全基线：中断写事务保持 rollback-only 恢复语义；对 ref-changing 写路径，可达状态在最坏情况下等效于“本次操作从未发生过”，对 storage-only 路径则要求可达主状态不损坏且残留垃圾可后续清理
 - 已落地的 Phase 9 benchmark baseline 与 pressure 压测体系：已固定性能锚点提交、Makefile 入口、compare 工具与三平台 smoke workflow
 - 已落地的 Phase 10 优化技术引入：默认 `fastcdc + blake3` 内容定义分块、写时 chunk/pack reuse，以及与 Phase 9 锚点的 A/B benchmark 对比
 - 已落地的 Phase 11 文档交付：README、docs 首页、中英双语教程和安装/工作流/维护/结构说明已经完成收尾
@@ -38,8 +38,9 @@
 当前尚未启动、但已经明确列入 `plan/init` 的后续能力包括：
 
 - Phase 13：基于 Phase 12 的扩容 benchmark 与 profiling 结果，收敛当前剩余的时间路径热点与回退风险
+- Phase 14：基于新的 reachable-state safety、全局可串行化定义和“zip 级可移植”的严格自包含约束，重审 Windows / 断电耐久性边界、同进程/跨进程/跨节点共享路径并发边界，并评估 metadata 事务化重构与候选依赖替换
 
-因此，这组初始化方案既要记录已经实现的 MVP、CLI、benchmark baseline、benchmark 扩容与文档交付，也要继续约束后续 Phase 13，避免把已经落地的格式和公开语义重新漂移回“抽象设想”，也避免把热点收敛重新混回一个模糊的大阶段。
+因此，这组初始化方案既要记录已经实现的 MVP、CLI、benchmark baseline、benchmark 扩容与文档交付，也要继续约束后续 Phase 13 和 Phase 14，避免把已经落地的格式和公开语义重新漂移回“抽象设想”，也避免把热点收敛与下一轮 durability 重构重新混回一个模糊的大阶段。
 
 ## 2. 使用方式
 
@@ -49,7 +50,7 @@
 2. 再看 `01-architecture.md` 与 `02-storage-format.md`，确定包结构、对象关系和磁盘协议。
 3. 接着看 `03-transaction-consistency.md` 与 `05-gc-roadmap.md`，锁定一致性、恢复、校验和回收红线。
 4. 最后以 `04-api-compat.md` 与 `06-phase-execution.md` 作为开发入口，直接按 phase 推进实现。
-5. 涉及 benchmark baseline、benchmark 扩容或热点收敛时，再配合阅读 `07-phase9-benchmark-baseline.md`、`08-phase12-benchmark-expansion.md` 与 `09-phase13-hotspot-optimization.md`。
+5. 涉及 benchmark baseline、benchmark 扩容、热点收敛或下一轮 durability / metadata 重构时，再配合阅读 `07-phase9-benchmark-baseline.md`、`08-phase12-benchmark-expansion.md`、`09-phase13-hotspot-optimization.md` 与 `10-phase14-reachable-durability-and-metadata-redesign.md`。
 
 ## 3. 文档清单
 
@@ -73,6 +74,8 @@
   面向 Phase 12 的 benchmark 扩容设计，细化指标口径、数据集族、产物结构、回归阈值与外部参考基线。
 - `09-phase13-hotspot-optimization.md`
   面向 Phase 13 的热点收敛计划，细化 profiling、性能验收口径与零协议风险优化顺序。
+- `10-phase14-reachable-durability-and-metadata-redesign.md`
+  面向 Phase 14 的 reachable-state 安全定义、全局可串行化并发定义、Windows durability 复盘、metadata 事务化重构与候选依赖评估。
 
 ## 4. MVP 策略
 

@@ -136,7 +136,7 @@ content = api.read_bytes("weights/config.json", revision="main")
 - 支持 `hubvault` / `hv` 双命令名的本地 CLI，且核心命令名、主要选项和输出手感尽量接近 git
 - 可以列出历史、refs、文件信息并执行回收策略
 - 已通过真实 `git` / `git-lfs` / `huggingface_hub` 行为对拍验证关键公开语义，并把最小必要偏差文档化
-- 在异常中断、残留事务、半写 pack/index/manifest 和损坏用户视图等极端场景下，仓库真相仍不会损坏，最坏也只允许等效于“本次操作从未发生过”
+- 在异常中断、残留事务、半写 pack/index/manifest 和损坏用户视图等极端场景下，仓库可达真相仍不会损坏；允许留下后续可 GC 的不可达垃圾，但不允许可达状态出现半提交或读错
 
 ## 8. 术语约定
 
