@@ -35,12 +35,13 @@
 - 已落地的 Phase 11 文档交付：README、docs 首页、中英双语教程和安装/工作流/维护/结构说明已经完成收尾
 - 已落地的 Phase 12 benchmark 扩容：四档执行层次（`smoke` / `standard` / `nightly` / `pressure`）、curated summary / manifest / compare 产物、same-machine compare 规则、host local sequential I/O reference，以及 bandwidth / metadata / maintenance / amplification / stability 五类摘要已经固定
 
-当前尚未启动、但已经明确列入 `plan/init` 的后续能力包括：
+当前尚未启动、或已从设计阶段进入待执行状态的后续能力包括：
 
 - Phase 13：基于 Phase 12 的扩容 benchmark 与 profiling 结果，收敛当前剩余的时间路径热点与回退风险
-- Phase 14：基于新的 reachable-state safety、全局可串行化定义和“zip 级可移植”的严格自包含约束，重审 Windows / 断电耐久性边界、同进程/跨进程/跨节点共享路径并发边界，并评估 metadata 事务化重构与候选依赖替换
+- Phase 14：已完成 reachable-state safety、全局可串行化、zip 级可移植与 SQLite-first 设计定稿，作为下一阶段实现的执行前置
+- Phase 15：承接 Phase 14 的默认路线，执行 repo-root SQLite truth-store 的全面迁移与剩余文件协议真相层收束
 
-因此，这组初始化方案既要记录已经实现的 MVP、CLI、benchmark baseline、benchmark 扩容与文档交付，也要继续约束后续 Phase 13 和 Phase 14，避免把已经落地的格式和公开语义重新漂移回“抽象设想”，也避免把热点收敛与下一轮 durability 重构重新混回一个模糊的大阶段。
+因此，这组初始化方案既要记录已经实现的 MVP、CLI、benchmark baseline、benchmark 扩容与文档交付，也要继续约束后续 Phase 13、Phase 14 与 Phase 15，避免把已经落地的格式和公开语义重新漂移回“抽象设想”，也避免把热点收敛、design closure 和全面 SQLite 执行重新混回一个模糊的大阶段。
 
 ## 2. 使用方式
 
@@ -50,7 +51,7 @@
 2. 再看 `01-architecture.md` 与 `02-storage-format.md`，确定包结构、对象关系和磁盘协议。
 3. 接着看 `03-transaction-consistency.md` 与 `05-gc-roadmap.md`，锁定一致性、恢复、校验和回收红线。
 4. 最后以 `04-api-compat.md` 与 `06-phase-execution.md` 作为开发入口，直接按 phase 推进实现。
-5. 涉及 benchmark baseline、benchmark 扩容、热点收敛或下一轮 durability / metadata 重构时，再配合阅读 `07-phase9-benchmark-baseline.md`、`08-phase12-benchmark-expansion.md`、`09-phase13-hotspot-optimization.md` 与 `10-phase14-reachable-durability-and-metadata-redesign.md`。
+5. 涉及 benchmark baseline、benchmark 扩容、热点收敛、下一轮 durability / metadata 重构或全面 SQLite 执行时，再配合阅读 `07-phase9-benchmark-baseline.md`、`08-phase12-benchmark-expansion.md`、`09-phase13-hotspot-optimization.md`、`10-phase14-reachable-durability-and-metadata-redesign.md` 与 `11-phase15-full-sqlite-truth-store-migration.md`。
 
 ## 3. 文档清单
 
@@ -76,6 +77,8 @@
   面向 Phase 13 的热点收敛计划，细化 profiling、性能验收口径与零协议风险优化顺序。
 - `10-phase14-reachable-durability-and-metadata-redesign.md`
   面向 Phase 14 的 reachable-state 安全定义、全局可串行化并发定义、Windows durability 复盘、metadata 事务化重构与候选依赖评估。
+- `11-phase15-full-sqlite-truth-store-migration.md`
+  面向 Phase 15 的全面 SQLite 迁移执行计划，覆盖 schema 落地、truth-store 切换、对象元数据迁移、恢复链路统一与回归矩阵。
 
 ## 4. MVP 策略
 
