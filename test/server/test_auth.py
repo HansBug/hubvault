@@ -1,6 +1,11 @@
 import pytest
 
-from hubvault.server.auth import TokenAuthorizer, parse_request_token
+from hubvault.server.auth import (
+    TokenAuthorizer,
+    build_write_auth_dependency,
+    parse_request_token,
+)
+from test.support import get_fastapi_test_client
 
 
 @pytest.mark.unittest
@@ -41,3 +46,32 @@ class TestServerAuth:
 
         with pytest.raises(PermissionError, match="Write access is required"):
             authorizer.require_write(authorizer.resolve("ro-token"))
+
+    def test_write_auth_dependency_enforces_rw_and_maps_status_codes(self):
+        fastapi = pytest.importorskip("fastapi")
+        TestClient = get_fastapi_test_client()
+        authorizer = TokenAuthorizer(token_ro=("ro-token",), token_rw=("rw-token",))
+        app = fastapi.FastAPI()
+        require_write = build_write_auth_dependency(authorizer)
+
+        @app.get("/write")
+        async def _write_endpoint(auth=fastapi.Depends(require_write)):
+            return {
+                "access": auth.access,
+                "token": auth.token,
+                "can_write": auth.can_write,
+            }
+
+        client = TestClient(app)
+
+        assert client.get("/write").status_code == 401
+        assert client.get("/write", headers={"Authorization": "Bearer bad-token"}).status_code == 401
+        assert client.get("/write", headers={"Authorization": "Bearer ro-token"}).status_code == 403
+
+        response = client.get("/write", headers={"X-HubVault-Token": "rw-token"})
+        assert response.status_code == 200
+        assert response.json() == {
+            "access": "rw",
+            "token": "rw-token",
+            "can_write": True,
+        }

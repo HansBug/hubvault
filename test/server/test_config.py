@@ -56,3 +56,17 @@ class TestServerConfig:
 
         with pytest.raises(ValueError, match="between 1 and 65535"):
             ServerConfig(repo_path=tmp_path / "repo", port=0, token_rw=("rw",))
+
+        with pytest.raises(ValueError, match="Large file threshold must be a positive integer"):
+            ServerConfig(repo_path=tmp_path / "repo", token_rw=("rw",), large_file_threshold=0)
+
+    def test_from_env_rejects_missing_repo_path_and_unexpected_overrides(self, monkeypatch):
+        monkeypatch.delenv("HUBVAULT_REPO_PATH", raising=False)
+        monkeypatch.delenv("HUBVAULT_TOKEN_RO", raising=False)
+        monkeypatch.delenv("HUBVAULT_TOKEN_RW", raising=False)
+
+        with pytest.raises(ValueError, match="Server repo path must be provided"):
+            ServerConfig.from_env(token_rw=("rw",))
+
+        with pytest.raises(TypeError, match="Unexpected config overrides"):
+            ServerConfig.from_env(repo_path="repo", token_rw=("rw",), unexpected=True)

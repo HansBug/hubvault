@@ -2,6 +2,10 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
+from hubvault.models import RepoFolder, RepoInfo
+from hubvault.server.auth import TokenAuthorizer
+from hubvault.server.exception_handlers import register_exception_handlers
+from hubvault.server.routes.content import create_content_router
 from test.support import create_phase45_app, get_fastapi_test_client, ro_headers, seed_phase45_repo
 
 
@@ -100,3 +104,46 @@ class TestServerContentRoutes:
         assert manifest_download.status_code == 200
         assert manifest_download.content == seeded["model_bytes"]
 
+    def test_snapshot_plan_rejects_non_file_entries_from_route_contract(self):
+        fastapi = pytest.importorskip("fastapi")
+        TestClient = get_fastapi_test_client()
+
+        class _BadSnapshotApi:
+            @staticmethod
+            def repo_info(revision=None):
+                del revision
+                return RepoInfo(
+                    repo_path="/tmp/repo",
+                    format_version=1,
+                    default_branch="main",
+                    head="commit-1",
+                    refs=[],
+                )
+
+            @staticmethod
+            def list_repo_files(revision=None):
+                del revision
+                return ["artifacts"]
+
+            @staticmethod
+            def get_paths_info(paths, revision=None):
+                del paths, revision
+                return [RepoFolder("artifacts", "tree-1")]
+
+        app = fastapi.FastAPI()
+        register_exception_handlers(app)
+        app.include_router(
+            create_content_router(
+                api=_BadSnapshotApi(),
+                authorizer=TokenAuthorizer(token_ro=("ro-token",), token_rw=("rw-token",)),
+            )
+        )
+        client = TestClient(app)
+
+        response = client.post("/api/v1/content/snapshot-plan", headers=ro_headers(), json={})
+
+        assert response.status_code == 400
+        assert response.json()["error"] == {
+            "type": "HubVaultValidationError",
+            "message": "Snapshot plans can only contain file entries.",
+        }

@@ -127,3 +127,62 @@ class TestServerLaunch:
 
         assert frontend_root_response.status_code == 200
         assert "hubvault web ui placeholder" in frontend_root_response.text.lower()
+
+    def test_main_forwards_arguments_to_launch(self, monkeypatch, tmp_path):
+        launch_module = import_module("hubvault.server.launch")
+        seen = {}
+
+        def _fake_launch(**kwargs):
+            seen.update(kwargs)
+
+        monkeypatch.setattr(launch_module, "launch", _fake_launch)
+
+        exit_code = launch_module.main(
+            [
+                str(tmp_path / "repo"),
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "9012",
+                "--mode",
+                "api",
+                "--token-ro",
+                "ro-token",
+                "--token-rw",
+                "rw-token",
+                "--open-browser",
+                "--init",
+                "--initial-branch",
+                "dev",
+                "--large-file-threshold",
+                "512",
+            ]
+        )
+
+        assert exit_code == 0
+        assert seen == {
+            "repo_path": str(tmp_path / "repo"),
+            "host": "0.0.0.0",
+            "port": 9012,
+            "mode": "api",
+            "token_ro": ["ro-token"],
+            "token_rw": ["rw-token"],
+            "open_browser": True,
+            "init": True,
+            "initial_branch": "dev",
+            "large_file_threshold": 512,
+        }
+
+    def test_main_returns_two_for_handled_launch_errors(self, monkeypatch, capsys, tmp_path):
+        launch_module = import_module("hubvault.server.launch")
+
+        def _fake_launch(**kwargs):
+            raise ValueError("broken config")
+
+        monkeypatch.setattr(launch_module, "launch", _fake_launch)
+
+        exit_code = launch_module.main([str(tmp_path / "repo"), "--token-rw", "rw-token"])
+        captured = capsys.readouterr()
+
+        assert exit_code == 2
+        assert "broken config" in captured.err

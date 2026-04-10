@@ -5,6 +5,7 @@ import pytest
 from hubvault.errors import EntryNotFoundError
 from hubvault.optional import MissingOptionalDependencyError
 from hubvault.remote import HubVaultRemoteAPI, HubVaultRemoteApi
+from hubvault.remote.cache import build_snapshot_target, get_remote_cache_layout
 from hubvault.remote.errors import HubVaultRemoteAuthError
 from test.support import TEST_DEFAULT_BRANCH, create_phase45_app, patch_remote_test_client, seed_phase45_repo
 
@@ -114,3 +115,37 @@ class TestRemoteApi:
 
         with pytest.raises(EntryNotFoundError, match="missing.txt"):
             missing_entry_api.read_bytes("missing.txt")
+
+        with pytest.raises(EntryNotFoundError, match="missing.txt"):
+            missing_entry_api.hf_hub_download("missing.txt")
+
+    def test_remote_snapshot_download_supports_string_patterns_and_partial_cache_reuse(self, monkeypatch, tmp_path):
+        repo_dir = tmp_path / "repo"
+        seeded = seed_phase45_repo(repo_dir)
+        app = create_phase45_app(repo_dir)
+        patch_remote_test_client(monkeypatch, app)
+        cache_dir = tmp_path / "remote-cache"
+        remote_api = HubVaultRemoteApi(
+            "http://testserver",
+            token="ro-token",
+            revision=TEST_DEFAULT_BRANCH,
+            cache_dir=cache_dir,
+        )
+
+        filtered_dir = Path(remote_api.snapshot_download(allow_patterns="docs/*"))
+        assert (filtered_dir / "docs" / "guide.md").read_bytes() == seeded["guide_bytes"]
+
+        layout = get_remote_cache_layout(cache_dir)
+        partial_target = build_snapshot_target(
+            layout,
+            base_url="http://testserver",
+            snapshot_id=seeded["head_commit"].oid,
+        )
+        (partial_target / "artifacts").mkdir(parents=True, exist_ok=True)
+        (partial_target / "artifacts" / "model.bin").write_bytes(seeded["model_bytes"])
+
+        rebuilt_dir = Path(remote_api.snapshot_download())
+
+        assert rebuilt_dir == partial_target
+        assert (rebuilt_dir / "artifacts" / "model.bin").read_bytes() == seeded["model_bytes"]
+        assert (rebuilt_dir / "docs" / "guide.md").read_bytes() == seeded["guide_bytes"]
