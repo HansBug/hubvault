@@ -25,7 +25,7 @@ Example::
 __TITLE__ = 'hubvault'
 
 #: Version of this project.
-__VERSION__ = '0.0.1'
+__VERSION__ = '0.0.2'
 
 #: Short description of the project, will be included in ``setup.py``.
 __DESCRIPTION__ = 'API-first embedded versioned storage for local ML artifacts'
