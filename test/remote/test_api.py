@@ -1,6 +1,6 @@
 import pytest
 
-from hubvault._optional import MissingOptionalDependencyError
+from hubvault.optional import MissingOptionalDependencyError
 from hubvault.remote import HubVaultRemoteAPI, HubVaultRemoteApi
 
 

@@ -2,7 +2,7 @@ import pytest
 from click.testing import CliRunner
 
 import hubvault.server
-from hubvault._optional import MissingOptionalDependencyError
+from hubvault.optional import MissingOptionalDependencyError
 from hubvault.entry.cli import cli
 
 

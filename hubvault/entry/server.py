@@ -1,15 +1,39 @@
-"""CLI adapter for the embedded HTTP server."""
+"""
+Embedded-server CLI adapter for :mod:`hubvault.entry`.
+
+This module keeps the ``hubvault serve`` command thin. It translates Click
+arguments into :class:`hubvault.server.config.ServerConfig` and delegates all
+runtime behavior to :mod:`hubvault.server`.
+
+The module contains:
+
+* :func:`register_server_commands` - Register the ``serve`` command
+"""
 
 import click
 
 from ..errors import HubVaultError
-from .._optional import MissingOptionalDependencyError
+from ..optional import MissingOptionalDependencyError
 from ..server.config import DEFAULT_SERVER_PORT
 from .base import ClickErrorException, command_wrap
 
 
 def register_server_commands(group: click.Group) -> click.Group:
-    """Register the ``serve`` command on one CLI group."""
+    """
+    Register the ``serve`` command on one CLI group.
+
+    :param group: Click group receiving the registered command
+    :type group: click.Group
+    :return: The same Click group for decorator chaining
+    :rtype: click.Group
+
+    Example::
+
+        >>> import click
+        >>> group = click.Group()
+        >>> register_server_commands(group) is group
+        True
+    """
 
     @group.command("serve")
     @click.argument("path", type=click.Path(file_okay=False, dir_okay=True))
@@ -35,6 +59,34 @@ def register_server_commands(group: click.Group) -> click.Group:
     )
     @command_wrap()
     def _serve(path, host, port, mode, token_ro, token_rw, open_browser, init_repo, initial_branch, large_file_threshold):
+        """
+        Execute the ``hubvault serve`` command.
+
+        :param path: Repository root path
+        :type path: str
+        :param host: Host interface to bind
+        :type host: str
+        :param port: TCP port to bind
+        :type port: int
+        :param mode: Server mode name
+        :type mode: str
+        :param token_ro: Read-only token values
+        :type token_ro: Sequence[str]
+        :param token_rw: Read-write token values
+        :type token_rw: Sequence[str]
+        :param open_browser: Whether to open the browser after startup
+        :type open_browser: bool
+        :param init_repo: Whether to create the repository automatically
+        :type init_repo: bool
+        :param initial_branch: Initial branch used with ``--init``
+        :type initial_branch: str
+        :param large_file_threshold: Optional repository initialization
+            threshold
+        :type large_file_threshold: Optional[int]
+        :return: ``None``.
+        :rtype: None
+        """
+
         from ..server import ServerConfig, launch
 
         try:

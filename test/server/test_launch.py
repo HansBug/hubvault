@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from hubvault import HubVaultApi
-from hubvault._optional import MissingOptionalDependencyError
+from hubvault.optional import MissingOptionalDependencyError
 from hubvault.server import ServerConfig, create_app, launch
 from hubvault.server.config import DEFAULT_SERVER_PORT
 

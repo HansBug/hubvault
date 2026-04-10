@@ -1,4 +1,16 @@
-"""Quick-start launcher for the embedded server."""
+"""
+Quick-start launcher for :mod:`hubvault.server`.
+
+This module exposes the import-friendly ``launch(...)`` helper and the
+``python -m hubvault.server`` argument parser. All startup modes still flow
+through the shared :class:`hubvault.server.config.ServerConfig`.
+
+The module contains:
+
+* :func:`launch` - Start a local uvicorn server
+* :func:`build_argument_parser` - Build the module CLI parser
+* :func:`main` - Module entry point
+"""
 
 import argparse
 import sys
@@ -6,13 +18,26 @@ import webbrowser
 from typing import Optional, Sequence
 
 from ..errors import HubVaultError
-from .._optional import MissingOptionalDependencyError, import_optional_dependency
+from ..optional import MissingOptionalDependencyError, import_optional_dependency
 from .app import create_app
 from .config import DEFAULT_SERVER_PORT, SERVER_MODE_API, SERVER_MODE_FRONTEND, ServerConfig
 
 
 def launch(config: Optional[ServerConfig] = None, **kwargs):
-    """Create and run the embedded ASGI server."""
+    """
+    Create and run the embedded ASGI server.
+
+    :param config: Optional pre-built server configuration
+    :type config: Optional[ServerConfig]
+    :param kwargs: Keyword arguments used to build :class:`ServerConfig` when
+        ``config`` is omitted
+    :type kwargs: dict
+    :return: Return value from :func:`uvicorn.run`
+    :rtype: Any
+    :raises hubvault.optional.MissingOptionalDependencyError: Raised when the
+        API extra is not installed.
+    :raises ValueError: Raised when the server configuration is invalid.
+    """
 
     uvicorn = import_optional_dependency(
         "uvicorn",
@@ -24,11 +49,16 @@ def launch(config: Optional[ServerConfig] = None, **kwargs):
     app = create_app(config=config)
     if config.open_browser:
         webbrowser.open(config.browser_url)
-    uvicorn.run(app, host=config.host, port=config.port)
+    return uvicorn.run(app, host=config.host, port=config.port)
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
-    """Build the command-line parser for ``python -m hubvault.server``."""
+    """
+    Build the command-line parser for ``python -m hubvault.server``.
+
+    :return: Configured argument parser
+    :rtype: argparse.ArgumentParser
+    """
 
     parser = argparse.ArgumentParser(description="Run the embedded hubvault HTTP server.")
     parser.add_argument("repo_path", help="Path to the repository root.")
@@ -55,7 +85,14 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    """Run the module-level quick-start entry point."""
+    """
+    Run the module-level quick-start entry point.
+
+    :param argv: Optional argument vector overriding ``sys.argv[1:]``
+    :type argv: Optional[Sequence[str]]
+    :return: Process-style exit status
+    :rtype: int
+    """
 
     parser = build_argument_parser()
     args = parser.parse_args(argv)

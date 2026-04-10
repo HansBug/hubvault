@@ -1,9 +1,9 @@
-hubvault.\_optional
+hubvault.optional
 ========================================================
 
-.. currentmodule:: hubvault._optional
+.. currentmodule:: hubvault.optional
 
-.. automodule:: hubvault._optional
+.. automodule:: hubvault.optional
 
 
 MissingOptionalDependencyError

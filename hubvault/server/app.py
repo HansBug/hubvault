@@ -1,10 +1,21 @@
-"""FastAPI app factory for the embedded server."""
+"""
+FastAPI app factory for :mod:`hubvault.server`.
+
+This module builds the embedded HTTP application shared by import-based
+startup, CLI startup, and ASGI factory deployment. Optional server dependencies
+are imported lazily so the base installation remains importable without the API
+extra.
+
+The module contains:
+
+* :func:`create_app` - Build one server app for a repository root
+"""
 
 from pathlib import Path
 from typing import Optional
 
 from ..api import HubVaultApi
-from .._optional import import_optional_dependency
+from ..optional import import_optional_dependency
 from ..repo import LARGE_FILE_THRESHOLD
 from .config import ServerConfig
 from .deps import get_token_authorizer
@@ -13,6 +24,19 @@ from .routes.meta import create_meta_router
 
 
 def _coerce_config(config: Optional[ServerConfig], **kwargs) -> ServerConfig:
+    """
+    Normalize explicit config input and keyword overrides.
+
+    :param config: Optional pre-built server configuration
+    :type config: Optional[ServerConfig]
+    :param kwargs: Keyword arguments used to construct :class:`ServerConfig`
+    :type kwargs: dict
+    :return: Normalized server configuration
+    :rtype: ServerConfig
+    :raises TypeError: Raised when both ``config`` and keyword overrides are
+        supplied.
+    """
+
     if config is not None and kwargs:
         raise TypeError("Pass either a ServerConfig instance or explicit keyword arguments, not both.")
     if config is not None:
@@ -23,6 +47,17 @@ def _coerce_config(config: Optional[ServerConfig], **kwargs) -> ServerConfig:
 
 
 def _prepare_repo_api(config: ServerConfig) -> HubVaultApi:
+    """
+    Open or initialize the repository API bound to one server config.
+
+    :param config: Normalized server configuration
+    :type config: ServerConfig
+    :return: Repository API bound to ``config.repo_path``
+    :rtype: hubvault.api.HubVaultApi
+    :raises hubvault.errors.RepositoryNotFoundError: Raised when the repository
+        does not exist and ``config.init`` is disabled.
+    """
+
     api = HubVaultApi(config.repo_path)
     if config.init:
         api.create_repo(
@@ -36,11 +71,29 @@ def _prepare_repo_api(config: ServerConfig) -> HubVaultApi:
 
 
 def _static_webui_dir() -> Path:
+    """
+    Return the packaged static web UI directory.
+
+    :return: Filesystem path to the bundled web UI assets
+    :rtype: pathlib.Path
+    """
+
     return Path(__file__).resolve().parent / "static" / "webui"
 
 
 def _register_frontend_routes(app, static_dir: Path) -> None:
-    from .._optional import import_optional_dependency
+    """
+    Attach static-frontend routes to one FastAPI app.
+
+    :param app: FastAPI application receiving frontend routes
+    :type app: fastapi.FastAPI
+    :param static_dir: Directory containing built frontend assets
+    :type static_dir: pathlib.Path
+    :return: ``None``.
+    :rtype: None
+    """
+
+    from ..optional import import_optional_dependency
 
     fastapi = import_optional_dependency(
         "fastapi",
@@ -61,10 +114,28 @@ def _register_frontend_routes(app, static_dir: Path) -> None:
 
     @app.get("/", include_in_schema=False)
     def _frontend_index():
+        """
+        Serve the frontend entry document.
+
+        :return: Static file response for ``index.html``
+        :rtype: fastapi.responses.FileResponse
+        """
+
         return FileResponse(str(index_path))
 
     @app.get("/{requested_path:path}", include_in_schema=False)
     def _frontend_fallback(requested_path: str):
+        """
+        Serve frontend assets or fall back to the SPA entry document.
+
+        :param requested_path: Requested frontend path
+        :type requested_path: str
+        :return: Static asset response or the frontend entry document
+        :rtype: fastapi.responses.FileResponse
+        :raises fastapi.HTTPException: Raised when the request targets the API
+            namespace but no route matched.
+        """
+
         if requested_path.startswith("api/"):
             raise HTTPException(status_code=404, detail="Not Found")
 
@@ -75,7 +146,28 @@ def _register_frontend_routes(app, static_dir: Path) -> None:
 
 
 def create_app(config: Optional[ServerConfig] = None, **kwargs):
-    """Create one FastAPI app bound to a single repository root."""
+    """
+    Create one FastAPI app bound to a single repository root.
+
+    :param config: Optional pre-built server configuration
+    :type config: Optional[ServerConfig]
+    :param kwargs: Keyword arguments used to build :class:`ServerConfig` when
+        ``config`` is omitted
+    :type kwargs: dict
+    :return: Configured FastAPI application
+    :rtype: fastapi.FastAPI
+    :raises hubvault.optional.MissingOptionalDependencyError: Raised when the
+        API extra is not installed.
+    :raises TypeError: Raised when both ``config`` and keyword overrides are
+        supplied.
+
+    Example::
+
+        >>> from pathlib import Path
+        >>> config = ServerConfig(repo_path=Path('repo'), token_rw=('rw',))
+        >>> callable(create_app) and isinstance(config.port, int)
+        True
+    """
 
     fastapi = import_optional_dependency(
         "fastapi",

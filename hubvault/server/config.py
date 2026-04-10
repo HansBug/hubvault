@@ -1,4 +1,14 @@
-"""Server configuration helpers."""
+"""
+Server configuration helpers for :mod:`hubvault.server`.
+
+This module normalizes all startup surfaces onto the same immutable
+configuration object so CLI startup, import startup, and ASGI startup behave
+consistently.
+
+The module contains:
+
+* :class:`ServerConfig` - Normalized embedded-server configuration
+"""
 
 import os
 import re
@@ -15,18 +25,47 @@ _TOKEN_SPLIT_PATTERN = re.compile(r"[\s,%s]+" % re.escape(os.pathsep))
 
 
 def _parse_bool(value: Optional[str], default: bool = False) -> bool:
+    """
+    Parse one environment-style boolean string.
+
+    :param value: Raw environment value
+    :type value: Optional[str]
+    :param default: Fallback used when ``value`` is missing
+    :type default: bool
+    :return: Parsed boolean value
+    :rtype: bool
+    """
+
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _parse_int(value: Optional[str]) -> Optional[int]:
+    """
+    Parse one optional integer environment value.
+
+    :param value: Raw environment value
+    :type value: Optional[str]
+    :return: Parsed integer or ``None`` when the input is empty
+    :rtype: Optional[int]
+    """
+
     if value is None or value == "":
         return None
     return int(value)
 
 
 def _normalize_tokens(values: Iterable[str]) -> Tuple[str, ...]:
+    """
+    Deduplicate token inputs while preserving first-seen order.
+
+    :param values: Raw token values
+    :type values: Iterable[str]
+    :return: Normalized token tuple without blanks or duplicates
+    :rtype: Tuple[str, ...]
+    """
+
     seen = set()
     items = []
     for value in values:
@@ -39,6 +78,15 @@ def _normalize_tokens(values: Iterable[str]) -> Tuple[str, ...]:
 
 
 def _parse_token_env(value: Optional[str]) -> Tuple[str, ...]:
+    """
+    Parse token values from one environment variable.
+
+    :param value: Raw token environment string
+    :type value: Optional[str]
+    :return: Normalized token tuple
+    :rtype: Tuple[str, ...]
+    """
+
     if not value:
         return ()
     return _normalize_tokens(item for item in _TOKEN_SPLIT_PATTERN.split(value) if item)
@@ -46,7 +94,31 @@ def _parse_token_env(value: Optional[str]) -> Tuple[str, ...]:
 
 @dataclass(frozen=True)
 class ServerConfig:
-    """Normalized runtime configuration for the embedded server."""
+    """
+    Normalized runtime configuration for the embedded server.
+
+    :param repo_path: Repository root served by the app
+    :type repo_path: pathlib.Path
+    :param mode: Server mode, either ``"api"`` or ``"frontend"``
+    :type mode: str
+    :param host: Host interface to bind
+    :type host: str
+    :param port: TCP port to bind
+    :type port: int
+    :param token_ro: Read-only bearer tokens
+    :type token_ro: Tuple[str, ...]
+    :param token_rw: Read-write bearer tokens
+    :type token_rw: Tuple[str, ...]
+    :param open_browser: Whether to open the local browser URL after startup
+    :type open_browser: bool
+    :param init: Whether to create the repository automatically when missing
+    :type init: bool
+    :param initial_branch: Initial branch name used with ``init``
+    :type initial_branch: str
+    :param large_file_threshold: Optional chunking threshold used during
+        repository creation
+    :type large_file_threshold: Optional[int]
+    """
 
     repo_path: Path
     mode: str = SERVER_MODE_FRONTEND
@@ -60,6 +132,15 @@ class ServerConfig:
     large_file_threshold: Optional[int] = None
 
     def __post_init__(self) -> None:
+        """
+        Validate and normalize the dataclass fields after construction.
+
+        :return: ``None``.
+        :rtype: None
+        :raises ValueError: Raised when mode, port, token, or threshold values
+            are invalid.
+        """
+
         repo_path = Path(self.repo_path).expanduser()
         mode = str(self.mode).strip().lower()
         host = str(self.host).strip() or "127.0.0.1"
@@ -89,13 +170,24 @@ class ServerConfig:
 
     @property
     def ui_enabled(self) -> bool:
-        """Whether the frontend static UI should be served."""
+        """
+        Whether the frontend static UI should be served.
+
+        :return: ``True`` when the frontend assets should be mounted
+        :rtype: bool
+        """
 
         return self.mode == SERVER_MODE_FRONTEND
 
     @property
     def browser_url(self) -> str:
-        """Return the browser-friendly local URL for the bound server."""
+        """
+        Return the browser-friendly local URL for the bound server.
+
+        :return: Browser URL using a loopback-safe host when bound to all
+            interfaces
+        :rtype: str
+        """
 
         host = self.host
         if host in {"0.0.0.0", "::"}:
@@ -104,7 +196,18 @@ class ServerConfig:
 
     @classmethod
     def from_env(cls, **overrides) -> "ServerConfig":
-        """Build a config object from ``HUBVAULT_*`` environment variables."""
+        """
+        Build a config object from ``HUBVAULT_*`` environment variables.
+
+        :param overrides: Explicit field overrides applied on top of the
+            environment
+        :type overrides: dict
+        :return: Normalized server configuration
+        :rtype: ServerConfig
+        :raises TypeError: Raised when unsupported override keys are provided.
+        :raises ValueError: Raised when required values such as ``repo_path``
+            are missing.
+        """
 
         values = {
             "repo_path": overrides.pop("repo_path", None) or os.environ.get("HUBVAULT_REPO_PATH"),

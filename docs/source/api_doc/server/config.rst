@@ -18,6 +18,12 @@ SERVER\_MODE\_FRONTEND
 .. autodata:: SERVER_MODE_FRONTEND
 
 
+DEFAULT\_SERVER\_PORT
+-----------------------------------------------------
+
+.. autodata:: DEFAULT_SERVER_PORT
+
+
 ServerConfig
 -----------------------------------------------------
 
