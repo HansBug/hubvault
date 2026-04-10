@@ -1,9 +1,9 @@
-# PR TBD. Phase 16-20 FastAPI 服务、Vue 内置前端与 Remote API 执行方案
+# PR 1. Phase 16-20 FastAPI 服务、Vue 内置前端与 Remote API 执行方案
 
 ## Status
 
 - 状态：Proposed
-- PR：待创建，创建后回填
+- PR：https://github.com/HansBug/hubvault/pull/1
 - 目标分支：`main`
 - 工作分支：`dev/api`
 
