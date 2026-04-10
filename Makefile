@@ -114,7 +114,8 @@ package:
 
 build:
 	@test -f ${CLI_ENTRY} || (echo "Missing CLI entry file: ${CLI_ENTRY}" && exit 1)
-	pyinstaller -F -n ${PROJECT_NAME} -c ${RESOURCE_ARGS} ${CLI_ENTRY}
+	$(PYTHON) -m tools.generate_spec -o hubvault.spec
+	pyinstaller hubvault.spec
 
 test_cli:
 	@test -f ${CLI_BIN} || (echo "Missing CLI executable: ${CLI_BIN}. Run 'make build' first." && exit 1)
