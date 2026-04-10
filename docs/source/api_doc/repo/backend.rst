@@ -66,6 +66,18 @@ FAILPOINT\_EXIT\_CODE
 .. autodata:: FAILPOINT_EXIT_CODE
 
 
+RECENT\_CHUNK\_CACHE\_MAX\_BYTES
+-----------------------------------------------------
+
+.. autodata:: RECENT_CHUNK_CACHE_MAX_BYTES
+
+
+RECENT\_OBJECT\_PAYLOAD\_CACHE\_MAX\_ENTRIES
+-----------------------------------------------------
+
+.. autodata:: RECENT_OBJECT_PAYLOAD_CACHE_MAX_ENTRIES
+
+
 RepositoryBackend
 -----------------------------------------------------
 

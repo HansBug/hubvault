@@ -31,12 +31,14 @@ from .dispatch import hubvaultcli
 from .history import register_history_commands
 from .refs import register_ref_commands
 from .repo import register_repo_commands
+from .server import register_server_commands
 
 _DECORATORS: List[Callable[[click.Group], click.Group]] = [
     register_repo_commands,
     register_ref_commands,
     register_history_commands,
     register_content_commands,
+    register_server_commands,
 ]
 
 cli: click.Group = hubvaultcli

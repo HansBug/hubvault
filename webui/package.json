@@ -1,0 +1,10 @@
+{
+  "name": "hubvault-webui",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "test": "node scripts/test.js",
+    "build": "node scripts/build.js",
+    "sync": "python ../tools/webui_sync.py"
+  }
+}

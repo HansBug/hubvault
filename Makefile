@@ -1,4 +1,4 @@
-.PHONY: help docs docs_en docs_zh pdocs rst_auto test unittest benchmark benchmark_smoke benchmark_standard benchmark_phase9 benchmark_phase9_smoke benchmark_phase9_standard benchmark_phase9_pressure benchmark_phase12 benchmark_phase12_raw benchmark_phase12_summary benchmark_phase12_smoke benchmark_phase12_standard benchmark_phase12_nightly benchmark_phase12_pressure benchmark_compare benchmark_phase12_compare build test_cli package clean
+.PHONY: help docs docs_en docs_zh pdocs rst_auto test unittest benchmark benchmark_smoke benchmark_standard benchmark_phase9 benchmark_phase9_smoke benchmark_phase9_standard benchmark_phase9_pressure benchmark_phase12 benchmark_phase12_raw benchmark_phase12_summary benchmark_phase12_smoke benchmark_phase12_standard benchmark_phase12_nightly benchmark_phase12_pressure benchmark_compare benchmark_phase12_compare build test_cli package clean webui_test webui_build webui_sync
 
 PYTHON := $(shell [ -x ./venv/bin/python ] && printf '%s' ./venv/bin/python || which python)
 SPHINXBUILD ?= $(shell which sphinx-build)
@@ -55,6 +55,9 @@ help:
 	@echo "  make package      - Build Python package (sdist and wheel)"
 	@echo "  make build        - Build standalone executable with PyInstaller"
 	@echo "  make clean        - Remove build and packaging artifacts"
+	@echo "  make webui_test   - Run placeholder frontend validation scripts"
+	@echo "  make webui_build  - Build placeholder frontend assets into webui/dist/"
+	@echo "  make webui_sync   - Sync webui/dist/ into hubvault/server/static/webui/"
 	@echo ""
 	@echo "Testing:"
 	@echo "  make test         - Run all tests (alias for unittest)"
@@ -111,6 +114,15 @@ help:
 
 package:
 	$(PYTHON) -m build --sdist --wheel --outdir ${DIST_DIR}
+
+webui_test:
+	cd webui && npm run test
+
+webui_build:
+	cd webui && npm run build
+
+webui_sync:
+	$(PYTHON) -m tools.webui_sync
 
 build:
 	@test -f ${CLI_ENTRY} || (echo "Missing CLI entry file: ${CLI_ENTRY}" && exit 1)

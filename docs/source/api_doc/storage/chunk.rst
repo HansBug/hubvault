@@ -18,6 +18,36 @@ DEFAULT\_CHUNK\_SIZE
 .. autodata:: DEFAULT_CHUNK_SIZE
 
 
+DEFAULT\_MIN\_CHUNK\_SIZE
+-----------------------------------------------------
+
+.. autodata:: DEFAULT_MIN_CHUNK_SIZE
+
+
+DEFAULT\_MAX\_CHUNK\_SIZE
+-----------------------------------------------------
+
+.. autodata:: DEFAULT_MAX_CHUNK_SIZE
+
+
+FASTCDC\_MIN\_CHUNK\_SIZE
+-----------------------------------------------------
+
+.. autodata:: FASTCDC_MIN_CHUNK_SIZE
+
+
+FASTCDC\_MIN\_AVG\_SIZE
+-----------------------------------------------------
+
+.. autodata:: FASTCDC_MIN_AVG_SIZE
+
+
+FASTCDC\_MIN\_MAX\_SIZE
+-----------------------------------------------------
+
+.. autodata:: FASTCDC_MIN_MAX_SIZE
+
+
 ChunkDescriptor
 -----------------------------------------------------
 

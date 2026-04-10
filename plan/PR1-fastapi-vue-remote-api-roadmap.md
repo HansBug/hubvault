@@ -232,7 +232,7 @@ from hubvault.server import launch
 launch(
     repo_path="/path/to/repo",
     host="127.0.0.1",
-    port=7860,
+    port=9472,
     token_ro=["readonly-token"],
     token_rw=["readwrite-token"],
     mode="frontend",
@@ -268,7 +268,7 @@ app = create_app(
 ```bash
 hubvault serve /path/to/repo \
   --host 127.0.0.1 \
-  --port 7860 \
+  --port 9472 \
   --token-ro readonly-token \
   --token-rw readwrite-token \
   --mode frontend \
@@ -280,7 +280,7 @@ hubvault serve /path/to/repo \
 ```bash
 hubvault serve /path/to/repo \
   --host 0.0.0.0 \
-  --port 7860 \
+  --port 9472 \
   --token-rw readwrite-token \
   --mode api
 ```
@@ -316,11 +316,11 @@ hubvault serve /path/to/repo \
 export HUBVAULT_REPO_PATH=/path/to/repo
 export HUBVAULT_SERVE_MODE=frontend
 export HUBVAULT_TOKEN_RW=readwrite-token
-uvicorn hubvault.server.asgi:create_app --factory --host 0.0.0.0 --port 7860
+uvicorn hubvault.server.asgi:create_app --factory --host 0.0.0.0 --port 9472
 
 gunicorn "hubvault.server.asgi:create_app()" \
   --worker-class uvicorn.workers.UvicornWorker \
-  --bind 0.0.0.0:7860
+  --bind 0.0.0.0:9472
 ```
 
 约束：
@@ -559,7 +559,7 @@ tar 流优化可以延后到后续 phase。
 from hubvault.remote.api import HubVaultRemoteApi
 
 api = HubVaultRemoteApi(
-    base_url="http://127.0.0.1:7860",
+    base_url="http://127.0.0.1:9472",
     token="readwrite-token",
     revision="main",
     timeout=30.0,
@@ -847,23 +847,23 @@ MVP 建议收敛为：
 
 ### Todo
 
-* [ ] 明确本计划是 post-init 独立 phase，编号从 `1` 开始。
-* [ ] 冻结 `api` / `frontend` 两种模式，并规定默认值为 `frontend`。
-* [ ] 明确 `frontend` 的含义是 “API + frontend 同时提供”。
-* [ ] 冻结 `hubvault.server` 作为与 `hubvault.repo` 同级一级 module 的职责边界。
-* [ ] 冻结 `hubvault.server.launch(...)`、`hubvault.server.create_app(...)` 与 `hubvault serve` 三类启动面的职责边界。
-* [ ] 冻结 `HubVaultRemoteApi` 公开命名，并决定是否提供 `HubVaultRemoteAPI` 别名。
-* [ ] 冻结“同一个 PyPI 包、同一个可执行文件”原则。
-* [ ] 冻结 API、frontend、remote 共用同一 FastAPI app 的原则。
-* [ ] 冻结“extras 缺失时公开 import 仍稳定、失败点后移到调用期”的原则。
+* [x] 明确本计划是 post-init 独立 phase，编号从 `1` 开始。
+* [x] 冻结 `api` / `frontend` 两种模式，并规定默认值为 `frontend`。
+* [x] 明确 `frontend` 的含义是 “API + frontend 同时提供”。
+* [x] 冻结 `hubvault.server` 作为与 `hubvault.repo` 同级一级 module 的职责边界。
+* [x] 冻结 `hubvault.server.launch(...)`、`hubvault.server.create_app(...)` 与 `hubvault serve` 三类启动面的职责边界。
+* [x] 冻结 `HubVaultRemoteApi` 公开命名，并决定是否提供 `HubVaultRemoteAPI` 别名。
+* [x] 冻结“同一个 PyPI 包、同一个可执行文件”原则。
+* [x] 冻结 API、frontend、remote 共用同一 FastAPI app 的原则。
+* [x] 冻结“extras 缺失时公开 import 仍稳定、失败点后移到调用期”的原则。
 
 ### Checklist
 
-* [ ] 文档中不再出现 `api+frontend` 这种旧模式命名。
-* [ ] `frontend` 默认模式已经在 CLI 和部署说明里一致体现。
-* [ ] `hubvault.entry` 不再被表述为 server runtime 的唯一承载位置。
-* [ ] 可选依赖的 import 边界已经定清，不会把缺依赖问题扩散到基础安装路径。
-* [ ] 命名、模式和范围足够稳定，可以支撑后续直接实现。
+* [x] 文档中不再出现 `api+frontend` 这种旧模式命名。
+* [x] `frontend` 默认模式已经在 CLI 和部署说明里一致体现。
+* [x] `hubvault.entry` 不再被表述为 server runtime 的唯一承载位置。
+* [x] 可选依赖的 import 边界已经定清，不会把缺依赖问题扩散到基础安装路径。
+* [x] 命名、模式和范围足够稳定，可以支撑后续直接实现。
 
 ## Phase 2. 依赖拆分、目录落位与打包骨架
 
@@ -873,22 +873,22 @@ MVP 建议收敛为：
 
 ### Todo
 
-* [ ] 新增 `requirements-api.txt`、`requirements-remote.txt`、`requirements-full.txt`。
-* [ ] 新增 `hubvault/server/`、`hubvault/remote/`、`hubvault/entry/server.py` 骨架。
-* [ ] 在 `hubvault/server/` 下补齐 `__init__.py`、`__main__.py`、`launch.py` 的公开启动面骨架。
-* [ ] 增加统一的 missing-extra 提示与延迟导入骨架，避免顶层 import 触发 FastAPI / HTTP client 依赖。
-* [ ] 新增 `webui/` 前端源码目录与 `hubvault/server/static/webui/` 静态产物目录。
-* [ ] 补齐 `setup.py` / `MANIFEST.in` / 其它打包配置，使前端静态资源能进入包产物。
-* [ ] 为 `make build` 准备静态资源收集方案。
-* [ ] 为 `webui` 准备 `npm run test`、`npm run build`、资源同步脚本。
+* [x] 新增 `requirements-api.txt`、`requirements-remote.txt`、`requirements-full.txt`。
+* [x] 新增 `hubvault/server/`、`hubvault/remote/`、`hubvault/entry/server.py` 骨架。
+* [x] 在 `hubvault/server/` 下补齐 `__init__.py`、`__main__.py`、`launch.py` 的公开启动面骨架。
+* [x] 增加统一的 missing-extra 提示与延迟导入骨架，避免顶层 import 触发 FastAPI / HTTP client 依赖。
+* [x] 新增 `webui/` 前端源码目录与 `hubvault/server/static/webui/` 静态产物目录。
+* [x] 补齐 `setup.py` / `MANIFEST.in` / 其它打包配置，使前端静态资源能进入包产物。
+* [x] 为 `make build` 准备静态资源收集方案。
+* [x] 为 `webui` 准备 `npm run test`、`npm run build`、资源同步脚本。
 
 ### Checklist
 
-* [ ] extras 仍然挂在同一个 `hubvault` 包上。
-* [ ] wheel / sdist / PyInstaller 的资源收集路径已经定清。
-* [ ] 前端源码与前端产物职责分离。
-* [ ] `hubvault.server` 的 import 路径和 `hubvault serve` 的适配关系已经定清。
-* [ ] base install 下 `import hubvault` 与默认 unittest 收集不会因为 extras 缺失而失败。
+* [x] extras 仍然挂在同一个 `hubvault` 包上。
+* [x] wheel / sdist / PyInstaller 的资源收集路径已经定清。
+* [x] 前端源码与前端产物职责分离。
+* [x] `hubvault.server` 的 import 路径和 `hubvault serve` 的适配关系已经定清。
+* [x] base install 下 `import hubvault` 与默认 unittest 收集不会因为 extras 缺失而失败。
 
 ## Phase 3. 服务配置、启动入口与鉴权骨架
 
@@ -898,25 +898,25 @@ MVP 建议收敛为：
 
 ### Todo
 
-* [ ] 实现 `server/config.py`，统一承载 repo path、mode、token、host、port 等配置。
-* [ ] 实现 `server/asgi.py`、`server/app.py` 与 `server/launch.py`，分别承载 ASGI import target、app factory 与 quick-start helper。
-* [ ] 实现 `server/__init__.py` 与 `server/__main__.py`，暴露薄 public API 与模块级命令入口。
-* [ ] 实现 `entry/server.py` 并把 `serve` 注册到 CLI，但保持其为 `hubvault.server` 的薄适配层。
-* [ ] 实现 API extras 缺失时的延迟导入与友好报错，不让 CLI / import surface 在模块导入阶段崩溃。
-* [ ] 实现 `server/auth.py` 与权限依赖。
-* [ ] 实现 `server/exception_handlers.py`。
-* [ ] 实现 `/api/v1/meta/service` 和 `/api/v1/meta/whoami`。
-* [ ] 增加 `test/server/test_config.py`、`test/server/test_launch.py`、`test/server/test_auth.py`、`test/entry/test_server.py`、基础安装下的 import-stability 回归。
+* [x] 实现 `server/config.py`，统一承载 repo path、mode、token、host、port 等配置。
+* [x] 实现 `server/asgi.py`、`server/app.py` 与 `server/launch.py`，分别承载 ASGI import target、app factory 与 quick-start helper。
+* [x] 实现 `server/__init__.py` 与 `server/__main__.py`，暴露薄 public API 与模块级命令入口。
+* [x] 实现 `entry/server.py` 并把 `serve` 注册到 CLI，但保持其为 `hubvault.server` 的薄适配层。
+* [x] 实现 API extras 缺失时的延迟导入与友好报错，不让 CLI / import surface 在模块导入阶段崩溃。
+* [x] 实现 `server/auth.py` 与权限依赖。
+* [x] 实现 `server/exception_handlers.py`。
+* [x] 实现 `/api/v1/meta/service` 和 `/api/v1/meta/whoami`。
+* [x] 增加 `test/server/test_config.py`、`test/server/test_launch.py`、`test/server/test_auth.py`、`test/entry/test_server.py`、基础安装下的 import-stability 回归。
 
 ### Checklist
 
-* [ ] `from hubvault.server import ServerConfig, create_app, launch` 可以稳定导入并按预期工作。
-* [ ] `hubvault serve --mode api` 可以成功起服务。
-* [ ] `hubvault serve --mode frontend` 可以成功起服务。
-* [ ] `uvicorn` / `gunicorn` 风格的 import string 可以在不经过 `hubvault.entry` 的情况下起服务。
-* [ ] 缺少 API extras 时，server 相关公开 import 保持稳定，实际调用时返回明确安装提示。
-* [ ] `ro` / `rw` token 行为已可区分。
-* [ ] 无 token、坏 token、权限不足的错误语义稳定。
+* [x] `from hubvault.server import ServerConfig, create_app, launch` 可以稳定导入并按预期工作。
+* [x] `hubvault serve --mode api` 可以成功起服务。
+* [x] `hubvault serve --mode frontend` 可以成功起服务。
+* [x] `uvicorn` / `gunicorn` 风格的 import string 可以在不经过 `hubvault.entry` 的情况下起服务。
+* [x] 缺少 API extras 时，server 相关公开 import 保持稳定，实际调用时返回明确安装提示。
+* [x] `ro` / `rw` token 行为已可区分。
+* [x] 无 token、坏 token、权限不足的错误语义稳定。
 
 ## Phase 4. 只读 API 路由与下载闭环
 

@@ -1,17 +1,19 @@
-hubvault.repo
+hubvault.remote
 ========================================================
 
-.. currentmodule:: hubvault.repo
+.. currentmodule:: hubvault.remote
 
-.. automodule:: hubvault.repo
+.. automodule:: hubvault.remote
 
 
 .. toctree::
     :maxdepth: 3
 
-    backend
-    constants
-    sqlite
+    api
+    cache
+    client
+    errors
+    serde
 
 \_\_all\_\_
 -----------------------------------------------------
