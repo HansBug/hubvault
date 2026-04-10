@@ -15,7 +15,7 @@
 
 ## 目标
 
-1. 提供基于 FastAPI 的官方服务层，支持“像 Gradio 一样快速起服务”和“标准 ASGI 部署”两类启动方式。
+1. 提供基于 FastAPI 的官方服务层，支持 Python import 快速启动、CLI 快速启动和标准 ASGI 部署。
 2. 前端采用 `Vue 3` + 成熟扁平化组件库，实现简洁、低样板代码的内置 Web UI。
 3. 前端与 API 共享同一个 FastAPI app、同一个端口、同一棵根路由树，不另开第二个服务。
 4. 启动模式只保留两种：`api` 和 `frontend`，其中 `frontend` 的含义是“同时提供 API + frontend”，并作为默认模式。
@@ -78,14 +78,17 @@ extras 的意义只用于依赖解析，不用于拆包：
 
 - `--mode frontend`
 
-### 4. 双启动入口
+### 4. 启动入口分层
 
 必须同时支持：
 
-- 快速启动：适合本地临时访问、单机内网、小团队共享、测试环境
-- 标准部署：适合 `uvicorn` / 进程管理器 / 容器 / 反向代理场景
+- Python import 快速启动：适合像 Gradio 一样从普通 Python 脚本里直接启动服务
+- CLI 快速启动：适合本地临时访问、单机内网、小团队共享、测试环境
+- 标准 ASGI 部署：适合 `uvicorn` / `gunicorn` / 进程管理器 / 容器 / 反向代理场景
 
-快速启动由 CLI 负责，标准部署由 app factory 负责，但两者必须复用同一个 app 构造逻辑。
+`hubvault/server/` 是与 `hubvault/repo/` 同级的一级 runtime module，负责 server 配置、app factory、路由、鉴权、异常映射、import 启动 helper 和 ASGI import target。`hubvault/entry/server.py` 只做 CLI 参数解析与命令注册，不持有 server runtime 逻辑。
+
+Python import、CLI 和 ASGI 部署必须复用同一个 `ServerConfig` 和同一个 app 构造逻辑。
 
 ### 5. 运行边界
 
@@ -106,8 +109,11 @@ hubvault/
 │   ├── cache.py
 │   └── errors.py
 ├── server/
+│   ├── __init__.py
+│   ├── __main__.py
 │   ├── asgi.py
 │   ├── app.py
+│   ├── launch.py
 │   ├── config.py
 │   ├── auth.py
 │   ├── deps.py
@@ -152,6 +158,9 @@ test/
 约束：
 
 - `hubvault/__init__.py` 不塞业务实现，只保留薄导出
+- `hubvault/server/__init__.py` 只做 `create_app`、`launch`、`ServerConfig` 等公开 server 启动面的薄导出
+- `hubvault/server/__main__.py` 可作为 `python -m hubvault.server` 快速启动入口，但必须复用 `hubvault.server.launch`
+- `hubvault/entry/server.py` 只能调用 `hubvault.server` 公开面，不能复制配置解析、app 构造或运行时逻辑
 - `webui/` 是前端源码目录，不是独立发布包
 - `hubvault/server/static/webui/` 只存放构建产物
 
@@ -202,6 +211,44 @@ test/
 
 ## 启动与部署设计
 
+### Python import 快速启动
+
+推荐默认形式：
+
+```python
+from hubvault.server import launch
+
+launch(
+    repo_path="/path/to/repo",
+    host="127.0.0.1",
+    port=7860,
+    token_ro=["readonly-token"],
+    token_rw=["readwrite-token"],
+    mode="frontend",
+    open_browser=True,
+)
+```
+
+需要把 app 嵌入现有 ASGI 进程时：
+
+```python
+from hubvault.server import ServerConfig, create_app
+
+app = create_app(
+    ServerConfig(
+        repo_path="/path/to/repo",
+        mode="frontend",
+        token_rw=["readwrite-token"],
+    )
+)
+```
+
+行为约束：
+
+- 上述公开启动面定义在 `hubvault.server`，而不是 `hubvault.entry`
+- `launch(...)` 只是 quick-start helper，本质上仍然围绕 `ServerConfig` + app factory 组装
+- import 启动与 CLI 启动必须共用同一套 `ServerConfig`
+
 ### CLI 快速启动
 
 推荐默认形式：
@@ -245,6 +292,8 @@ hubvault serve /path/to/repo \
 - `frontend` 模式一定同时暴露 `/api/v1/**`
 - `api` 模式不注册 UI 静态资源与 fallback
 - 未安装 `hubvault[api]` 或 `hubvault[full]` 时，`serve` 命令必须给出明确安装提示
+- `hubvault serve` 只负责命令行参数体验与 quick-start 调用，不承载 server runtime 主实现
+- 如果保留 `python -m hubvault.server`，其参数语义必须与 `hubvault serve` 保持一致
 
 ### 标准 ASGI 部署
 
@@ -255,12 +304,17 @@ export HUBVAULT_REPO_PATH=/path/to/repo
 export HUBVAULT_SERVE_MODE=frontend
 export HUBVAULT_TOKEN_RW=readwrite-token
 uvicorn hubvault.server.asgi:create_app --factory --host 0.0.0.0 --port 7860
+
+gunicorn "hubvault.server.asgi:create_app()" \
+  --worker-class uvicorn.workers.UvicornWorker \
+  --bind 0.0.0.0:7860
 ```
 
 约束：
 
 - `hubvault.server.asgi:create_app` 必须从环境变量或显式参数读取配置
-- CLI 启动和 ASGI factory 启动必须共用同一套 `ServerConfig`
+- `uvicorn` / `gunicorn` 风格的 import string 必须直接指向 `hubvault.server` 公开 runtime，而不是 `hubvault.entry`
+- Python import 启动、CLI 启动和 ASGI factory 启动必须共用同一套 `ServerConfig`
 
 ## 路由树设计
 
@@ -769,7 +823,8 @@ MVP 建议收敛为：
 * [ ] 明确本计划是 post-init 独立 phase，编号从 `1` 开始。
 * [ ] 冻结 `api` / `frontend` 两种模式，并规定默认值为 `frontend`。
 * [ ] 明确 `frontend` 的含义是 “API + frontend 同时提供”。
-* [ ] 冻结 `hubvault serve` 的职责边界与 app factory 的职责边界。
+* [ ] 冻结 `hubvault.server` 作为与 `hubvault.repo` 同级一级 module 的职责边界。
+* [ ] 冻结 `hubvault.server.launch(...)`、`hubvault.server.create_app(...)` 与 `hubvault serve` 三类启动面的职责边界。
 * [ ] 冻结 `HubVaultRemoteApi` 公开命名，并决定是否提供 `HubVaultRemoteAPI` 别名。
 * [ ] 冻结“同一个 PyPI 包、同一个可执行文件”原则。
 * [ ] 冻结 API、frontend、remote 共用同一 FastAPI app 的原则。
@@ -778,6 +833,7 @@ MVP 建议收敛为：
 
 * [ ] 文档中不再出现 `api+frontend` 这种旧模式命名。
 * [ ] `frontend` 默认模式已经在 CLI 和部署说明里一致体现。
+* [ ] `hubvault.entry` 不再被表述为 server runtime 的唯一承载位置。
 * [ ] 命名、模式和范围足够稳定，可以支撑后续直接实现。
 
 ## Phase 2. 依赖拆分、目录落位与打包骨架
@@ -790,6 +846,7 @@ MVP 建议收敛为：
 
 * [ ] 新增 `requirements-api.txt`、`requirements-remote.txt`、`requirements-full.txt`。
 * [ ] 新增 `hubvault/server/`、`hubvault/remote/`、`hubvault/entry/server.py` 骨架。
+* [ ] 在 `hubvault/server/` 下补齐 `__init__.py`、`__main__.py`、`launch.py` 的公开启动面骨架。
 * [ ] 新增 `webui/` 前端源码目录与 `hubvault/server/static/webui/` 静态产物目录。
 * [ ] 补齐 `setup.py` / `MANIFEST.in` / 其它打包配置，使前端静态资源能进入包产物。
 * [ ] 为 `make build` 准备静态资源收集方案。
@@ -800,27 +857,31 @@ MVP 建议收敛为：
 * [ ] extras 仍然挂在同一个 `hubvault` 包上。
 * [ ] wheel / sdist / PyInstaller 的资源收集路径已经定清。
 * [ ] 前端源码与前端产物职责分离。
+* [ ] `hubvault.server` 的 import 路径和 `hubvault serve` 的适配关系已经定清。
 
 ## Phase 3. 服务配置、启动入口与鉴权骨架
 
 ### Goal
 
-打通服务最小骨架，让 `hubvault serve` 和 ASGI factory 都能起同一套 app，并完成 token 鉴权基线。
+打通服务最小骨架，让 `hubvault.server.launch(...)`、`hubvault serve` 和 ASGI factory 都能起同一套 app，并完成 token 鉴权基线。
 
 ### Todo
 
 * [ ] 实现 `server/config.py`，统一承载 repo path、mode、token、host、port 等配置。
-* [ ] 实现 `server/asgi.py` 与 `server/app.py` 的 app factory。
-* [ ] 实现 `entry/server.py` 并把 `serve` 注册到 CLI。
+* [ ] 实现 `server/asgi.py`、`server/app.py` 与 `server/launch.py`，分别承载 ASGI import target、app factory 与 quick-start helper。
+* [ ] 实现 `server/__init__.py` 与 `server/__main__.py`，暴露薄 public API 与模块级命令入口。
+* [ ] 实现 `entry/server.py` 并把 `serve` 注册到 CLI，但保持其为 `hubvault.server` 的薄适配层。
 * [ ] 实现 `server/auth.py` 与权限依赖。
 * [ ] 实现 `server/exception_handlers.py`。
 * [ ] 实现 `/api/v1/meta/service` 和 `/api/v1/meta/whoami`。
-* [ ] 增加 `test/server/test_config.py`、`test/server/test_auth.py`、`test/entry/test_server.py`。
+* [ ] 增加 `test/server/test_config.py`、`test/server/test_launch.py`、`test/server/test_auth.py`、`test/entry/test_server.py`。
 
 ### Checklist
 
+* [ ] `from hubvault.server import ServerConfig, create_app, launch` 可以稳定导入并按预期工作。
 * [ ] `hubvault serve --mode api` 可以成功起服务。
 * [ ] `hubvault serve --mode frontend` 可以成功起服务。
+* [ ] `uvicorn` / `gunicorn` 风格的 import string 可以在不经过 `hubvault.entry` 的情况下起服务。
 * [ ] `ro` / `rw` token 行为已可区分。
 * [ ] 无 token、坏 token、权限不足的错误语义稳定。
 
