@@ -2,4 +2,3 @@ include README.md
 include MANIFEST.in
 include requirements.txt
 include requirements-*.txt
-recursive-include hubvault *.json *.yml *.yaml *.png

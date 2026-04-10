@@ -1,21 +1,19 @@
-import os
+from pathlib import Path
 import re
-from codecs import open
-from distutils.core import setup
 
-from setuptools import find_packages
+from setuptools import find_packages, setup
 
 _MODULE_NAME = "hubvault"
 _PACKAGE_NAME = 'hubvault'
 
-here = os.path.abspath(os.path.dirname(__file__))
+here = Path(__file__).resolve().parent
 meta = {}
-with open(os.path.join(here, _MODULE_NAME, 'config', 'meta.py'), 'r', 'utf-8') as f:
+with (here / _MODULE_NAME / 'config' / 'meta.py').open('r', encoding='utf-8') as f:
     exec(f.read(), meta)
 
 
 def _load_req(file: str):
-    with open(file, 'r', 'utf-8') as f:
+    with (here / file).open('r', encoding='utf-8') as f:
         return [line.strip() for line in f.readlines() if line.strip()]
 
 
@@ -25,11 +23,11 @@ _REQ_PATTERN = re.compile(r'^requirements-(\w+)\.txt$')
 _REQ_BLACKLIST = {'zoo'}
 group_requirements = {
     item.group(1): _load_req(item.group(0))
-    for item in [_REQ_PATTERN.fullmatch(reqpath) for reqpath in os.listdir()] if item
+    for item in [_REQ_PATTERN.fullmatch(reqpath.name) for reqpath in here.iterdir()] if item
     if item.group(1) not in _REQ_BLACKLIST
 }
 
-with open('README.md', 'r', 'utf-8') as f:
+with (here / 'README.md').open('r', encoding='utf-8') as f:
     readme = f.read()
 
 setup(
@@ -37,10 +35,6 @@ setup(
     name=_PACKAGE_NAME,
     version=meta['__VERSION__'],
     packages=find_packages(include=(_MODULE_NAME, "%s.*" % _MODULE_NAME)),
-    package_data={
-        package_name: ['*.yaml', '*.yml', '*.json', '*.png']
-        for package_name in find_packages(include=('*'))
-    },
     description=meta['__DESCRIPTION__'],
     long_description=readme,
     long_description_content_type='text/markdown',
@@ -53,18 +47,17 @@ setup(
     # environment
     python_requires=">=3.7",
     install_requires=requirements,
-    tests_require=group_requirements['test'],
     extras_require=group_requirements,
     classifiers=[
         'Development Status :: 3 - Alpha',
+        'Environment :: Console',
 
         # Intended Audience
+        'Intended Audience :: End Users/Desktop',
         'Intended Audience :: Developers',
         'Intended Audience :: Science/Research',
         'Intended Audience :: Information Technology',
-
-        # License
-        'License :: OSI Approved :: GNU General Public License v3 (GPLv3)',
+        'Intended Audience :: System Administrators',
 
         # Programming Language
         'Programming Language :: Python',
@@ -78,6 +71,7 @@ setup(
         'Programming Language :: Python :: 3.12',
         'Programming Language :: Python :: 3.13',
         'Programming Language :: Python :: 3.14',
+        'Programming Language :: Python :: Implementation :: CPython',
 
         # Operating System
         'Operating System :: OS Independent',
@@ -91,9 +85,11 @@ setup(
         'Topic :: Software Development :: Libraries',
         'Topic :: Software Development :: Libraries :: Python Modules',
         'Topic :: Software Development :: Version Control',
+        'Topic :: Scientific/Engineering :: Artificial Intelligence',
         'Topic :: Utilities',
 
-        'Natural Language :: English'
+        'Natural Language :: Chinese (Simplified)',
+        'Natural Language :: English',
     ],
     entry_points={
         'console_scripts': [
@@ -103,7 +99,9 @@ setup(
     },
     project_urls={
         'Bug Reports': 'https://github.com/hansbug/hubvault/issues',
-        'Documentation': 'https://hansbug.github.io/hubvault/main/index.html',
+        'Documentation': 'https://hubvault.readthedocs.io/en/latest/',
+        'Documentation (ZH)': 'https://hubvault.readthedocs.io/zh/latest/',
+        'Read the Docs': 'https://hubvault.readthedocs.io/',
         'Source': 'https://github.com/hansbug/hubvault',
     },
 )

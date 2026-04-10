@@ -191,4 +191,4 @@ Continue with :doc:`../quick_start/index` to create a real repository, make
 commits, read files, and materialize detached download views.
 
 Online documentation is available at
-`https://hansbug.github.io/hubvault/main/index_en.html <https://hansbug.github.io/hubvault/main/index_en.html>`_.
+`https://hubvault.readthedocs.io/en/latest/ <https://hubvault.readthedocs.io/en/latest/>`_.

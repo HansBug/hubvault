@@ -183,5 +183,5 @@ CLI 侧校验：
 生成 detached 下载视图。
 
 在线文档可通过
-`https://hansbug.github.io/hubvault/main/index_zh.html <https://hansbug.github.io/hubvault/main/index_zh.html>`_
+`https://hubvault.readthedocs.io/zh/latest/ <https://hubvault.readthedocs.io/zh/latest/>`_
 访问。

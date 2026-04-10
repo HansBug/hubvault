@@ -156,7 +156,8 @@ gettext_compact = False
 # a list of plugins themes.
 #
 html_theme = 'sphinx_rtd_theme'
-htmlhelp_basename = 'TreeValue'
+htmlhelp_basename = 'hubvaultdoc'
+html_baseurl = os.environ.get('READTHEDOCS_CANONICAL_URL', 'https://hubvault.readthedocs.io/en/latest/')
 
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the plugins static files,
@@ -170,7 +171,7 @@ html_css_files = [
 # Language-specific settings
 html_context = {
     'display_github': True,
-    'github_user': 'hansbug',
+    'github_user': 'HansBug',
     'github_repo': 'hubvault',
     'github_version': 'main',
     'conf_py_path': '/docs/source/',

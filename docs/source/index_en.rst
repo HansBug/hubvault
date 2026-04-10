@@ -18,7 +18,7 @@ The shortest accurate description is:
 * explicit write operations and detached read views
 
 What hubvault provides
-----------------------
+~~~~~~~~~~~~~~~~~~~~~~
 
 hubvault currently ships a working local repository surface with:
 
@@ -30,7 +30,7 @@ hubvault currently ships a working local repository surface with:
 * A git-like CLI exposed as both ``hubvault`` and ``hv``
 
 Where it fits best
-------------------
+~~~~~~~~~~~~~~~~~~
 
 hubvault is designed for deep-learning artifact repositories that should remain
 useful without first operating heavyweight infrastructure. It is a good fit
@@ -48,7 +48,7 @@ is to give one directory enough repository semantics to maintain large ML data
 locally and predictably.
 
 What makes the project different
---------------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 hubvault is intentionally opinionated about a few things:
 
@@ -59,7 +59,7 @@ hubvault is intentionally opinionated about a few things:
 * **Infrastructure stays small.** You do not need Docker, Kubernetes, a daemon, an external object store, or a hosted service just to keep a durable artifact repository.
 
 Design constraints
-------------------
+~~~~~~~~~~~~~~~~~~
 
 hubvault is built around a few non-negotiable constraints:
 
@@ -70,7 +70,7 @@ hubvault is built around a few non-negotiable constraints:
 * **Cross-platform support**: Linux, macOS, and Windows remain first-class targets
 
 Compatibility
--------------
+~~~~~~~~~~~~~
 
 hubvault aligns with Git / Hugging Face where that alignment is user-visible:
 
@@ -85,7 +85,7 @@ hubvault intentionally differs where local embedded semantics matter:
 * read-facing paths are detached views, not writable repository aliases
 
 How to read this documentation
-------------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 If you are new to the project, the best order is:
 

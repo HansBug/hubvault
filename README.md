@@ -4,6 +4,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/hubvault)](https://pypi.org/project/hubvault/)
 ![PyPI - Python Version](https://img.shields.io/pypi/pyversions/hubvault)
+[![Documentation Status](https://readthedocs.org/projects/hubvault/badge/?version=latest)](https://hubvault.readthedocs.io/en/latest/)
 [![Code Test](https://github.com/hansbug/hubvault/workflows/Code%20Test/badge.svg)](https://github.com/hansbug/hubvault/actions?query=workflow%3A%22Code+Test%22)
 [![Package Release](https://github.com/hansbug/hubvault/workflows/Package%20Release/badge.svg)](https://github.com/hansbug/hubvault/actions?query=workflow%3A%22Package+Release%22)
 [![codecov](https://codecov.io/gh/hansbug/hubvault/branch/main/graph/badge.svg?token=XJVDP4EFAT)](https://codecov.io/gh/hansbug/hubvault)
@@ -234,8 +235,8 @@ Current non-goals:
 
 ## Docs and Contributor Entry Points
 
-- English docs: https://hansbug.github.io/hubvault/main/index_en.html
-- Chinese docs: https://hansbug.github.io/hubvault/main/index_zh.html
+- English docs: https://hubvault.readthedocs.io/en/latest/
+- Chinese docs: https://hubvault.readthedocs.io/zh/latest/
 - Contribution guide: [CONTRIBUTING.md](CONTRIBUTING.md)
 - Repository collaboration rules: [AGENTS.md](AGENTS.md)
 - Benchmark records: [build/benchmark/](build/benchmark/)
