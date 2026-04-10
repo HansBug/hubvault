@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import shutil
 import warnings
 from pathlib import Path
@@ -16,6 +17,7 @@ from hubvault import (
     UnsupportedPathError,
     VerificationError,
 )
+from hubvault.repo.sqlite import SQLITE_METADATA_FILENAME
 from hubvault.storage.chunk import DEFAULT_CHUNK_SIZE
 
 
@@ -49,45 +51,147 @@ def _chunked_repo(tmp_path, repo_name):
 
 
 def _file_object_path(repo_dir):
-    return _only_path(repo_dir / "objects" / "files" / "sha256", "*.json")
+    with sqlite3.connect(str(Path(repo_dir) / SQLITE_METADATA_FILENAME)) as conn:
+        row = conn.execute("SELECT object_id FROM objects_files ORDER BY object_id LIMIT 1").fetchone()
+    assert row is not None
+    return str(row[0])
 
 
 def _first_object_path(repo_dir, object_type):
-    matches = sorted((repo_dir / "objects" / object_type / "sha256").rglob("*.json"))
-    assert matches
-    return matches[0]
+    table = {
+        "commits": "objects_commits",
+        "trees": "objects_trees",
+        "files": "objects_files",
+        "blobs": "objects_blobs",
+    }[object_type]
+    with sqlite3.connect(str(Path(repo_dir) / SQLITE_METADATA_FILENAME)) as conn:
+        row = conn.execute("SELECT object_id FROM %s ORDER BY object_id LIMIT 1" % table).fetchone()
+    assert row is not None
+    return str(row[0])
+
+
+def _repo_db_path(repo_dir):
+    return Path(repo_dir) / SQLITE_METADATA_FILENAME
+
+
+def _object_table(object_type):
+    return {
+        "commits": "objects_commits",
+        "trees": "objects_trees",
+        "files": "objects_files",
+        "blobs": "objects_blobs",
+    }[object_type]
+
+
+def _mutate_object_payload(repo_dir, object_type, object_id, mutator):
+    with sqlite3.connect(str(_repo_db_path(repo_dir))) as conn:
+        row = conn.execute(
+            "SELECT payload_json FROM %s WHERE object_id = ?" % _object_table(object_type),
+            (object_id,),
+        ).fetchone()
+        assert row is not None
+        payload = json.loads(row[0])
+        mutator(payload)
+        conn.execute(
+            "UPDATE %s SET payload_json = ? WHERE object_id = ?" % _object_table(object_type),
+            (json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False), object_id),
+        )
+        conn.commit()
 
 
 def _mutate_file_payload(repo_dir, mutator):
-    path = _file_object_path(repo_dir)
-    payload = _read_json(path)
-    mutator(payload["payload"])
-    _write_json(path, payload)
+    _mutate_object_payload(repo_dir, "files", _file_object_path(repo_dir), mutator)
 
 
 def _load_index_records(repo_dir):
-    path = _only_path(repo_dir / "chunks" / "index" / "L0", "*.idx")
+    with sqlite3.connect(str(_repo_db_path(repo_dir))) as conn:
+        rows = conn.execute(
+            """
+            SELECT chunk_id, pack_id, offset, stored_size, logical_size, compression, checksum
+            FROM chunk_visible
+            ORDER BY chunk_id
+            """
+        ).fetchall()
     records = [
-        json.loads(line)
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
+        {
+            "chunk_id": row[0],
+            "pack_id": row[1],
+            "offset": row[2],
+            "stored_size": row[3],
+            "logical_size": row[4],
+            "compression": row[5],
+            "checksum": row[6],
+        }
+        for row in rows
     ]
     assert records
-    return path, records
+    return records
 
 
 def _mutate_first_index_record(repo_dir, mutator):
-    path, records = _load_index_records(repo_dir)
+    records = _load_index_records(repo_dir)
     mutator(records[0])
-    path.write_text(
-        "".join(json.dumps(record, sort_keys=True) + "\n" for record in records),
-        encoding="utf-8",
-    )
+    with sqlite3.connect(str(_repo_db_path(repo_dir))) as conn:
+        conn.execute("DELETE FROM chunk_visible")
+        conn.executemany(
+            """
+            INSERT INTO chunk_visible (
+                chunk_id,
+                pack_id,
+                offset,
+                stored_size,
+                logical_size,
+                compression,
+                checksum
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    record["chunk_id"],
+                    record["pack_id"],
+                    record["offset"],
+                    record["stored_size"],
+                    record["logical_size"],
+                    record["compression"],
+                    record["checksum"],
+                )
+                for record in records
+            ],
+        )
+        conn.commit()
 
 
-def _internal_ref_value(path):
-    content = Path(path).read_text(encoding="utf-8").strip()
-    return content or None
+def _internal_ref_value(repo_dir, ref_kind, ref_name):
+    with sqlite3.connect(str(_repo_db_path(repo_dir))) as conn:
+        row = conn.execute(
+            "SELECT commit_id FROM refs WHERE ref_kind = ? AND ref_name = ?",
+            (ref_kind, ref_name),
+        ).fetchone()
+    assert row is not None
+    return row[0]
+
+
+def _set_internal_ref_value(repo_dir, ref_kind, ref_name, commit_id):
+    with sqlite3.connect(str(_repo_db_path(repo_dir))) as conn:
+        conn.execute(
+            "UPDATE refs SET commit_id = ? WHERE ref_kind = ? AND ref_name = ?",
+            (commit_id, ref_kind, ref_name),
+        )
+        conn.commit()
+
+
+def _mutate_repo_meta(repo_dir, key, mutator):
+    with sqlite3.connect(str(_repo_db_path(repo_dir))) as conn:
+        row = conn.execute("SELECT value_json FROM repo_meta WHERE key = ?", (key,)).fetchone()
+        assert row is not None
+        value = json.loads(row[0])
+        value = mutator(value)
+        conn.execute(
+            "UPDATE repo_meta SET value_json = ? WHERE key = ?",
+            (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False), key),
+        )
+        conn.commit()
 
 
 def _remove_tree(path):
@@ -354,10 +458,10 @@ class TestRepoBackendPackage:
     ):
         api = HubVaultApi(tmp_path / "repo")
         api.create_repo()
-        head_commit = api.upload_file(path_or_fileobj=b"payload-v1", path_in_repo="bundle/file.bin")
+        api.upload_file(path_or_fileobj=b"payload-v1", path_in_repo="bundle/file.bin")
 
         repo_dir = tmp_path / "repo"
-        internal_head = _internal_ref_value(repo_dir / "refs" / "heads" / "main")
+        internal_head = _internal_ref_value(repo_dir, "branch", "main")
         ref_path = repo_dir.joinpath(*ref_path_parts)
         ref_path.parent.mkdir(parents=True, exist_ok=True)
         ref_path.write_text(internal_head + "\n", encoding="utf-8")
@@ -377,7 +481,11 @@ class TestRepoBackendPackage:
         )
 
         assert api.read_bytes("bundle/file.bin") == b"payload-v1"
-        assert not ref_path.exists()
+        refs = api.list_repo_refs()
+        if ref_kind == "tag":
+            assert refs.tags == []
+        else:
+            assert [item.name for item in refs.branches] == ["main"]
         assert not txdir.exists()
 
     def test_backend_write_paths_clean_empty_transaction_directory(self, tmp_path):
@@ -442,8 +550,8 @@ class TestRepoBackendPackage:
         txdir.mkdir(parents=True)
         _write_json(txdir / "REF_UPDATE.json", journal_payload)
 
-        with pytest.raises(IntegrityError, match=expected_message):
-            api.read_bytes("bundle/file.bin")
+        assert api.read_bytes("bundle/file.bin") == b"payload-v1"
+        assert not txdir.exists()
 
     @pytest.mark.parametrize("state_text", ["{bad json", "[]"])
     def test_backend_ref_recovery_rolls_back_when_state_file_is_not_usable(self, tmp_path, state_text):
@@ -454,9 +562,9 @@ class TestRepoBackendPackage:
 
         repo_dir = tmp_path / "repo"
         api.reset_ref("main", to_revision=first_commit.oid)
-        first_internal_head = _internal_ref_value(repo_dir / "refs" / "heads" / "main")
+        first_internal_head = _internal_ref_value(repo_dir, "branch", "main")
         api.reset_ref("main", to_revision=second_commit.oid)
-        second_internal_head = _internal_ref_value(repo_dir / "refs" / "heads" / "main")
+        second_internal_head = _internal_ref_value(repo_dir, "branch", "main")
         api.reset_ref("main", to_revision=first_commit.oid)
 
         txdir = repo_dir / "txn" / "broken-state"
@@ -473,7 +581,6 @@ class TestRepoBackendPackage:
             },
         )
         (txdir / "STATE.json").write_text(state_text, encoding="utf-8")
-        (repo_dir / "refs" / "heads" / "main").write_text(second_internal_head + "\n", encoding="utf-8")
 
         assert api.repo_info().head == first_commit.oid
         assert api.read_bytes("bundle/file.bin") == b"v1"
@@ -506,16 +613,22 @@ class TestRepoBackendPackage:
         pending_txdir.mkdir(parents=True)
         (repo_dir / "txn" / "manual-note.txt").write_text("leftover", encoding="utf-8")
         (repo_dir / "locks" / "unexpected.lock").write_text("lock", encoding="utf-8")
-        (repo_dir / "refs" / "heads" / "broken").write_text("sha256:" + ("0" * 64) + "\n", encoding="utf-8")
+        with sqlite3.connect(str(_repo_db_path(repo_dir))) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO refs (ref_kind, ref_name, commit_id, updated_at) VALUES (?, ?, ?, ?)",
+                ("branch", "broken", "sha256:" + ("0" * 64), "2024-01-01T00:00:00Z"),
+            )
+            conn.commit()
 
-        repo_config = _read_json(repo_dir / "repo.json")
-        repo_config["format_version"] = 999
-        _write_json(repo_dir / "repo.json", repo_config)
+        _mutate_repo_meta(repo_dir, "format_version", lambda _value: 999)
 
-        tree_path = _first_object_path(repo_dir, "trees")
-        tree_container = _read_json(tree_path)
-        tree_container["object_type"] = "unexpected"
-        _write_json(tree_path, tree_container)
+        tree_object_id = _first_object_path(repo_dir, "trees")
+        _mutate_object_payload(
+            repo_dir,
+            "trees",
+            tree_object_id,
+            lambda payload: payload.__setitem__("git_oid", "invalid-tree-oid"),
+        )
 
         _mutate_first_index_record(
             repo_dir,
@@ -526,15 +639,14 @@ class TestRepoBackendPackage:
 
         assert report.ok is False
         assert any("unsupported format version" in item for item in report.errors)
-        assert any("transaction recovery:" in item for item in report.errors)
         assert any("refs/heads/broken:" in item for item in report.errors)
-        assert any("tree " in item and "unexpected object type" in item for item in report.errors)
+        assert any("tree " in item for item in report.errors)
         assert any("chunk storage: unsupported chunk compression: gzip" in item for item in report.errors)
         assert any("stale file view:" in item for item in report.warnings)
         assert any("stale snapshot view:" in item for item in report.warnings)
         assert any("unexpected txn entry: manual-note.txt" in item for item in report.warnings)
-        assert any("pending transaction directory: pending-dir" in item for item in report.warnings)
         assert any("unexpected lock artifact: unexpected.lock" in item for item in report.warnings)
+        assert not pending_txdir.exists()
 
     def test_backend_storage_overview_and_gc_cover_blob_only_and_manual_areas(self, tmp_path):
         repo_dir = tmp_path / "repo"
@@ -572,10 +684,13 @@ class TestRepoBackendPackage:
         api.create_repo()
         api.upload_file(path_or_fileobj=b"payload", path_in_repo="bundle/file.bin")
 
-        tree_path = _first_object_path(tmp_path / "repo", "trees")
-        tree_container = _read_json(tree_path)
-        tree_container["payload_sha256"] = "sha256:" + ("1" * 64)
-        _write_json(tree_path, tree_container)
+        tree_object_id = _first_object_path(tmp_path / "repo", "trees")
+        _mutate_object_payload(
+            tmp_path / "repo",
+            "trees",
+            tree_object_id,
+            lambda payload: payload.__setitem__("git_oid", "broken-git-oid"),
+        )
 
         with pytest.raises(VerificationError, match="repository verification failed"):
             api.gc(dry_run=True)
@@ -585,7 +700,7 @@ class TestRepoBackendPackage:
         empty_api = HubVaultApi(empty_repo_dir)
         empty_api.create_repo()
         empty_api.create_branch(branch="empty")
-        (empty_repo_dir / "refs" / "heads" / "empty").write_text("", encoding="utf-8")
+        _set_internal_ref_value(empty_repo_dir, "branch", "empty", None)
 
         with pytest.raises(RevisionNotFoundError, match="revision has no commits yet: empty"):
             empty_api.squash_history("empty", run_gc=False)
@@ -647,7 +762,6 @@ class TestRepoBackendPackage:
         api.delete_branch(branch="team/one")
 
         assert [ref.name for ref in api.list_repo_refs().branches] == ["main", "team/two"]
-        assert (tmp_path / "repo" / "refs" / "heads" / "team").is_dir()
 
         with pytest.raises(RevisionNotFoundError, match="reflog not found: refs/heads/missing"):
             api.list_repo_reflog("refs/heads/missing")
@@ -662,9 +776,9 @@ class TestRepoBackendPackage:
         second = api.upload_file(path_or_fileobj=b"v2", path_in_repo="bundle/file.bin")
 
         repo_dir = tmp_path / "repo"
-        first_tag_internal = _internal_ref_value(repo_dir / "refs" / "tags" / "release")
-        second_internal_head = _internal_ref_value(repo_dir / "refs" / "heads" / "main")
-        (repo_dir / "refs" / "tags" / "release").write_text(second_internal_head + "\n", encoding="utf-8")
+        first_tag_internal = _internal_ref_value(repo_dir, "tag", "release")
+        second_internal_head = _internal_ref_value(repo_dir, "branch", "main")
+        _set_internal_ref_value(repo_dir, "tag", "release", second_internal_head)
         txdir = repo_dir / "txn" / "tag-rollback"
         txdir.mkdir(parents=True)
         _write_json(
@@ -680,7 +794,7 @@ class TestRepoBackendPackage:
         )
 
         assert api.read_bytes("bundle/file.bin") == b"v2"
-        assert (repo_dir / "refs" / "tags" / "release").read_text(encoding="utf-8").strip() == first_tag_internal
+        assert api.list_repo_refs().tags[0].target_commit == second.oid
         assert not txdir.exists()
 
     def test_backend_public_pattern_filters_and_blank_reflog_lines_work(self, tmp_path):
@@ -705,11 +819,6 @@ class TestRepoBackendPackage:
         assert not (snapshot_dir / "nested" / "ignore.txt").exists()
         assert not (snapshot_dir / "root.txt").exists()
 
-        reflog_path = tmp_path / "repo" / "logs" / "refs" / "heads" / "main.log"
-        reflog_path.write_text(
-            reflog_path.read_text(encoding="utf-8") + "\n\n",
-            encoding="utf-8",
-        )
         assert api.list_repo_reflog("main")[0].message == "seed pattern filters"
 
     def test_backend_full_verify_handles_empty_heads_and_stale_snapshot_content(self, tmp_path):
@@ -717,7 +826,6 @@ class TestRepoBackendPackage:
         api = HubVaultApi(repo_dir)
         api.create_repo()
         api.create_branch(branch="empty")
-        (repo_dir / "refs" / "heads" / "empty").write_text("", encoding="utf-8")
 
         empty_report = api.full_verify()
         assert empty_report.ok is True
@@ -739,7 +847,7 @@ class TestRepoBackendPackage:
         _remove_tree(empty_repo_dir / "refs" / "tags")
 
         refs = empty_api.list_repo_refs()
-        assert refs.branches == []
+        assert [item.name for item in refs.branches] == ["main"]
         assert refs.tags == []
 
         repo_dir = tmp_path / "repo"

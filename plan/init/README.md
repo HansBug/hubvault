@@ -35,11 +35,11 @@
 - 已落地的 Phase 11 文档交付：README、docs 首页、中英双语教程和安装/工作流/维护/结构说明已经完成收尾
 - 已落地的 Phase 12 benchmark 扩容：四档执行层次（`smoke` / `standard` / `nightly` / `pressure`）、curated summary / manifest / compare 产物、same-machine compare 规则、host local sequential I/O reference，以及 bandwidth / metadata / maintenance / amplification / stability 五类摘要已经固定
 
-当前尚未启动、或已从设计阶段进入待执行状态的后续能力包括：
+当前仍在继续演进、或已经完成大版本收口的后续能力包括：
 
 - Phase 13：基于 Phase 12 的扩容 benchmark 与 profiling 结果，收敛当前剩余的时间路径热点与回退风险
 - Phase 14：已完成 reachable-state safety、全局可串行化、zip 级可移植与 SQLite-first 设计定稿，作为下一阶段实现的执行前置
-- Phase 15：承接 Phase 14 的默认路线，执行 repo-root SQLite truth-store 的全面迁移与剩余文件协议真相层收束
+- Phase 15：已完成 repo-root SQLite truth-store 的全面迁移与剩余文件协议真相层收束，详见 `11-phase15-full-sqlite-truth-store-migration.md`
 
 因此，这组初始化方案既要记录已经实现的 MVP、CLI、benchmark baseline、benchmark 扩容与文档交付，也要继续约束后续 Phase 13、Phase 14 与 Phase 15，避免把已经落地的格式和公开语义重新漂移回“抽象设想”，也避免把热点收敛、design closure 和全面 SQLite 执行重新混回一个模糊的大阶段。
 

@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
@@ -24,6 +25,7 @@ from hubvault import (
 )
 from hubvault.storage.chunk import DEFAULT_CHUNK_SIZE
 from hubvault.storage.pack import PACK_MAGIC
+from hubvault.repo.sqlite import SQLITE_METADATA_FILENAME
 
 
 def _single_file_repo(tmp_path, repo_name="repo", path_in_repo="file.bin", payload=b"payload-v1"):
@@ -49,15 +51,128 @@ def _object_json_path(repo_dir, object_type, object_id):
     return repo_dir / "objects" / object_type / "sha256" / digest[:2] / (digest[2:] + ".json")
 
 
-def _head_tree_path(repo_dir, branch_name="main"):
-    head_commit_id = (repo_dir / "refs" / "heads" / branch_name).read_text(encoding="utf-8").strip()
-    commit_payload = _read_json(_object_json_path(repo_dir, "commits", head_commit_id))
-    return _object_json_path(repo_dir, "trees", commit_payload["payload"]["tree_id"])
+def _repo_db_path(repo_dir):
+    return Path(repo_dir) / SQLITE_METADATA_FILENAME
 
 
-def _head_commit_path(repo_dir, branch_name="main"):
-    head_commit_id = (repo_dir / "refs" / "heads" / branch_name).read_text(encoding="utf-8").strip()
-    return _object_json_path(repo_dir, "commits", head_commit_id)
+def _object_table(object_type):
+    return {
+        "commits": "objects_commits",
+        "trees": "objects_trees",
+        "files": "objects_files",
+        "blobs": "objects_blobs",
+    }[object_type]
+
+
+def _internal_ref_value(repo_dir, ref_kind, ref_name):
+    with sqlite3.connect(str(_repo_db_path(repo_dir))) as conn:
+        row = conn.execute(
+            "SELECT commit_id FROM refs WHERE ref_kind = ? AND ref_name = ?",
+            (ref_kind, ref_name),
+        ).fetchone()
+    assert row is not None
+    return row[0]
+
+
+def _set_internal_ref_value(repo_dir, ref_kind, ref_name, commit_id):
+    with sqlite3.connect(str(_repo_db_path(repo_dir))) as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO refs (ref_kind, ref_name, commit_id, updated_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (ref_kind, ref_name, commit_id, "2026-04-10T00:00:00Z"),
+        )
+        conn.commit()
+
+
+def _head_commit_id(repo_dir, branch_name="main"):
+    return _internal_ref_value(repo_dir, "branch", branch_name)
+
+
+def _object_payload(repo_dir, object_type, object_id):
+    with sqlite3.connect(str(_repo_db_path(repo_dir))) as conn:
+        row = conn.execute(
+            "SELECT payload_json FROM %s WHERE object_id = ?" % _object_table(object_type),
+            (object_id,),
+        ).fetchone()
+    assert row is not None
+    return json.loads(row[0])
+
+
+def _set_object_payload(repo_dir, object_type, object_id, payload):
+    with sqlite3.connect(str(_repo_db_path(repo_dir))) as conn:
+        conn.execute(
+            "UPDATE %s SET payload_json = ? WHERE object_id = ?" % _object_table(object_type),
+            (json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False), object_id),
+        )
+        conn.commit()
+
+
+def _mutate_object_payload(repo_dir, object_type, object_id, mutator):
+    payload = _object_payload(repo_dir, object_type, object_id)
+    mutator(payload)
+    _set_object_payload(repo_dir, object_type, object_id, payload)
+
+
+def _first_object_id(repo_dir, object_type):
+    with sqlite3.connect(str(_repo_db_path(repo_dir))) as conn:
+        row = conn.execute("SELECT object_id FROM %s ORDER BY object_id LIMIT 1" % _object_table(object_type)).fetchone()
+    assert row is not None
+    return str(row[0])
+
+
+def _head_tree_id(repo_dir, branch_name="main"):
+    return str(_object_payload(repo_dir, "commits", _head_commit_id(repo_dir, branch_name))["tree_id"])
+
+
+def _mutate_repo_meta(repo_dir, key, mutator):
+    with sqlite3.connect(str(_repo_db_path(repo_dir))) as conn:
+        row = conn.execute("SELECT value_json FROM repo_meta WHERE key = ?", (key,)).fetchone()
+        assert row is not None
+        value = mutator(json.loads(row[0]))
+        conn.execute(
+            "UPDATE repo_meta SET value_json = ? WHERE key = ?",
+            (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False), key),
+        )
+        conn.commit()
+
+
+def _delete_reflog_rows(repo_dir, ref_kind, ref_name):
+    with sqlite3.connect(str(_repo_db_path(repo_dir))) as conn:
+        conn.execute("DELETE FROM reflog WHERE ref_kind = ? AND ref_name = ?", (ref_kind, ref_name))
+        conn.commit()
+
+
+def _delete_object(repo_dir, object_type, object_id):
+    with sqlite3.connect(str(_repo_db_path(repo_dir))) as conn:
+        conn.execute("DELETE FROM %s WHERE object_id = ?" % _object_table(object_type), (object_id,))
+        conn.commit()
+
+
+def _load_index_records(repo_dir):
+    with sqlite3.connect(str(_repo_db_path(repo_dir))) as conn:
+        rows = conn.execute(
+            """
+            SELECT chunk_id, pack_id, offset, stored_size, logical_size, compression, checksum
+            FROM chunk_visible
+            ORDER BY chunk_id
+            """
+        ).fetchall()
+    records = [
+        {
+            "chunk_id": row[0],
+            "pack_id": row[1],
+            "offset": row[2],
+            "stored_size": row[3],
+            "logical_size": row[4],
+            "compression": row[5],
+            "checksum": row[6],
+        }
+        for row in rows
+    ]
+    assert records
+    return records
 
 
 def _read_json(path):
@@ -83,11 +198,6 @@ def _repo_root():
 
 def _is_git_oid(value):
     return isinstance(value, str) and len(value) == 40 and all(ch in "0123456789abcdef" for ch in value)
-
-
-def _internal_ref_value(path):
-    content = Path(path).read_text(encoding="utf-8").strip()
-    return content or None
 
 
 @pytest.mark.unittest
@@ -349,15 +459,10 @@ class TestRepoSemantics:
             commit_message="seed",
         )
 
-        tag_empty_path = tmp_path / "repo" / "refs" / "tags" / "v-empty"
-        tag_empty_path.parent.mkdir(parents=True, exist_ok=True)
-        tag_empty_path.write_text("", encoding="utf-8")
-
-        tag_good_path = tmp_path / "repo" / "refs" / "tags" / "v-good"
-        tag_good_path.write_text(_internal_ref_value(tmp_path / "repo" / "refs" / "heads" / "main") + "\n", encoding="utf-8")
-
-        tag_broken_path = tmp_path / "repo" / "refs" / "tags" / "v-broken"
-        tag_broken_path.write_text("sha256:" + ("0" * 64) + "\n", encoding="utf-8")
+        repo_dir = tmp_path / "repo"
+        _set_internal_ref_value(repo_dir, "tag", "v-empty", None)
+        _set_internal_ref_value(repo_dir, "tag", "v-good", _internal_ref_value(repo_dir, "branch", "main"))
+        _set_internal_ref_value(repo_dir, "tag", "v-broken", "sha256:" + ("0" * 64))
 
         assert api.list_repo_files(revision="refs/tags/v-good") == ["file.bin"]
         assert api.list_repo_files(revision="v-good") == ["file.bin"]
@@ -383,8 +488,7 @@ class TestRepoSemantics:
         )
         api.create_branch(branch="empty")
 
-        empty_branch_path = tmp_path / "repo" / "refs" / "heads" / "empty"
-        empty_branch_path.write_text("", encoding="utf-8")
+        _set_internal_ref_value(tmp_path / "repo", "branch", "empty", None)
 
         assert api.list_repo_tree(revision="refs/heads/empty") == []
         assert api.list_repo_commits(revision="refs/heads/empty") == []
@@ -416,8 +520,7 @@ class TestRepoSemantics:
         api.create_repo()
         api.create_branch(branch="temp")
 
-        reflog_path = tmp_path / "repo" / "logs" / "refs" / "heads" / "temp.log"
-        reflog_path.unlink()
+        _delete_reflog_rows(tmp_path / "repo", "branch", "temp")
 
         assert api.list_repo_reflog("refs/heads/temp") == []
 
@@ -430,13 +533,14 @@ class TestRepoSemantics:
         )
 
         reflog_path = tmp_path / "repo" / "logs" / "refs" / "heads" / "temp.log"
+        reflog_path.parent.mkdir(parents=True, exist_ok=True)
 
         def recreate_temp_branch():
             if "temp" not in [item.name for item in api.list_repo_refs().branches]:
                 api.create_branch(branch="temp")
 
         recreate_temp_branch()
-        reflog_path.write_text(reflog_path.read_text(encoding="utf-8") + "\n\n", encoding="utf-8")
+        reflog_path.write_text("\n\n", encoding="utf-8")
         api.delete_branch(branch="temp")
         assert "temp" not in [item.name for item in api.list_repo_refs().branches]
 
@@ -465,11 +569,11 @@ class TestRepoSemantics:
         assert api.list_repo_commits()[0].title == "subject line"
         assert api.list_repo_commits()[0].message == "body line"
 
-        commit_object_path = _head_commit_path(repo_dir)
-        commit_payload = _read_json(commit_object_path)
-        del commit_payload["payload"]["title"]
-        del commit_payload["payload"]["description"]
-        _write_json(commit_object_path, commit_payload)
+        commit_object_id = _head_commit_id(repo_dir)
+        commit_payload = _object_payload(repo_dir, "commits", commit_object_id)
+        del commit_payload["title"]
+        del commit_payload["description"]
+        _set_object_payload(repo_dir, "commits", commit_object_id, commit_payload)
 
         rebuilt_commit = api.reset_ref("main", to_revision=second_commit.oid)
         assert rebuilt_commit.commit_message == "subject line"
@@ -488,9 +592,9 @@ class TestRepoSemantics:
         assert third_commit.commit_message == "empty description"
         assert third_commit.commit_description == ""
 
-        commit_payload = _read_json(commit_object_path)
-        commit_payload["payload"]["message"] = ""
-        _write_json(commit_object_path, commit_payload)
+        commit_payload = _object_payload(repo_dir, "commits", commit_object_id)
+        commit_payload["message"] = ""
+        _set_object_payload(repo_dir, "commits", commit_object_id, commit_payload)
 
         empty_history = api.list_repo_commits(revision=second_commit.oid)
         assert empty_history[0].title == ""
@@ -506,10 +610,11 @@ class TestRepoSemantics:
             commit_description="body line",
         )
 
-        commit_payload = _read_json(_head_commit_path(repo_dir))
-        del commit_payload["payload"]["title"]
-        del commit_payload["payload"]["description"]
-        _write_json(_head_commit_path(repo_dir), commit_payload)
+        commit_object_id = _head_commit_id(repo_dir)
+        commit_payload = _object_payload(repo_dir, "commits", commit_object_id)
+        del commit_payload["title"]
+        del commit_payload["description"]
+        _set_object_payload(repo_dir, "commits", commit_object_id, commit_payload)
 
         report = api.squash_history("main", run_gc=False)
 
@@ -562,11 +667,12 @@ class TestRepoSemantics:
         )
         api.reset_ref("main", to_revision=first_commit.oid)
 
-        first_internal_head = _internal_ref_value(tmp_path / "repo" / "refs" / "heads" / "main")
+        repo_dir = tmp_path / "repo"
+        first_internal_head = _internal_ref_value(repo_dir, "branch", "main")
         api.reset_ref("main", to_revision=second_commit.oid)
-        second_internal_head = _internal_ref_value(tmp_path / "repo" / "refs" / "heads" / "main")
+        second_internal_head = _internal_ref_value(repo_dir, "branch", "main")
         api.reset_ref("main", to_revision=first_commit.oid)
-        txdir = tmp_path / "repo" / "txn" / "interrupted"
+        txdir = repo_dir / "txn" / "interrupted"
         txdir.mkdir(parents=True)
         _write_json(
             txdir / "REF_UPDATE.json",
@@ -587,7 +693,6 @@ class TestRepoSemantics:
                 "updated_at": "2026-04-07T00:00:00Z",
             },
         )
-        (tmp_path / "repo" / "refs" / "heads" / "main").write_text(second_internal_head + "\n", encoding="utf-8")
 
         info = api.repo_info()
         assert info.head == first_commit.oid
@@ -614,7 +719,7 @@ class TestRepoSemantics:
         api.create_branch(branch="ephemeral")
         api.create_tag(tag="stable", revision="main")
         api.create_branch(branch="empty-target")
-        (tmp_path / "repo" / "refs" / "heads" / "empty-target").write_text("", encoding="utf-8")
+        _set_internal_ref_value(tmp_path / "repo", "branch", "empty-target", None)
 
         def assert_runtime_failpoint(failpoint, callback):
             with monkeypatch.context() as env:
@@ -826,26 +931,21 @@ class TestRepoSemantics:
     def test_repo_detects_ref_and_config_corruption(self, tmp_path):
         api, repo_dir = _single_file_repo(tmp_path, repo_name="corrupt-refs")
 
-        ref_path = repo_dir / "refs" / "heads" / "main"
-
-        ref_path.write_text("broken\n", encoding="utf-8")
-        with pytest.raises(IntegrityError):
+        _set_internal_ref_value(repo_dir, "branch", "main", "broken")
+        with pytest.raises(RevisionNotFoundError):
             api.list_repo_files()
 
-        ref_path.write_text("sha256:\n", encoding="utf-8")
-        with pytest.raises(IntegrityError):
+        _set_internal_ref_value(repo_dir, "branch", "main", "sha256:")
+        with pytest.raises(RevisionNotFoundError):
             api.list_repo_files()
 
-        ref_path.write_text("sha256:" + ("0" * 64) + "\n", encoding="utf-8")
+        _set_internal_ref_value(repo_dir, "branch", "main", "sha256:" + ("0" * 64))
         report = api.quick_verify()
         assert report.ok is False
         assert any(item.startswith("refs/heads/main:") for item in report.errors)
 
         healthy_api, healthy_repo_dir = _single_file_repo(tmp_path, repo_name="corrupt-config")
-        config_path = healthy_repo_dir / "repo.json"
-        config_data = _read_json(config_path)
-        config_data["format_version"] = 999
-        _write_json(config_path, config_data)
+        _mutate_repo_meta(healthy_repo_dir, "format_version", lambda _value: 999)
 
         report = healthy_api.quick_verify()
         assert report.ok is False
@@ -859,35 +959,34 @@ class TestRepoSemantics:
             api.read_bytes("file.bin")
 
         api, repo_dir = _single_file_repo(tmp_path, repo_name="invalid-file-container", payload=b"payload")
-        file_object_path = _only_path(repo_dir / "objects" / "files" / "sha256", "*.json")
-        file_object_path.write_text("{}", encoding="utf-8")
+        file_object_id = _first_object_id(repo_dir, "files")
+        _set_object_payload(repo_dir, "files", file_object_id, {})
         with pytest.raises(IntegrityError):
             api.read_bytes("file.bin")
 
         api, repo_dir = _single_file_repo(tmp_path, repo_name="invalid-tree-entry", payload=b"payload")
-        tree_object_path = _head_tree_path(repo_dir)
-        tree_payload = _read_json(tree_object_path)
-        tree_payload["payload"]["entries"][0]["entry_type"] = "weird"
-        _write_json(tree_object_path, tree_payload)
+        tree_object_id = _head_tree_id(repo_dir)
+        tree_payload = _object_payload(repo_dir, "trees", tree_object_id)
+        tree_payload["entries"][0]["entry_type"] = "weird"
+        _set_object_payload(repo_dir, "trees", tree_object_id, tree_payload)
         with pytest.raises(IntegrityError):
             api.list_repo_files()
         with pytest.raises(IntegrityError):
             api.list_repo_tree()
 
         api, repo_dir = _single_file_repo(tmp_path, repo_name="missing-commit-object", payload=b"payload")
-        commit_object_path = _head_commit_path(repo_dir)
-        commit_object_path.unlink()
+        _delete_object(repo_dir, "commits", _head_commit_id(repo_dir))
         report = api.quick_verify()
         assert report.ok is False
         assert any(item.startswith("refs/heads/main:") for item in report.errors)
 
     def test_repo_detects_verify_corruption_cases(self, tmp_path):
         api, repo_dir = _single_file_repo(tmp_path, repo_name="legacy-prefixed-public-sha", payload=b"payload")
-        file_object_path = _only_path(repo_dir / "objects" / "files" / "sha256", "*.json")
-        file_payload = _read_json(file_object_path)
-        raw_sha256 = file_payload["payload"]["sha256"]
-        file_payload["payload"]["sha256"] = "sha256:" + raw_sha256
-        _write_json(file_object_path, file_payload)
+        file_object_id = _first_object_id(repo_dir, "files")
+        file_payload = _object_payload(repo_dir, "files", file_object_id)
+        raw_sha256 = file_payload["sha256"]
+        file_payload["sha256"] = "sha256:" + raw_sha256
+        _set_object_payload(repo_dir, "files", file_object_id, file_payload)
         assert api.get_paths_info(["file.bin"])[0].sha256 == raw_sha256
         assert api.read_bytes("file.bin") == b"payload"
         assert api.quick_verify().ok is True
@@ -899,65 +998,64 @@ class TestRepoSemantics:
         assert report.ok is False
 
         api, repo_dir = _single_file_repo(tmp_path, repo_name="wrong-file-sha", payload=b"payload")
-        file_object_path = _only_path(repo_dir / "objects" / "files" / "sha256", "*.json")
-        file_payload = _read_json(file_object_path)
-        file_payload["payload"]["sha256"] = "sha256:" + ("1" * 64)
-        _write_json(file_object_path, file_payload)
+        file_object_id = _first_object_id(repo_dir, "files")
+        file_payload = _object_payload(repo_dir, "files", file_object_id)
+        file_payload["sha256"] = "sha256:" + ("1" * 64)
+        _set_object_payload(repo_dir, "files", file_object_id, file_payload)
         report = api.quick_verify()
         assert report.ok is False
 
         api, repo_dir = _single_file_repo(tmp_path, repo_name="wrong-blob-sha", payload=b"payload")
-        blob_meta_path = _only_path(repo_dir / "objects" / "blobs" / "sha256", "*.meta.json")
-        blob_meta = _read_json(blob_meta_path)
-        blob_meta["payload"]["payload_sha256"] = "sha256:" + ("2" * 64)
-        _write_json(blob_meta_path, blob_meta)
+        blob_object_id = _first_object_id(repo_dir, "blobs")
+        blob_meta = _object_payload(repo_dir, "blobs", blob_object_id)
+        blob_meta["payload_sha256"] = "sha256:" + ("2" * 64)
+        _set_object_payload(repo_dir, "blobs", blob_object_id, blob_meta)
         report = api.quick_verify()
         assert report.ok is False
 
         api, repo_dir = _single_file_repo(tmp_path, repo_name="wrong-file-oid", payload=b"payload")
-        file_object_path = _only_path(repo_dir / "objects" / "files" / "sha256", "*.json")
-        file_payload = _read_json(file_object_path)
-        file_payload["payload"]["oid"] = "0" * 40
-        _write_json(file_object_path, file_payload)
+        file_object_id = _first_object_id(repo_dir, "files")
+        file_payload = _object_payload(repo_dir, "files", file_object_id)
+        file_payload["oid"] = "0" * 40
+        _set_object_payload(repo_dir, "files", file_object_id, file_payload)
         report = api.quick_verify()
         assert report.ok is False
 
         api, repo_dir = _single_file_repo(tmp_path, repo_name="missing-file-key", payload=b"payload")
-        file_object_path = _only_path(repo_dir / "objects" / "files" / "sha256", "*.json")
-        file_payload = _read_json(file_object_path)
-        del file_payload["payload"]["content_object_id"]
-        _write_json(file_object_path, file_payload)
+        file_object_id = _first_object_id(repo_dir, "files")
+        file_payload = _object_payload(repo_dir, "files", file_object_id)
+        del file_payload["content_object_id"]
+        _set_object_payload(repo_dir, "files", file_object_id, file_payload)
         report = api.quick_verify()
         assert report.ok is False
 
         api, repo_dir = _single_file_repo(tmp_path, repo_name="duplicate-parent", payload=b"payload")
-        first_head = (repo_dir / "refs" / "heads" / "main").read_text(encoding="utf-8").strip()
+        first_head = _head_commit_id(repo_dir)
         api.create_commit(
             operations=[CommitOperationAdd("file.bin", b"payload-v2")],
             parent_commit=first_head,
             commit_message="second",
         )
-        branch_head = (repo_dir / "refs" / "heads" / "main").read_text(encoding="utf-8").strip()
-        head_commit_path = _object_json_path(repo_dir, "commits", branch_head)
-        commit_payload = _read_json(head_commit_path)
-        first_parent = commit_payload["payload"]["parents"][0]
-        commit_payload["payload"]["parents"] = [first_parent, first_parent]
-        _write_json(head_commit_path, commit_payload)
+        branch_head = _head_commit_id(repo_dir)
+        commit_payload = _object_payload(repo_dir, "commits", branch_head)
+        first_parent = commit_payload["parents"][0]
+        commit_payload["parents"] = [first_parent, first_parent]
+        _set_object_payload(repo_dir, "commits", branch_head, commit_payload)
         assert api.quick_verify().ok is True
 
         api, repo_dir = _single_file_repo(tmp_path, repo_name="weird-tree-entry", payload=b"payload")
-        tree_object_path = _head_tree_path(repo_dir)
-        tree_payload = _read_json(tree_object_path)
-        tree_payload["payload"]["entries"][0]["entry_type"] = "weird"
-        _write_json(tree_object_path, tree_payload)
+        tree_object_id = _head_tree_id(repo_dir)
+        tree_payload = _object_payload(repo_dir, "trees", tree_object_id)
+        tree_payload["entries"][0]["entry_type"] = "weird"
+        _set_object_payload(repo_dir, "trees", tree_object_id, tree_payload)
         report = api.quick_verify()
         assert report.ok is False
 
         api, repo_dir = _single_file_repo(tmp_path, repo_name="malformed-tree", payload=b"payload")
-        tree_object_path = _head_tree_path(repo_dir)
-        tree_payload = _read_json(tree_object_path)
-        tree_payload["payload"]["entries"] = [{}]
-        _write_json(tree_object_path, tree_payload)
+        tree_object_id = _head_tree_id(repo_dir)
+        tree_payload = _object_payload(repo_dir, "trees", tree_object_id)
+        tree_payload["entries"] = [{}]
+        _set_object_payload(repo_dir, "trees", tree_object_id, tree_payload)
         report = api.quick_verify()
         assert report.ok is False
 
@@ -1132,13 +1230,9 @@ class TestRepoSemantics:
         txdir.mkdir(parents=True)
         (txdir / "REF_UPDATE.json").write_text("{bad json", encoding="utf-8")
 
-        with pytest.raises(IntegrityError):
-            api.read_bytes("bundle/file.bin")
-
-        report = api.quick_verify()
-        assert report.ok is False
-        assert any(item.startswith("transaction recovery: invalid ref update journal broken:") for item in report.errors)
-        assert txdir.exists()
+        assert api.read_bytes("bundle/file.bin") == b"payload-v1"
+        assert not txdir.exists()
+        assert api.quick_verify().ok is True
 
     def test_upload_folder_delete_patterns_and_deleted_ref_reflogs_work_via_public_api(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")
@@ -1219,8 +1313,7 @@ class TestRepoSemantics:
         )
 
         pack_path = _only_path(tmp_path / "repo" / "chunks" / "packs", "*.pack")
-        index_path = _only_path(tmp_path / "repo" / "chunks" / "index" / "L0", "*.idx")
-        index_records = [json.loads(line) for line in index_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        index_records = _load_index_records(tmp_path / "repo")
         assert len(index_records) >= 2
         first_index_record = index_records[0]
         first_chunk_limit = int(first_index_record["offset"]) + int(first_index_record["stored_size"])
