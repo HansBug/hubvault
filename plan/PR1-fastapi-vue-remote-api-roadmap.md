@@ -1,8 +1,8 @@
-# PR 1. FastAPI 服务、Vue 内置前端与 Remote API Phase 1-9 执行方案
+# PR 1. FastAPI 服务、Vue 内置前端与 Remote API Phase 1-10 执行方案
 
 ## Status
 
-- 状态：In Progress（Phase 1-8 已完成，Phase 9 待完成）
+- 状态：In Progress（Phase 1-8 已完成，Phase 9-10 待完成）
 - PR：https://github.com/HansBug/hubvault/pull/1
 - 目标分支：`main`
 - 工作分支：`dev/api`
@@ -11,7 +11,7 @@
 
 `hubvault` 当前已经完成本地嵌入式仓库的稳定基线，但仍缺少一层面向“简易前端 + 远程 Python API”的官方服务面。下一阶段要补的不是多租户 Hub，而是一套单仓库、轻部署、可选依赖、仍保持 repo root 自包含的 FastAPI 服务层。
 
-这份文档是一个 post-init 的独立执行计划，因此 phase 编号从 `1` 重新开始，不沿用初始化阶段或 Phase 15 之前的编号。这里的 `Phase 1-9` 专门对应“FastAPI 服务、内置前端、Remote API、打包发布”这一条新工作流。
+这份文档是一个 post-init 的独立执行计划，因此 phase 编号从 `1` 重新开始，不沿用初始化阶段或 Phase 15 之前的编号。这里的 `Phase 1-10` 专门对应“FastAPI 服务、内置前端、Remote API、打包发布”这一条新工作流。
 
 ## 目标
 
@@ -738,7 +738,7 @@ api = HubVaultRemoteApi(
 建议新增：
 
 - `test/entry/test_server.py`
-- `test/test_phase1.py` 到 `test/test_phase9.py` 中对应本次计划的集成回归文件
+- `test/test_phase1.py` 到 `test/test_phase10.py` 中对应本次计划的集成回归文件
 - 新增服务端 PyInstaller smoke test，用于验证静态资源被打进可执行文件
 
 建议至少覆盖：
@@ -1266,7 +1266,146 @@ Phase 6 前端建议拆成以下复用组件：
 - 前端回归已覆盖真实服务与组件层：`cd webui && npm run test`、`cd webui && npm run build`、`cd webui && npm run test:e2e` 全部通过。
 - `make build` 现固定走本地 `./venv/bin/python -m PyInstaller`，并在 spec 生成阶段收集 `fastapi` / `uvicorn` / `multipart` 等惰性可选依赖，使打包产物中的 `hubvault serve --mode frontend`、`/` 与 `/api/v1/meta/service` 均通过 `make test_cli` 实测。
 
-## Phase 9. 文档、发布、回归矩阵与收尾
+## Phase 9. Web UI 深化、文件详情、Commit Diff 与上传体验增强
+
+### Goal
+
+把当前“可用”的内置前端推进到更接近 HF 浏览体验的状态：支持 `?token=` 直达登录、路径树与文件详情分离、文件高质量预览、commit diff 查看、上传队列与实时进度，并保持对较旧浏览器环境的兼容基线。
+
+### 技术方案（截至 2026-04-12 调研）
+
+#### 方案原则
+
+- 能直接复用成熟轮子的，不在 Phase 9 自己手写 viewer、diff renderer、图标体系或上传进度协议。
+- 轮子必须优先选择与现有 `Vue 3 + Element Plus + Vite` 栈兼容、无需引入 React/Monaco 之类重型异构 runtime 的方案。
+- 前端构建继续维持 `Vite legacy + build.target=es2015` 这条兼容线，不把“现代浏览器独占 API”变成页面可用性的前提。
+- 新增服务端能力仍然必须通过 `hubvault` 公共语义暴露；server route 不应直接把 backend 私有实现变成第二套前端专用协议。
+
+#### 轮子选择与依据
+
+- 路由与登录直达：
+  继续使用 [Vue Router 官方 query / navigation 能力](https://router.vuejs.org/guide/essentials/navigation.html) 与 [dynamic matching / catch-all path](https://router.vuejs.org/guide/essentials/dynamic-matching.html)；`?token=` 只作为一次性引导入口，认证成功后立即写入 `sessionStorage` 并用 `router.replace` 去掉 URL 中的 token，避免 token 长时间停留在地址栏、历史记录和截图里。
+- 图标与操作按钮：
+  继续使用已经在仓库中的 [Element Plus Icon](https://element-plus.org/en-US/component/icon.html) 与 `el-button` / `el-link` 体系，不单独引入另一套 icon design system，避免视觉和交互语言冲突。
+- 文件语法高亮与行号：
+  采用 [PrismJS](https://prismjs.com/) 加 [官方 line-numbers plugin](https://prismjs.com/plugins/line-numbers/)。Prism 的优势是 DOM/CSS 集成简单、语言扩展成熟、对普通静态代码块友好，也更适合当前扁平风 UI，而不需要为单文件浏览引入编辑器级 runtime。
+- Commit 文本 diff：
+  采用 [Diff2Html](https://diff2html.xyz/) 渲染服务端生成的 unified diff。它已经内建 line-by-line / side-by-side 两种 diff 视图，能显著减少我们自己写 diff DOM、hunk 折叠、行号布局和增删样式的工作量。
+- 图片对比：
+  采用 [JuxtaposeJS](https://juxtapose.knightlab.com/) 做前后版本图片对比，并保留“初始化失败或浏览器特性不足时退化为左右并排图片”的 fallback。这里优先选更老牌、DOM 级的 before/after 方案，而不是把 custom-element 作为唯一实现路径。
+- 浏览器上传进度：
+  继续走 [Axios `onUploadProgress`](https://axios-http.com/docs/req_config) 官方能力，不额外造浏览器端上传传输层。
+- Python Remote API 上传进度：
+  增加可选 `tqdm` 集成；当 `tqdm` 可用时提供默认进度条，也允许显式 `silent` / `show_progress=False` 关闭。若未安装 `tqdm`，远端上传能力仍然照常可用，不把进度条依赖变成 correctness 前提。
+- 旧浏览器兼容线：
+  继续遵守 [Vite Browser Compatibility / legacy plugin](https://vite.dev/guide/build.html#browser-compatibility) 口径，保持 `@vitejs/plugin-legacy` 与 `build.target=es2015`，新增代码不默认依赖仅现代浏览器才稳定的 API。
+
+#### 前端路由与页面结构
+
+- 保留 `/repo/files` 作为“目录树 / 路径页”，只承担浏览目录、选择分支路径、下载入口和上传入口，不再在同页右侧嵌 preview。
+- 新增独立文件详情页，采用类似 `/repo/blob/:pathMatch(.*)*?revision=...` 的 route，路径树页点击文件时跳转到详情页。
+- 新增独立 commit 详情页，采用类似 `/repo/commits/:commitId?revision=...` 的 route，commit 列表页点击单条 commit 后进入详情页查看文件变化。
+- `?token=` 入口应在根路由、登录页和受保护路由守卫中都生效：
+  - 未登录但 URL 带 `token` 时，先尝试 bootstrap；
+  - 成功后立即清理 query 中的 token；
+  - 失败则清空会话并落回登录页，同时保留错误信息；
+  - 不能让 token 跟随后续路径切换和下载链接一起继续传播。
+
+#### 文件详情页方案
+
+- 文件详情页 header 至少包含：
+  - repo-relative path
+  - revision / last commit 摘要
+  - download 按钮
+  - 返回当前目录或上级目录按钮
+- 文件预览模式按“文件类型 + 大小阈值”分流：
+  - Markdown：继续复用 `markdown-it + DOMPurify`
+  - 代码 / 纯文本：用 Prism 渲染，左侧固定行号
+  - JSON：先格式化再按代码块渲染
+  - 图片：直接在线展示
+  - 其他二进制：明确显示“binary 无法在线展示”，并保留下载按钮
+- 代码语言识别以扩展名映射为主，不做运行时 AST 识别；未知语言退化为纯文本高亮，不阻塞行号显示。
+- 图片识别优先基于常见扩展名与 MIME/魔数兜底；不能稳定识别的内容按二进制 fallback 处理，而不是强行内嵌。
+- 路径树页面中，文件行增加独立 download icon；目录行不加下载按钮。
+
+#### Commit 详情 / Diff API 方案
+
+- 新增服务端 commit 详情 API，至少包含：
+  - commit 基本信息
+  - 第一父提交 ID；root commit 时允许为空
+  - 变更文件列表
+  - 对文本文件生成的 unified diff
+  - 对二进制文件的 old/new size、sha256、oid/blob_id 元信息
+  - 对图片文件的 old/new 下载地址
+- 文本 diff 在服务端生成 unified diff，前端只负责交给 Diff2Html 渲染，避免在浏览器端重复实现 hunk 算法。
+- 图片 diff 不尝试生成像素级 patch，前端基于 old/new 两张图做 before/after compare；若浏览器或库初始化失败，则退化为左右双栏对比。
+- 不可在线渲染的二进制资源只展示：
+  - path
+  - change type
+  - old/new size
+  - old/new sha256
+  - old/new 下载按钮
+- merge commit 的首版 diff 明确只对第一父提交做比较，与 GitHub/HF 常见默认行为对齐，不在首版引入多父合并 diff UI。
+
+#### 上传队列与进度方案
+
+- 前端上传从“选择即立刻 commit”改成“两段式”：
+  - 第一段：把文件或目录中的文件逐步加入待提交队列，允许多次追加
+  - 第二段：用户确认 commit message 后，统一 `planCommit` + `applyCommit`
+- 队列内以 `path_in_repo` 作为主键，重复添加时后加入的条目覆盖前一个条目，并允许手动移除。
+- 前端进度条至少展示：
+  - 当前阶段（hash / plan / upload / finalize）
+  - 已上传字节 / 总上传字节
+  - 当命中秒传时应明确提示“无需上传字节”
+- 浏览器端首版仍然优先走完整文件上传；服务端已有的秒传/快传逻辑继续通过 `commit-plan` 自行裁剪实际需要上传的 payload。
+- Python `HubVaultRemoteApi` 侧补齐上传进度：
+  - 默认 tqdm 进度条
+  - `silent` 或 `show_progress=False` 关闭
+  - 自定义 `progress_callback` 供非 CLI 调用方接管
+  - 缺少 `tqdm` 时自动退化为无进度输出
+
+#### 测试与回归口径
+
+- 前端：
+  - `router` / `session` 单测覆盖 `?token=` 入口、token 清理与受保护路由跳转
+  - 组件 / 视图测试覆盖文件详情页、代码高亮、图片预览、binary fallback、下载按钮、上传队列和进度条
+  - commit diff 页至少覆盖文本 diff、图片 diff、binary diff 三类展示
+  - e2e 覆盖“URL 带 token 直达页面”“从路径树跳到文件详情”“上传队列多次追加后提交”
+- Python：
+  - server history 新 route 回归
+  - remote client 对应 commit detail / diff / progress 的公共行为回归
+  - 如新增公开模型或 docstring，同步补测试与 `rst_auto`
+
+### Todo
+
+* [ ] 在登录入口、路由守卫与初始化流程中支持 `?token=xxxx` 一次性登录入口，并在认证成功后清理 URL。
+* [ ] 新增独立文件详情页，路径树页点击文件时跳转详情页，不再在同页右侧预览。
+* [ ] 路径树页把 `DIR` / `FILE` 文本替换为图标，并为文件增加独立下载图标；全站补齐与现有 Element Plus 风格一致的图标化操作入口。
+* [ ] 文件详情页支持 Markdown、代码/纯文本带行号预览、图片在线展示、binary fallback 与下载。
+* [ ] 增加 commit 详情 API 与页面，支持文本 diff、图片对比和 binary 元信息比较。
+* [ ] 前端上传改成“可多次追加到待提交队列，再统一 commit”的交互，并增加实时进度条。
+* [ ] `HubVaultRemoteApi` 增加可静默的上传进度反馈能力。
+* [ ] 增加前后端对应单元测试、前端 e2e 回归，并维持旧浏览器构建兼容线。
+
+### MVP Cut / Deferred
+
+- 首版 commit diff 只做第一父提交比较，不做多父 merge diff UI。
+- 首版不做 rename / copy heuristics；commit 详情页先按路径级 add / delete / modify 展示。
+- 首版不做 blame、行级评论、代码搜索、富媒体文档插件系统。
+- 首版不把前端大文件分块上传单独下放到浏览器端；浏览器端仍以完整文件为输入，由服务端 `commit-plan` 决定秒传/快传裁剪。
+
+### Checklist
+
+* [ ] 用户可通过 `/?token=...` 直接进入 repo 页面，且认证成功后地址栏不再残留 token。
+* [ ] 路径树页与文件详情页职责分离，文件点击后进入独立页面。
+* [ ] 文本和代码文件在详情页中带行号展示，代码按扩展名高亮。
+* [ ] 图片文件可在线查看，其他二进制文件有明确 fallback 与下载入口。
+* [ ] 路径树页与文件详情页都能对文件执行下载。
+* [ ] commit 页面可查看文本 diff、图片 diff 与 binary 元信息对比。
+* [ ] 前端上传支持多次追加队列并展示实时进度，Python remote 上传也支持可控进度反馈。
+* [ ] `cd webui && npm run test:coverage`、`cd webui && npm run test:e2e` 与相关 Python unittest 通过。
+
+## Phase 10. 文档、发布、回归矩阵与收尾
 
 ### Goal
 
