@@ -96,6 +96,12 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Set up Node.js 22 for packaged webui and frontend coverage
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: webui/package-lock.json
       - name: Install dependencies
         shell: bash
         run: |
@@ -107,6 +113,12 @@ jobs:
             -r requirements-api.txt \
             -r requirements-remote.txt \
             -r requirements-full.txt
+      - name: Build packaged frontend assets for server tests
+        env:
+          CI: 'true'
+        shell: bash
+        run: |
+          make webui_package
       - name: Test the basic environment
         shell: bash
         run: |
@@ -123,20 +135,12 @@ jobs:
         run: |
           make unittest IS_WIN=${{ env.IS_WIN }} IS_MAC=${{ env.IS_MAC }}
 
-      - name: Set up Node.js 22 for frontend coverage
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: webui/package-lock.json
-
       - name: Run frontend unit tests with coverage
         env:
           CI: 'true'
         shell: bash
         run: |
           cd webui
-          npm ci
           npm run test:coverage
 
       - name: Upload combined coverage to Codecov
