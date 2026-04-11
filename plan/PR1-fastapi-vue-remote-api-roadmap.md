@@ -2,7 +2,7 @@
 
 ## Status
 
-- 状态：Proposed
+- 状态：In Progress（Phase 1-6 已完成，Phase 7-9 待完成）
 - PR：https://github.com/HansBug/hubvault/pull/1
 - 目标分支：`main`
 - 工作分支：`dev/api`
@@ -1146,7 +1146,7 @@ Phase 6 前端建议拆成以下复用组件：
 ### Visual Direction
 
 - 参考 HF repo 页的信息密度和阅读顺序，但不照搬品牌色
-- 视觉基调采用偏纸张/文档感的浅色背景、暖灰边框、深墨色正文与琥珀色强调
+- 视觉基调采用偏青色的浅色背景、青灰边框、深墨色正文与低阴影扁平卡片，不再沿用暖灰/琥珀主强调
 - 重点不是“后台系统感”，而是“可阅读的仓库主页”
 - 桌面端采用主内容 + 侧栏摘要布局，移动端收敛为单列卡片流
 - 首页主区优先强调 README / content，可读性高于“控制台面板感”
@@ -1175,20 +1175,31 @@ Phase 6 前端建议拆成以下复用组件：
 
 ### Todo
 
-* [ ] 建立 `webui/` 的 Vue 3 + Element Plus + Vite 骨架。
-* [ ] 实现 token 登录页与全局请求封装。
-* [ ] 实现 Overview、Files、Commits、Refs 页面。
-* [ ] 实现 `ro` / `rw` 权限门禁与导航控制。
-* [ ] 实现 `frontend` 模式下的静态资源托管和 fallback。
-* [ ] 增加 `webui/tests/unit/`、`webui/tests/components/`、`webui/tests/e2e/`。
-* [ ] 增加 `test/server/test_ui.py`，验证 `api` 模式不暴露 UI，`frontend` 模式暴露 UI。
+* [x] 建立 `webui/` 的 Vue 3 + Element Plus + Vite 骨架。
+* [x] 实现 token 登录页与全局请求封装。
+* [x] 实现 Overview、Files、Commits、Refs 页面。
+* [x] 实现 `ro` / `rw` 权限门禁与导航控制。
+* [x] 实现 `frontend` 模式下的静态资源托管和 fallback。
+* [x] 增加 `webui/tests/unit/`、`webui/tests/components/`、`webui/tests/e2e/`。
+* [x] 增加 `test/server/test_ui.py`，验证 `api` 模式不暴露 UI，`frontend` 模式暴露 UI。
 
 ### Checklist
 
-* [ ] `frontend` 模式可以正常打开首页。
-* [ ] 前端所有读取都经由 `/api/v1/**`。
-* [ ] `ro` 用户看不到或无法触发写操作入口。
-* [ ] 前端构建产物能够被 FastAPI 正确托管。
+* [x] `frontend` 模式可以正常打开首页。
+* [x] 前端所有读取都经由 `/api/v1/**`。
+* [x] `ro` 用户看不到或无法触发写操作入口。
+* [x] 前端构建产物能够被 FastAPI 正确托管。
+
+### Completion Update
+
+- 已实现 `webui/` 下的 `Vue 3` + `Vue Router` + `Element Plus` + `Vite` + `TypeScript` 只读前端，包含 `Login`、`Overview`、`Files`、`Commits`、`Refs`、`Storage` 五个 repo 视图。
+- 已在 `frontend` 模式下通过 `hubvault.server.app` 托管打包产物，并对非 `/api/` 路径启用 SPA fallback；`api` 模式下不暴露前端入口。
+- 前端 token 仅保存在 `sessionStorage`，所有读取统一经由 `/api/v1/**`，revision 通过 query string 在各页面间透传。
+- 当前 UI 保持只读信息架构，不暴露写操作 CTA；`ro` / `rw` 权限差异体现在登录鉴权结果、权限徽标与服务端接口能力边界上。
+- 已补齐 `webui/tests/unit/`、`webui/tests/components/`、`webui/tests/e2e/`，以及 `test/server/test_ui.py`、`test/server/test_app.py`、`test/server/test_launch.py` 的前端托管回归。
+- 已完成真实视觉校验，并保留 `webui/test-results/visual/*.png` 与 `webui/playwright-report/index.html` 作为回看产物。
+- `hubvault/server/static/webui/` 现作为包内生成目录处理，Git 只保留占位文件，实际静态资源由 `make webui_package` / CI 构建后同步。
+- 截至 2026-04-11，本阶段已通过本地与 CI 验证：`make webui_package`、`cd webui && npm run test:coverage`、`cd webui && npm run test:e2e`、`make package`，以及 GitHub Actions `Code Test` / `Release Test` workflow 全绿。
 
 ## Phase 7. 写路径 API 与 Remote 写能力
 
