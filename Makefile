@@ -1,4 +1,4 @@
-.PHONY: help docs docs_en docs_zh pdocs rst_auto test unittest benchmark benchmark_smoke benchmark_standard benchmark_phase9 benchmark_phase9_smoke benchmark_phase9_standard benchmark_phase9_pressure benchmark_phase12 benchmark_phase12_raw benchmark_phase12_summary benchmark_phase12_smoke benchmark_phase12_standard benchmark_phase12_nightly benchmark_phase12_pressure benchmark_compare benchmark_phase12_compare build test_cli package clean webui_install webui_test webui_e2e webui_build webui_sync webui_package webui_check webui_clean
+.PHONY: help docs docs_en docs_zh pdocs rst_auto test unittest benchmark benchmark_smoke benchmark_standard benchmark_phase9 benchmark_phase9_smoke benchmark_phase9_standard benchmark_phase9_pressure benchmark_phase12 benchmark_phase12_raw benchmark_phase12_summary benchmark_phase12_smoke benchmark_phase12_standard benchmark_phase12_nightly benchmark_phase12_pressure benchmark_compare benchmark_phase12_compare build test_cli package clean webui_install webui_test webui_coverage webui_e2e webui_build webui_sync webui_package webui_check webui_clean
 
 PYTHON := $(shell [ -x ./venv/bin/python ] && printf '%s' ./venv/bin/python || which python)
 SPHINXBUILD ?= $(shell which sphinx-build)
@@ -19,6 +19,7 @@ WEBUI_DIST_DIR := ${WEBUI_DIR}/dist
 WEBUI_STATIC_DIR := ${SRC_DIR}/server/static/webui
 WEBUI_REPORT_DIR := ${WEBUI_DIR}/playwright-report
 WEBUI_RESULTS_DIR := ${WEBUI_DIR}/test-results
+WEBUI_COVERAGE_DIR := ${WEBUI_DIR}/coverage
 WEBUI_VITE_CACHE_DIR := ${WEBUI_DIR}/node_modules/.vite
 WEBUI_INSTALL_STAMP := ${WEBUI_DIR}/node_modules/.hubvault-install.stamp
 WEBUI_BUILD_STAMP := ${BUILD_DIR}/webui/.hubvault-build.stamp
@@ -30,9 +31,11 @@ WEBUI_BUILD_DEPS := $(shell find ${WEBUI_DIR}/src -type f 2>/dev/null) \
 	$(shell find ${WEBUI_DIR}/tests -type f 2>/dev/null) \
 	${WEBUI_DIR}/index.html \
 	${WEBUI_DIR}/package.json \
-	${WEBUI_DIR}/vite.config.js \
-	${WEBUI_DIR}/vitest.config.js \
-	${WEBUI_DIR}/playwright.config.js
+	${WEBUI_DIR}/vite.config.ts \
+	${WEBUI_DIR}/vitest.config.ts \
+	${WEBUI_DIR}/playwright.config.ts \
+	${WEBUI_DIR}/tsconfig.json \
+	${WEBUI_DIR}/env.d.ts
 ifneq ($(wildcard ${WEBUI_DIR}/package-lock.json),)
 WEBUI_INSTALL_DEPS += ${WEBUI_DIR}/package-lock.json
 WEBUI_BUILD_DEPS += ${WEBUI_DIR}/package-lock.json
@@ -81,6 +84,8 @@ help:
 	@echo "  make webui_install"
 	@echo "                    - Install frontend dependencies with npm ci/install"
 	@echo "  make webui_test   - Run frontend unit/component tests"
+	@echo "  make webui_coverage"
+	@echo "                    - Run frontend unit/component tests with detailed coverage output"
 	@echo "  make webui_e2e    - Run frontend Playwright end-to-end checks"
 	@echo "  make webui_build  - Build frontend assets into webui/dist/"
 	@echo "  make webui_sync   - Sync webui/dist/ into hubvault/server/static/webui/"
@@ -143,6 +148,7 @@ help:
 	@echo "  WORKERS=<n>       - Number of pytest-xdist workers"
 
 package: webui_package
+	rm -rf ${BUILD_DIR}/lib ${BUILD_DIR}/bdist.*
 	$(PYTHON) -m build --sdist --wheel --outdir ${DIST_DIR}
 
 webui_install: ${WEBUI_INSTALL_STAMP}
@@ -155,6 +161,9 @@ ${WEBUI_INSTALL_STAMP}: ${WEBUI_INSTALL_DEPS}
 
 webui_test: webui_install
 	cd ${WEBUI_DIR} && ${NPM} run test
+
+webui_coverage: webui_install
+	cd ${WEBUI_DIR} && ${NPM} run test:coverage
 
 webui_e2e: webui_package
 	cd ${WEBUI_DIR} && ${NPM} run test:e2e
@@ -175,7 +184,7 @@ webui_package: webui_sync
 webui_check: webui_test webui_e2e
 
 webui_clean:
-	rm -rf ${WEBUI_DIST_DIR} ${WEBUI_REPORT_DIR} ${WEBUI_RESULTS_DIR} ${WEBUI_VITE_CACHE_DIR}
+	rm -rf ${WEBUI_DIST_DIR} ${WEBUI_REPORT_DIR} ${WEBUI_RESULTS_DIR} ${WEBUI_COVERAGE_DIR} ${WEBUI_VITE_CACHE_DIR}
 	rm -f ${WEBUI_BUILD_STAMP} ${WEBUI_LEGACY_BUILD_STAMP}
 
 build: webui_package

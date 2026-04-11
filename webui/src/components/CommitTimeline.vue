@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { formatDateTime, formatRelativeDate, shortOid } from "@/utils/format";
 
 defineProps({

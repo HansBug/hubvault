@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
     "sync": "python ../tools/webui_sync.py"
   },
@@ -23,11 +24,13 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.54.2",
+    "@vitest/coverage-v8": "^2.1.9",
     "@vitejs/plugin-legacy": "^6.1.1",
     "@vitejs/plugin-vue": "^6.0.1",
     "@vue/test-utils": "^2.4.6",
     "jsdom": "^26.0.0",
     "sass": "^1.87.0",
+    "typescript": "^5.8.3",
     "vite": "^6.3.5",
     "vitest": "^2.1.9"
   }

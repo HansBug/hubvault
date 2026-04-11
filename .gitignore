@@ -788,12 +788,12 @@ pip-selfcheck.json
 !webui/*.js
 !webui/src/**/*.js
 !webui/tests/**/*.js
-!hubvault/server/static/webui/assets/*.js
-!hubvault/server/static/webui/assets/*.css
-!hubvault/server/static/webui/assets/*.js.map
+hubvault/server/static/webui/*
+!hubvault/server/static/webui/__init__.py
 webui/dist
 webui/playwright-report/
 webui/test-results/
+webui/coverage/
 *_stub.v
 *_stub.vhdl
 *_funcsim.v
