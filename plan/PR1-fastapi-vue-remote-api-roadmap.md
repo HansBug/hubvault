@@ -1304,7 +1304,13 @@ Phase 6 前端建议拆成以下复用组件：
 
 - 保留 `/repo/files` 作为“目录树 / 路径页”，只承担浏览目录、选择分支路径、下载入口和上传入口，不再在同页右侧嵌 preview。
 - 新增独立文件详情页，采用类似 `/repo/blob/:pathMatch(.*)*?revision=...` 的 route，路径树页点击文件时跳转到详情页。
+- 新增独立上传页，采用类似 `/repo/upload?revision=...&path=...` 的 route；`/repo/files` 只保留文件列表右上角的 upload 入口按钮，不再直接内嵌 upload queue 面板。
 - 新增独立 commit 详情页，采用类似 `/repo/commits/:commitId?revision=...` 的 route，commit 列表页点击单条 commit 后进入详情页查看文件变化。
+- 路径页与文件详情页中的 breadcrumb 视觉对齐当前 HF files 页面：
+  - 顶层入口使用 home icon 表示 `<home>` / repository root
+  - 每一级路径之间使用裸文本 `/`
+  - 每一级祖先路径都可点击跳转
+  - breadcrumb 本身不使用 pill / badge / card 式包裹，只保留文字与图标
 - `?token=` 入口应在根路由、登录页和受保护路由守卫中都生效：
   - 未登录但 URL 带 `token` 时，先尝试 bootstrap；
   - 成功后立即清理 query 中的 token；
@@ -1318,6 +1324,8 @@ Phase 6 前端建议拆成以下复用组件：
   - revision / last commit 摘要
   - download 按钮
   - 返回当前目录或上级目录按钮
+- 文件详情页路径头部的 breadcrumb 必须与路径页保持一致，祖先路径可直接点击返回对应目录级别。
+- 文件详情页当前用于展示目录、size、oid、sha256 等信息的 badge 需要压低高度，避免出现过厚的胶囊块，整体更接近 HF 的紧凑信息条。
 - 文件预览模式按“文件类型 + 大小阈值”分流：
   - Markdown：继续复用 `markdown-it + DOMPurify`
   - 代码 / 纯文本：用 Prism 渲染，左侧固定行号
@@ -1325,8 +1333,11 @@ Phase 6 前端建议拆成以下复用组件：
   - 图片：直接在线展示
   - 其他二进制：明确显示“binary 无法在线展示”，并保留下载按钮
 - 代码语言识别以扩展名映射为主，不做运行时 AST 识别；未知语言退化为纯文本高亮，不阻塞行号显示。
+- 代码框中的行号与正文必须共享同一套行高、padding 与 `white-space` 规则，不能出现长文件时左侧行号与右侧内容错位的情况。
+- 代码框字体必须强制使用仓库内随前端静态资源一起发布的等宽字体，不依赖宿主系统“刚好有某个 monospace”。
 - 图片识别优先基于常见扩展名与 MIME/魔数兜底；不能稳定识别的内容按二进制 fallback 处理，而不是强行内嵌。
 - 路径树页面中，文件行增加独立 download icon；目录行不加下载按钮。
+- 文件列表中的 view / download / delete 等 icon-only 操作必须补 tooltip，避免歧义。
 
 #### Commit 详情 / Diff API 方案
 
@@ -1346,12 +1357,14 @@ Phase 6 前端建议拆成以下复用组件：
   - old/new sha256
   - old/new 下载按钮
 - merge commit 的首版 diff 明确只对第一父提交做比较，与 GitHub/HF 常见默认行为对齐，不在首版引入多父合并 diff UI。
+- commit 列表中的 commit title 与文件列表 `last commit` 列都应直接可点击进入对应 commit diff 页面，减少额外的“先点 View Diff 再跳转”步骤。
 
 #### 上传队列与进度方案
 
 - 前端上传从“选择即立刻 commit”改成“两段式”：
   - 第一段：把文件或目录中的文件逐步加入待提交队列，允许多次追加
   - 第二段：用户确认 commit message 后，统一 `planCommit` + `applyCommit`
+- 上传队列不直接常驻在 `/repo/files` 页面主体内，而是放到独立 upload 页面承载；文件页只保留入口按钮、当前路径上下文与必要的跳转。
 - 队列内以 `path_in_repo` 作为主键，重复添加时后加入的条目覆盖前一个条目，并允许手动移除。
 - 前端进度条至少展示：
   - 当前阶段（hash / plan / upload / finalize）
@@ -1380,10 +1393,15 @@ Phase 6 前端建议拆成以下复用组件：
 
 * [ ] 在登录入口、路由守卫与初始化流程中支持 `?token=xxxx` 一次性登录入口，并在认证成功后清理 URL。
 * [ ] 新增独立文件详情页，路径树页点击文件时跳转详情页，不再在同页右侧预览。
+* [ ] 参考当前 HF files 页面重做路径 breadcrumb：顶层 home icon、祖先可点击、层级间使用 `/`、不再使用现有胶囊框。
 * [ ] 路径树页把 `DIR` / `FILE` 文本替换为图标，并为文件增加独立下载图标；全站补齐与现有 Element Plus 风格一致的图标化操作入口。
+* [ ] 文件列表中的 view / download / delete 等 icon 操作补齐 tooltip，降低误解成本。
 * [ ] 文件详情页支持 Markdown、代码/纯文本带行号预览、图片在线展示、binary fallback 与下载。
+* [ ] 修复代码预览中行号与正文行高不同步的问题，并为代码框引入随前端一起发布的等宽字体资源。
+* [ ] 压低文件详情页路径 / size / oid / sha256 等 badge 的高度，改成更紧凑的信息展示。
 * [ ] 增加 commit 详情 API 与页面，支持文本 diff、图片对比和 binary 元信息比较。
-* [ ] 前端上传改成“可多次追加到待提交队列，再统一 commit”的交互，并增加实时进度条。
+* [ ] commit 列表中的 title 与文件列表 `last commit` 列支持直接跳转到 commit diff 页面。
+* [ ] 前端上传改成“文件页提供 upload 按钮，进入独立上传页后可多次追加到待提交队列，再统一 commit”的交互，并增加实时进度条。
 * [ ] `HubVaultRemoteApi` 增加可静默的上传进度反馈能力。
 * [ ] 增加前后端对应单元测试、前端 e2e 回归，并维持旧浏览器构建兼容线。
 
@@ -1398,10 +1416,16 @@ Phase 6 前端建议拆成以下复用组件：
 
 * [ ] 用户可通过 `/?token=...` 直接进入 repo 页面，且认证成功后地址栏不再残留 token。
 * [ ] 路径树页与文件详情页职责分离，文件点击后进入独立页面。
+* [ ] 路径 breadcrumb 采用 HF 风格的文字级层级导航：home icon 顶层入口、`/` 分隔、每一级祖先均可点击。
 * [ ] 文本和代码文件在详情页中带行号展示，代码按扩展名高亮。
+* [ ] 代码框行号与正文逐行对齐，且代码字体使用仓库自带的等宽字体资源。
 * [ ] 图片文件可在线查看，其他二进制文件有明确 fallback 与下载入口。
 * [ ] 路径树页与文件详情页都能对文件执行下载。
+* [ ] 文件列表中的 icon-only 操作具备清晰 tooltip，`last commit` 列可跳转 commit diff 页面。
 * [ ] commit 页面可查看文本 diff、图片 diff 与 binary 元信息对比。
+* [ ] commit 列表中的 title 可直接进入 commit diff 页面。
+* [ ] 上传队列位于独立上传页，文件页只保留 upload 入口按钮。
+* [ ] 文件详情页的信息 badge 已收紧高度，不再出现过高的胶囊块。
 * [ ] 前端上传支持多次追加队列并展示实时进度，Python remote 上传也支持可控进度反馈。
 * [ ] `cd webui && npm run test:coverage`、`cd webui && npm run test:e2e` 与相关 Python unittest 通过。
 
