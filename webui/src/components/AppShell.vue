@@ -1,6 +1,13 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { SwitchButton } from "@element-plus/icons-vue";
+import {
+  CollectionTag,
+  DataAnalysis,
+  FolderOpened,
+  House,
+  SwitchButton,
+  Tickets
+} from "@element-plus/icons-vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { shortOid } from "@/utils/format";
@@ -35,16 +42,26 @@ const route = useRoute();
 const router = useRouter();
 
 const menuItems = [
-  { label: "Overview", name: "overview" },
-  { label: "Files", name: "files" },
-  { label: "Commits", name: "commits" },
-  { label: "Refs", name: "refs" },
-  { label: "Storage", name: "storage" }
+  { label: "Overview", name: "overview", icon: House },
+  { label: "Files", name: "files", icon: FolderOpened },
+  { label: "Commits", name: "commits", icon: Tickets },
+  { label: "Refs", name: "refs", icon: CollectionTag },
+  { label: "Storage", name: "storage", icon: DataAnalysis }
 ];
 
 const headLabel = computed(function buildHeadLabel() {
   const value = (props.repo && props.repo.head) || (props.service && props.service.repo && props.service.repo.head) || "";
   return value ? shortOid(value) : "empty";
+});
+
+const activeMenu = computed(function resolveActiveMenu() {
+  if (route.name === "file-detail") {
+    return "files";
+  }
+  if (route.name === "commit-detail") {
+    return "commits";
+  }
+  return String(route.name || "overview");
 });
 
 function handleSelect(index) {
@@ -82,8 +99,8 @@ function handleLogout() {
             </div>
             <h1 class="app-shell__title">Repository Overview</h1>
             <p class="app-shell__subtitle">
-              Browse repository history, files, refs, README content, and storage diagnostics from one
-              embedded page that stays aligned with the readonly HTTP API.
+              Browse repository history, files, rendered README content, refs, and storage diagnostics from one
+              embedded page with a flat cyan-toned repository browser.
             </p>
             <div class="app-shell__meta">
               <span class="path-pill">default: {{ repo?.default_branch || service?.repo?.default_branch || "main" }}</span>
@@ -112,6 +129,10 @@ function handleLogout() {
                   <strong>{{ refs?.tags?.length || 0 }}</strong>
                 </div>
               </div>
+              <div class="kv-row">
+                <span>Files</span>
+                <strong>{{ service?.repo?.head ? "tracked" : "empty" }}</strong>
+              </div>
               <el-button :icon="SwitchButton" plain @click="handleLogout">
                 Logout
               </el-button>
@@ -122,7 +143,7 @@ function handleLogout() {
         <el-menu
           class="app-shell__nav"
           mode="horizontal"
-          :default-active="String(route.name || 'overview')"
+          :default-active="activeMenu"
           @select="handleSelect"
         >
           <el-menu-item
@@ -130,6 +151,7 @@ function handleLogout() {
             :key="item.name"
             :index="item.name"
           >
+            <el-icon><component :is="item.icon" /></el-icon>
             {{ item.label }}
           </el-menu-item>
         </el-menu>

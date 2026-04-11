@@ -5,8 +5,12 @@ import pytest
 from hubvault.models import (
     BlobLfsInfo,
     BlobSecurityInfo,
+    CommitChangeInfo,
+    CommitDetailInfo,
+    CommitFileVersionInfo,
     CommitInfo,
     GcReport,
+    GitCommitInfo,
     LastCommitInfo,
     MergeConflict,
     MergeResult,
@@ -18,6 +22,7 @@ from hubvault.models import (
 from hubvault.server.serde import (
     encode_blob_lfs_info,
     encode_blob_security_info,
+    encode_commit_detail_info,
     encode_commit_info,
     encode_gc_report,
     encode_last_commit_info,
@@ -118,6 +123,7 @@ class TestServerSerde:
         }
 
     def test_encode_commit_merge_gc_and_squash_reports(self):
+        timestamp = datetime(2026, 4, 11, 12, 0, 0)
         commit = CommitInfo(
             commit_url="file:///tmp/repo#commit=abc",
             commit_message="seed",
@@ -168,9 +174,34 @@ class TestServerSerde:
             blocking_refs=["refs/tags/v1"],
             gc_report=gc_report,
         )
+        detail = CommitDetailInfo(
+            commit=GitCommitInfo(
+                commit_id="abc",
+                authors=[],
+                created_at=timestamp,
+                title="seed",
+                message="body",
+                formatted_title=None,
+                formatted_message=None,
+            ),
+            parent_commit_ids=["parent"],
+            compare_parent_commit_id="parent",
+            changes=[
+                CommitChangeInfo(
+                    path="demo.txt",
+                    change_type="modified",
+                    old_file=CommitFileVersionInfo("demo.txt", 4, "old-oid", "old-blob", "old-sha"),
+                    new_file=CommitFileVersionInfo("demo.txt", 5, "new-oid", "new-blob", "new-sha"),
+                    is_binary=False,
+                    unified_diff="diff --git a/demo.txt b/demo.txt\n",
+                )
+            ],
+        )
 
         assert encode_commit_info(commit)["oid"] == "abc"
         assert encode_commit_info(commit)["_url"] == "file:///tmp/repo#blob=main:demo.txt"
+        assert encode_commit_detail_info(detail)["changes"][0]["new_file"]["sha256"] == "new-sha"
+        assert encode_commit_detail_info(detail)["compare_parent_commit_id"] == "parent"
         assert encode_merge_result(merge)["conflicts"][0]["conflict_type"] == "modify/modify"
         assert encode_gc_report(gc_report)["reclaimed_cache_size"] == 4
         assert encode_squash_report(squash_report)["gc_report"]["removed_file_count"] == 2

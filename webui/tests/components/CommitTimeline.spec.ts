@@ -1,13 +1,30 @@
 import ElementPlus from "element-plus";
 import { mount } from "@vue/test-utils";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const commitTimelineMocks = vi.hoisted(function buildCommitTimelineMocks() {
+  return {
+    push: vi.fn()
+  };
+});
+
+vi.mock("vue-router", function mockVueRouter() {
+  return {
+    useRouter: function useRouter() {
+      return {
+        push: commitTimelineMocks.push
+      };
+    }
+  };
+});
 
 import CommitTimeline from "@/components/CommitTimeline.vue";
 
 describe("CommitTimeline", function suite() {
-  it("renders loading, empty, and populated commit states", async function testCommitTimelineStates() {
+  it("renders loading, empty, populated states, and opens commit details", async function testCommitTimelineStates() {
     const wrapper = mount(CommitTimeline, {
       props: {
+        revision: "release/v1",
         commits: [],
         loading: true
       },
@@ -29,6 +46,7 @@ describe("CommitTimeline", function suite() {
           commit_id: "1234567890abcdef1234567890abcdef12345678",
           title: "ship commit timeline",
           message: "details",
+          authors: ["HubVault"],
           created_at: "2026-04-12T00:00:00Z"
         }
       ]
@@ -37,5 +55,21 @@ describe("CommitTimeline", function suite() {
     expect(wrapper.text()).toContain("ship commit timeline");
     expect(wrapper.text()).toContain("details");
     expect(wrapper.html()).toContain("1234567890");
+
+    const button = wrapper.findAll("button").find(function findMatch(item) {
+      return item.text().indexOf("View Diff") >= 0;
+    });
+    expect(button).toBeTruthy();
+    await button!.trigger("click");
+
+    expect(commitTimelineMocks.push).toHaveBeenCalledWith({
+      name: "commit-detail",
+      params: {
+        commitId: "1234567890abcdef1234567890abcdef12345678"
+      },
+      query: {
+        revision: "release/v1"
+      }
+    });
   });
 });

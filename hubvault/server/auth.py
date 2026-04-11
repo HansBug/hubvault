@@ -45,17 +45,21 @@ class AuthContext:
 def parse_request_token(
     authorization: Optional[str] = None,
     x_hubvault_token: Optional[str] = None,
+    query_token: Optional[str] = None,
 ) -> Optional[str]:
     """
-    Extract a token from supported request headers.
+    Extract a token from supported request inputs.
 
-    ``X-HubVault-Token`` takes precedence over ``Authorization`` so simple
-    internal callers can bypass bearer-header formatting.
+    ``X-HubVault-Token`` takes precedence over ``Authorization``, and the
+    optional query-string token acts as a final read-only fallback for browser
+    resource URLs that cannot attach authorization headers.
 
     :param authorization: Raw ``Authorization`` header value
     :type authorization: Optional[str]
     :param x_hubvault_token: Raw ``X-HubVault-Token`` header value
     :type x_hubvault_token: Optional[str]
+    :param query_token: Raw ``token`` query-string value
+    :type query_token: Optional[str]
     :return: Normalized token string or ``None`` when no supported token is
         present
     :rtype: Optional[str]
@@ -65,13 +69,24 @@ def parse_request_token(
         token = x_hubvault_token.strip()
         return token or None
     if not authorization:
+        if query_token:
+            token = query_token.strip()
+            return token or None
         return None
 
     scheme, _, value = authorization.partition(" ")
     if scheme.strip().lower() != "bearer":
+        if query_token:
+            token = query_token.strip()
+            return token or None
         return None
     token = value.strip()
-    return token or None
+    if token:
+        return token
+    if query_token:
+        token = query_token.strip()
+        return token or None
+    return None
 
 
 class TokenAuthorizer:
@@ -156,11 +171,13 @@ def build_read_auth_dependency(authorizer: TokenAuthorizer):
     )
     Header = fastapi.Header
     HTTPException = fastapi.HTTPException
+    Query = fastapi.Query
     status = fastapi.status
 
     async def _dependency(
         authorization: Optional[str] = Header(default=None),
         x_hubvault_token: Optional[str] = Header(default=None, alias="X-HubVault-Token"),
+        token: Optional[str] = Query(default=None),
     ) -> AuthContext:
         """
         Resolve read access for one request.
@@ -169,13 +186,19 @@ def build_read_auth_dependency(authorizer: TokenAuthorizer):
         :type authorization: Optional[str]
         :param x_hubvault_token: Raw direct token header
         :type x_hubvault_token: Optional[str]
+        :param token: Raw ``token`` query-string value
+        :type token: Optional[str]
         :return: Resolved authorization context
         :rtype: AuthContext
         :raises fastapi.HTTPException: Raised when the token is missing or
             invalid.
         """
 
-        token = parse_request_token(authorization=authorization, x_hubvault_token=x_hubvault_token)
+        token = parse_request_token(
+            authorization=authorization,
+            x_hubvault_token=x_hubvault_token,
+            query_token=token,
+        )
         try:
             return authorizer.resolve(token)
         except PermissionError as err:

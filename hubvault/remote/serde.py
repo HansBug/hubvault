@@ -8,6 +8,8 @@ The module contains:
 
 * :func:`decode_json_payload` - Normalize one decoded JSON payload
 * :func:`decode_error_response` - Map one error payload back to a public exception
+* :func:`decode_commit_change_info` - Decode one commit-diff entry
+* :func:`decode_commit_detail_info` - Decode one commit-detail payload
 """
 
 from datetime import datetime
@@ -27,7 +29,10 @@ from ..errors import (
 from ..models import (
     BlobLfsInfo,
     BlobSecurityInfo,
+    CommitChangeInfo,
+    CommitDetailInfo,
     CommitInfo,
+    CommitFileVersionInfo,
     GcReport,
     GitCommitInfo,
     GitRefInfo,
@@ -247,6 +252,49 @@ def decode_commit_info(payload) -> CommitInfo:
     )
 
 
+def _decode_commit_file_version_info(payload):
+    """
+    Decode one optional commit-diff file-side payload.
+
+    :param payload: Raw file-side payload
+    :type payload: object
+    :return: Decoded file-side metadata or ``None``
+    :rtype: Optional[CommitFileVersionInfo]
+    """
+
+    if payload is None:
+        return None
+    data = _require_dict(payload, "commit file version")
+    return CommitFileVersionInfo(
+        path=str(data["path"]),
+        size=int(data["size"]),
+        oid=str(data["oid"]),
+        blob_id=str(data["blob_id"]),
+        sha256=str(data["sha256"]),
+    )
+
+
+def decode_commit_change_info(payload) -> CommitChangeInfo:
+    """
+    Decode one file-level commit change payload.
+
+    :param payload: Raw commit change payload
+    :type payload: object
+    :return: Decoded commit change metadata
+    :rtype: CommitChangeInfo
+    """
+
+    data = _require_dict(payload, "commit change info")
+    return CommitChangeInfo(
+        path=str(data["path"]),
+        change_type=str(data["change_type"]),
+        old_file=_decode_commit_file_version_info(data.get("old_file")),
+        new_file=_decode_commit_file_version_info(data.get("new_file")),
+        is_binary=bool(data.get("is_binary")),
+        unified_diff=None if data.get("unified_diff") is None else str(data.get("unified_diff")),
+    )
+
+
 def decode_repo_entry(payload):
     """
     Decode one repository file or folder entry.
@@ -331,6 +379,33 @@ def decode_git_commit_list(payload) -> list:
     if not isinstance(payload, list):
         raise HubVaultRemoteProtocolError("Commit list must be a JSON array.")
     return [decode_git_commit_info(item) for item in payload]
+
+
+def decode_commit_detail_info(payload) -> CommitDetailInfo:
+    """
+    Decode one commit-detail payload.
+
+    :param payload: Raw commit-detail payload
+    :type payload: object
+    :return: Decoded commit detail metadata
+    :rtype: CommitDetailInfo
+    """
+
+    data = _require_dict(payload, "commit detail info")
+    parent_commit_ids = data.get("parent_commit_ids")
+    changes = data.get("changes")
+    if not isinstance(parent_commit_ids, list):
+        raise HubVaultRemoteProtocolError("parent_commit_ids must be a JSON array.")
+    if not isinstance(changes, list):
+        raise HubVaultRemoteProtocolError("changes must be a JSON array.")
+    return CommitDetailInfo(
+        commit=decode_git_commit_info(data["commit"]),
+        parent_commit_ids=[str(item) for item in parent_commit_ids],
+        compare_parent_commit_id=None
+        if data.get("compare_parent_commit_id") is None
+        else str(data.get("compare_parent_commit_id")),
+        changes=[decode_commit_change_info(item) for item in changes],
+    )
 
 
 def decode_git_ref_info(payload) -> GitRefInfo:

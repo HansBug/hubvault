@@ -4,6 +4,15 @@ const http = axios.create({
   timeout: 30000
 });
 
+export interface UploadProgressEventPayload {
+  loaded: number;
+  total: number;
+}
+
+export interface ApplyCommitOptions {
+  onUploadProgress?: (payload: UploadProgressEventPayload) => void;
+}
+
 function getStoredToken() {
   if (typeof window === "undefined" || !window.sessionStorage) {
     return "";
@@ -57,6 +66,17 @@ function request(config) {
   return http.request(config).then(function unwrap(response) {
     return response.data;
   });
+}
+
+function buildContentUrl(prefix, revision, pathInRepo) {
+  const query = new URLSearchParams({
+    revision: revision
+  });
+  const token = getStoredToken();
+  if (token) {
+    query.set("token", token);
+  }
+  return prefix + "/" + pathInRepo.split("/").map(encodeURIComponent).join("/") + "?" + query.toString();
 }
 
 export function getServiceMeta() {
@@ -138,11 +158,12 @@ export function getBlobBytes(revision, pathInRepo) {
   });
 }
 
+export function buildBlobUrl(revision, pathInRepo) {
+  return buildContentUrl("/api/v1/content/blob", revision, pathInRepo);
+}
+
 export function buildDownloadUrl(revision, pathInRepo) {
-  const query = new URLSearchParams({
-    revision: revision
-  });
-  return "/api/v1/content/download/" + pathInRepo.split("/").map(encodeURIComponent).join("/") + "?" + query.toString();
+  return buildContentUrl("/api/v1/content/download", revision, pathInRepo);
 }
 
 export function getCommits(revision, formatted) {
@@ -151,6 +172,16 @@ export function getCommits(revision, formatted) {
     url: "/api/v1/history/commits",
     params: {
       revision: revision,
+      formatted: Boolean(formatted)
+    }
+  });
+}
+
+export function getCommitDetail(commitId, formatted) {
+  return request({
+    method: "get",
+    url: "/api/v1/history/commits/" + encodeURIComponent(commitId),
+    params: {
       formatted: Boolean(formatted)
     }
   });
@@ -185,13 +216,22 @@ export function planCommit(manifest) {
   });
 }
 
-export function applyCommit(manifest, uploads) {
+export function applyCommit(manifest, uploads, options: ApplyCommitOptions = {}) {
   const items = Array.isArray(uploads) ? uploads : [];
+  const handleUploadProgress = typeof options.onUploadProgress === "function"
+    ? function handleProgress(event) {
+      options.onUploadProgress({
+        loaded: Number(event.loaded || 0),
+        total: Number(event.total || 0)
+      });
+    }
+    : undefined;
   if (!items.length) {
     return request({
       method: "post",
       url: "/api/v1/write/commit",
-      data: manifest
+      data: manifest,
+      onUploadProgress: handleUploadProgress
     });
   }
 
@@ -204,7 +244,8 @@ export function applyCommit(manifest, uploads) {
   return request({
     method: "post",
     url: "/api/v1/write/commit",
-    data: formData
+    data: formData,
+    onUploadProgress: handleUploadProgress
   });
 }
 

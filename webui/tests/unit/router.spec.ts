@@ -2,13 +2,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const routerState = vi.hoisted(function buildRouterState() {
   return {
-    hasSessionToken: vi.fn()
+    hasSessionToken: vi.fn(),
+    setSessionToken: vi.fn()
   };
 });
 
 vi.mock("@/stores/session", function mockSessionStore() {
   return {
-    hasSessionToken: routerState.hasSessionToken
+    hasSessionToken: routerState.hasSessionToken,
+    setSessionToken: routerState.setSessionToken
   };
 });
 
@@ -17,6 +19,7 @@ import router from "@/router";
 describe("router", function suite() {
   beforeEach(async function resetRouter() {
     routerState.hasSessionToken.mockReset();
+    routerState.setSessionToken.mockReset();
     if (!router.currentRoute.value.name) {
       await router.push("/login");
     }
@@ -42,7 +45,17 @@ describe("router", function suite() {
         return item.name;
       })
     ).toEqual(
-      expect.arrayContaining(["login", "overview", "files", "commits", "refs", "storage"])
+      expect.arrayContaining(["login", "overview", "files", "file-detail", "commits", "commit-detail", "refs", "storage"])
     );
+  });
+
+  it("consumes token query parameters before entering protected routes", async function testTokenQueryBootstrap() {
+    routerState.hasSessionToken.mockReturnValue(true);
+
+    await router.push("/repo/blob/docs/guide.md?revision=release%2Fv1&token=secret-query-token");
+
+    expect(routerState.setSessionToken).toHaveBeenCalledWith("secret-query-token");
+    expect(router.currentRoute.value.name).toBe("file-detail");
+    expect(router.currentRoute.value.query.token).toBeUndefined();
   });
 });

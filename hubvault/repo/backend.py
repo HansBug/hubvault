@@ -10,6 +10,7 @@ The module contains:
 * :class:`RepositoryBackend` - Internal repository service used by the public API
 """
 
+import difflib
 import io
 import json
 import mmap
@@ -43,6 +44,9 @@ from ..errors import (
 )
 from ..models import (
     BlobLfsInfo,
+    CommitChangeInfo,
+    CommitDetailInfo,
+    CommitFileVersionInfo,
     CommitInfo,
     GcReport,
     GitCommitInfo,
@@ -2169,6 +2173,45 @@ class RepositoryBackend(object):
                 self._git_commit_info(commit_id, formatted=formatted)
                 for commit_id in self._reachable_commit_order_unlocked(head_commit_id)
             ]
+
+    def get_commit_detail(
+        self,
+        commit_id: str,
+        *,
+        formatted: bool = False,
+        diff_context_lines: int = 3,
+        diff_max_text_size: int = 256 * 1024,
+    ) -> CommitDetailInfo:
+        """
+        Return one commit together with its first-parent file changes.
+
+        :param commit_id: Public commit ID or revision resolving to a commit
+        :type commit_id: str
+        :param formatted: Whether HTML-formatted title/message fields should be
+            populated
+        :type formatted: bool, optional
+        :param diff_context_lines: Context line count used for text diffs
+        :type diff_context_lines: int, optional
+        :param diff_max_text_size: Maximum size in bytes for inline text diffs
+        :type diff_max_text_size: int, optional
+        :return: Commit metadata with file-level changes
+        :rtype: CommitDetailInfo
+        :raises RepositoryNotFoundError: Raised when the configured root is not
+            a valid repository.
+        :raises RevisionNotFoundError: Raised when ``commit_id`` cannot be
+            resolved.
+        """
+
+        self._ensure_repo()
+        self._rollback_interrupted_ref_updates_if_needed()
+        with self._read_locked():
+            resolved_commit_id = self._resolve_revision(commit_id)
+            return self._commit_detail_info(
+                resolved_commit_id,
+                formatted=formatted,
+                diff_context_lines=diff_context_lines,
+                diff_max_text_size=diff_max_text_size,
+            )
 
     def list_repo_refs(self, include_pull_requests: bool = False) -> GitRefs:
         """
@@ -7596,6 +7639,258 @@ class RepositoryBackend(object):
             commit_message=title,
             commit_description=description,
             oid=self._public_commit_oid(commit_id),
+        )
+
+    @staticmethod
+    def _decode_diff_text(data: bytes) -> Optional[str]:
+        """
+        Decode one payload as UTF-8 text for diff rendering.
+
+        :param data: Raw file payload bytes
+        :type data: bytes
+        :return: Decoded text or ``None`` when the payload should be treated as
+            binary
+        :rtype: Optional[str]
+        """
+
+        if b"\x00" in data:
+            return None
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+
+    def _commit_file_version_info(self, path: str, file_object_id: str) -> CommitFileVersionInfo:
+        """
+        Build one commit-diff file-side model from a file object.
+
+        :param path: Repo-relative file path
+        :type path: str
+        :param file_object_id: File object identifier
+        :type file_object_id: str
+        :return: File version metadata for commit diffs
+        :rtype: CommitFileVersionInfo
+        """
+
+        repo_file = self._repo_file_info(path, file_object_id)
+        return CommitFileVersionInfo(
+            path=repo_file.path,
+            size=repo_file.size,
+            oid=repo_file.oid,
+            blob_id=repo_file.blob_id,
+            sha256=repo_file.sha256,
+        )
+
+    @staticmethod
+    def _git_diff_header(
+        path: str,
+        change_type: str,
+        old_file: Optional[CommitFileVersionInfo],
+        new_file: Optional[CommitFileVersionInfo],
+    ) -> List[str]:
+        """
+        Build the git-style header lines for one unified diff payload.
+
+        :param path: Repo-relative file path
+        :type path: str
+        :param change_type: Change type label
+        :type change_type: str
+        :param old_file: Previous file metadata, if any
+        :type old_file: Optional[CommitFileVersionInfo]
+        :param new_file: New file metadata, if any
+        :type new_file: Optional[CommitFileVersionInfo]
+        :return: Diff header lines
+        :rtype: List[str]
+        """
+
+        old_label = old_file.path if old_file is not None else path
+        new_label = new_file.path if new_file is not None else path
+        headers = [
+            "diff --git a/%s b/%s" % (old_label, new_label),
+        ]
+        if old_file is not None and new_file is not None:
+            headers.append(
+                "index %s..%s 100644" % (old_file.oid[:12], new_file.oid[:12])
+            )
+        elif change_type == "added":
+            headers.append("new file mode 100644")
+        elif change_type == "deleted":
+            headers.append("deleted file mode 100644")
+        return headers
+
+    def _unified_diff_for_change(
+        self,
+        path: str,
+        change_type: str,
+        old_file: Optional[CommitFileVersionInfo],
+        new_file: Optional[CommitFileVersionInfo],
+        old_text: str,
+        new_text: str,
+        context_lines: int,
+    ) -> str:
+        """
+        Build one Git-style unified diff string for a text change.
+
+        :param path: Repo-relative file path
+        :type path: str
+        :param change_type: Change type label
+        :type change_type: str
+        :param old_file: Previous file metadata, if any
+        :type old_file: Optional[CommitFileVersionInfo]
+        :param new_file: New file metadata, if any
+        :type new_file: Optional[CommitFileVersionInfo]
+        :param old_text: Previous decoded text payload
+        :type old_text: str
+        :param new_text: New decoded text payload
+        :type new_text: str
+        :param context_lines: Context line count used by the diff
+        :type context_lines: int
+        :return: Git-style unified diff string
+        :rtype: str
+        """
+
+        fromfile = "a/%s" % ((old_file.path if old_file is not None else path),) if old_file is not None else "/dev/null"
+        tofile = "b/%s" % ((new_file.path if new_file is not None else path),) if new_file is not None else "/dev/null"
+        diff_lines = list(
+            difflib.unified_diff(
+                old_text.splitlines(),
+                new_text.splitlines(),
+                fromfile=fromfile,
+                tofile=tofile,
+                n=context_lines,
+                lineterm="",
+            )
+        )
+        return "\n".join(self._git_diff_header(path, change_type, old_file, new_file) + diff_lines) + "\n"
+
+    def _commit_change_info(
+        self,
+        path: str,
+        old_file_object_id: Optional[str],
+        new_file_object_id: Optional[str],
+        *,
+        diff_context_lines: int,
+        diff_max_text_size: int,
+    ) -> CommitChangeInfo:
+        """
+        Build one file-level change entry for a commit detail payload.
+
+        :param path: Repo-relative file path
+        :type path: str
+        :param old_file_object_id: Previous file object ID, if any
+        :type old_file_object_id: Optional[str]
+        :param new_file_object_id: New file object ID, if any
+        :type new_file_object_id: Optional[str]
+        :param diff_context_lines: Context line count used for text diffs
+        :type diff_context_lines: int
+        :param diff_max_text_size: Maximum byte size allowed for inline text
+            diffs
+        :type diff_max_text_size: int
+        :return: File-level change metadata
+        :rtype: CommitChangeInfo
+        """
+
+        if old_file_object_id is None:
+            change_type = "added"
+        elif new_file_object_id is None:
+            change_type = "deleted"
+        else:
+            change_type = "modified"
+
+        old_file = (
+            None if old_file_object_id is None else self._commit_file_version_info(path, old_file_object_id)
+        )
+        new_file = (
+            None if new_file_object_id is None else self._commit_file_version_info(path, new_file_object_id)
+        )
+
+        unified_diff = None
+        is_binary = True
+        old_text = None
+        new_text = None
+        if old_file_object_id is None or (old_file is not None and old_file.size <= diff_max_text_size):
+            if old_file_object_id is None:
+                old_text = ""
+            else:
+                old_text = self._decode_diff_text(self._read_file_bytes_by_object_id(old_file_object_id))
+        if new_file_object_id is None or (new_file is not None and new_file.size <= diff_max_text_size):
+            if new_file_object_id is None:
+                new_text = ""
+            else:
+                new_text = self._decode_diff_text(self._read_file_bytes_by_object_id(new_file_object_id))
+
+        if old_text is not None and new_text is not None:
+            is_binary = False
+            unified_diff = self._unified_diff_for_change(
+                path,
+                change_type,
+                old_file,
+                new_file,
+                old_text,
+                new_text,
+                diff_context_lines,
+            )
+
+        return CommitChangeInfo(
+            path=path,
+            change_type=change_type,
+            old_file=old_file,
+            new_file=new_file,
+            is_binary=is_binary,
+            unified_diff=unified_diff,
+        )
+
+    def _commit_detail_info(
+        self,
+        commit_id: str,
+        *,
+        formatted: bool = False,
+        diff_context_lines: int = 3,
+        diff_max_text_size: int = 256 * 1024,
+    ) -> CommitDetailInfo:
+        """
+        Build one commit-detail model from an existing commit.
+
+        :param commit_id: Commit object identifier
+        :type commit_id: str
+        :param formatted: Whether HTML-formatted title/message fields should be
+            populated
+        :type formatted: bool, optional
+        :param diff_context_lines: Context line count used for text diffs
+        :type diff_context_lines: int, optional
+        :param diff_max_text_size: Maximum size in bytes for inline text diffs
+        :type diff_max_text_size: int, optional
+        :return: Commit metadata with file-level changes
+        :rtype: CommitDetailInfo
+        """
+
+        commit_payload = self._read_object_payload("commits", commit_id)
+        parent_ids = [str(parent_id) for parent_id in commit_payload.get("parents", [])]
+        compare_parent_id = parent_ids[0] if parent_ids else None
+        current_snapshot = self._snapshot_for_commit(commit_id)
+        parent_snapshot = self._snapshot_for_commit(compare_parent_id)
+
+        changes = []
+        for path in sorted(set(parent_snapshot) | set(current_snapshot)):
+            old_file_object_id = parent_snapshot.get(path)
+            new_file_object_id = current_snapshot.get(path)
+            if old_file_object_id == new_file_object_id:
+                continue
+            changes.append(
+                self._commit_change_info(
+                    path,
+                    old_file_object_id,
+                    new_file_object_id,
+                    diff_context_lines=diff_context_lines,
+                    diff_max_text_size=diff_max_text_size,
+                )
+            )
+
+        return CommitDetailInfo(
+            commit=self._git_commit_info(commit_id, formatted=formatted),
+            parent_commit_ids=[self._public_commit_oid(parent_id) for parent_id in parent_ids],
+            compare_parent_commit_id=self._public_commit_oid(compare_parent_id) if compare_parent_id is not None else None,
+            changes=changes,
         )
 
     def _git_commit_info(self, commit_id: str, formatted: bool = False) -> GitCommitInfo:

@@ -160,6 +160,7 @@ describe("api client helpers", function suite() {
     await apiClient.getPathsInfo("release/v1", ["docs/config.json"]);
     await apiClient.getBlobBytes("release/v1", "docs/config.json");
     await apiClient.getCommits("release/v1", true);
+    await apiClient.getCommitDetail("commit-1", true);
     await apiClient.getStorageOverview();
     await apiClient.runQuickVerify();
     await apiClient.runFullVerify();
@@ -182,7 +183,10 @@ describe("api client helpers", function suite() {
           file: file,
           fileName: "demo.txt"
         }
-      ]
+      ],
+      {
+        onUploadProgress: vi.fn()
+      }
     );
     await apiClient.applyCommit(
       {
@@ -220,11 +224,22 @@ describe("api client helpers", function suite() {
       ref_name: "release/v1"
     });
 
+    expect(apiClient.buildBlobUrl("release/v1", "docs/read me#.md")).toBe(
+      "/api/v1/content/blob/docs/read%20me%23.md?revision=release%2Fv1"
+    );
     expect(apiClient.buildDownloadUrl("release/v1", "docs/read me#.md")).toBe(
       "/api/v1/content/download/docs/read%20me%23.md?revision=release%2Fv1"
     );
     expect(apiClient.buildDownloadUrl("release/v1", "docs/config.json")).toBe(
       "/api/v1/content/download/docs/config.json?revision=release%2Fv1"
+    );
+
+    window.sessionStorage.setItem("hubvault.webui.token", "secret-token");
+    expect(apiClient.buildBlobUrl("release/v1", "docs/read me#.md")).toBe(
+      "/api/v1/content/blob/docs/read%20me%23.md?revision=release%2Fv1&token=secret-token"
+    );
+    expect(apiClient.buildDownloadUrl("release/v1", "docs/config.json")).toBe(
+      "/api/v1/content/download/docs/config.json?revision=release%2Fv1&token=secret-token"
     );
 
     expect(axiosState.request).toHaveBeenCalledWith({
@@ -274,6 +289,13 @@ describe("api client helpers", function suite() {
       responseType: "arraybuffer"
     });
     expect(axiosState.request).toHaveBeenCalledWith({
+      method: "get",
+      url: "/api/v1/history/commits/commit-1",
+      params: {
+        formatted: true
+      }
+    });
+    expect(axiosState.request).toHaveBeenCalledWith({
       method: "post",
       url: "/api/v1/write/commit",
       data: {
@@ -282,7 +304,9 @@ describe("api client helpers", function suite() {
     });
     expect(axiosState.request.mock.calls.some(function hasMultipartCall(call) {
       const config = call[0];
-      return config.url === "/api/v1/write/commit" && config.data instanceof FormData;
+      return config.url === "/api/v1/write/commit"
+        && config.data instanceof FormData
+        && typeof config.onUploadProgress === "function";
     })).toBe(true);
     expect(axiosState.request).toHaveBeenCalledWith({
       method: "delete",

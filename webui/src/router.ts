@@ -1,7 +1,9 @@
 import { createRouter, createWebHistory } from "vue-router";
 
-import { hasSessionToken } from "./stores/session";
+import { hasSessionToken, setSessionToken } from "./stores/session";
+import CommitDetailView from "./views/CommitDetailView.vue";
 import CommitsView from "./views/CommitsView.vue";
+import FileDetailView from "./views/FileDetailView.vue";
 import FilesView from "./views/FilesView.vue";
 import LoginView from "./views/LoginView.vue";
 import OverviewView from "./views/OverviewView.vue";
@@ -45,9 +47,19 @@ const router = createRouter({
           component: FilesView
         },
         {
+          path: "blob/:pathMatch(.*)*",
+          name: "file-detail",
+          component: FileDetailView
+        },
+        {
           path: "commits",
           name: "commits",
           component: CommitsView
+        },
+        {
+          path: "commits/:commitId",
+          name: "commit-detail",
+          component: CommitDetailView
         },
         {
           path: "refs",
@@ -64,7 +76,23 @@ const router = createRouter({
   ]
 });
 
+function sanitizeTokenQuery(query) {
+  const nextQuery = Object.assign({}, query);
+  delete nextQuery.token;
+  return nextQuery;
+}
+
 router.beforeEach(function guardRoute(to) {
+  const token = typeof to.query.token === "string" ? String(to.query.token).trim() : "";
+  if (token) {
+    setSessionToken(token);
+    return {
+      name: String(to.name || "overview"),
+      params: to.params,
+      query: sanitizeTokenQuery(to.query),
+      hash: to.hash
+    };
+  }
   if (to.meta.requiresAuth && !hasSessionToken()) {
     return {
       name: "login",

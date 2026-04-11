@@ -345,6 +345,45 @@ class TestApi:
         assert commit.commit_message == "document <api>"
         assert commit.commit_description == "body & tail"
 
+    def test_get_commit_detail_returns_first_parent_changes_and_text_diffs(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        created = api.create_repo()
+        first_commit = api.create_commit(
+            operations=[
+                CommitOperationAdd("README.md", b"# hubvault\n"),
+                CommitOperationAdd("docs/demo.py", b"print('v1')\n"),
+            ],
+            commit_message="seed docs",
+        )
+        second_commit = api.create_commit(
+            operations=[
+                CommitOperationAdd("docs/demo.py", b"print('v2')\n"),
+                CommitOperationAdd("assets/logo.bin", b"\x89PNG\r\n\x1a\nbinary-data"),
+            ],
+            commit_message="update docs",
+        )
+
+        initial_detail = api.get_commit_detail(created.head)
+        detail = api.get_commit_detail(second_commit.oid, formatted=True)
+        changes = {item.path: item for item in detail.changes}
+
+        assert initial_detail.commit.commit_id == created.head
+        assert initial_detail.compare_parent_commit_id is None
+        assert initial_detail.changes == []
+
+        assert detail.commit.commit_id == second_commit.oid
+        assert detail.commit.formatted_title == "update docs"
+        assert detail.compare_parent_commit_id == first_commit.oid
+        assert detail.parent_commit_ids == [first_commit.oid]
+        assert sorted(changes) == ["assets/logo.bin", "docs/demo.py"]
+        assert changes["docs/demo.py"].change_type == "modified"
+        assert changes["docs/demo.py"].is_binary is False
+        assert "diff --git a/docs/demo.py b/docs/demo.py" in changes["docs/demo.py"].unified_diff
+        assert "+print('v2')" in changes["docs/demo.py"].unified_diff
+        assert changes["assets/logo.bin"].change_type == "added"
+        assert changes["assets/logo.bin"].is_binary is True
+        assert changes["assets/logo.bin"].unified_diff is None
+
     def test_merge_public_api_supports_fast_forward_and_merge_commit_results(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")
         api.create_repo(large_file_threshold=64)

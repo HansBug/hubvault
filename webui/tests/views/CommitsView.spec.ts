@@ -16,8 +16,8 @@ vi.mock("@/api/client", function mockClientModule() {
 vi.mock("@/components/CommitTimeline.vue", function mockCommitTimeline() {
   return {
     default: {
-      props: ["commits", "loading"],
-      template: "<div data-testid=\"commit-timeline\">{{ loading ? 'loading' : commits.length }}</div>"
+      props: ["commits", "loading", "revision"],
+      template: "<div data-testid=\"commit-timeline\">{{ loading ? 'loading' : commits.length }}|{{ revision }}</div>"
     }
   };
 });
@@ -51,7 +51,7 @@ describe("CommitsView", function suite() {
 
     await flushPromises();
     expect(commitsViewMocks.getCommits).toHaveBeenCalledWith("release/v1", false);
-    expect(wrapper.get("[data-testid='commit-timeline']").text()).toBe("1");
+    expect(wrapper.get("[data-testid='commit-timeline']").text()).toBe("1|release/v1");
 
     await wrapper.setProps({
       revision: "dev"

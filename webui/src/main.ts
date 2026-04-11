@@ -4,6 +4,10 @@ import ElementPlus from "element-plus";
 import App from "./App.vue";
 import router from "./router";
 import { restoreSessionToken } from "./stores/session";
+import "diff2html/bundles/css/diff2html.min.css";
+import "juxtaposejs/build/css/juxtapose.css";
+import "prismjs/themes/prism.css";
+import "prismjs/plugins/line-numbers/prism-line-numbers.css";
 import "./styles/element.scss";
 import "./styles/main.scss";
 

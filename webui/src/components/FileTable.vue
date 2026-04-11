@@ -1,4 +1,13 @@
 <script setup lang="ts">
+import {
+  Delete,
+  Document,
+  Download,
+  FolderOpened,
+  Right
+} from "@element-plus/icons-vue";
+
+import { buildDownloadUrl } from "@/api/client";
 import { formatBytes, formatRelativeDate } from "@/utils/format";
 
 const props = defineProps({
@@ -8,29 +17,25 @@ const props = defineProps({
       return [];
     }
   },
-  selectedPath: {
+  revision: {
     type: String,
     default: ""
+  },
+  canWrite: {
+    type: Boolean,
+    default: false
   }
 });
 
-const emit = defineEmits(["open-folder", "open-file"]);
+const emit = defineEmits(["open-folder", "open-file", "delete-entry"]);
 
 function displayName(path) {
   const parts = String(path || "").split("/");
   return parts[parts.length - 1] || path;
 }
 
-function handleOpen(row) {
-  if (row.entry_type === "folder") {
-    emit("open-folder", row.path);
-  } else {
-    emit("open-file", row.path);
-  }
-}
-
-function rowClassName(row) {
-  return row.row.path === props.selectedPath ? "is-current-row" : "";
+function downloadUrl(path) {
+  return buildDownloadUrl(props.revision, path);
 }
 </script>
 
@@ -39,20 +44,26 @@ function rowClassName(row) {
     :data="entries"
     class="surface"
     row-key="path"
-    :row-class-name="rowClassName"
     empty-text="No files under this path."
   >
-    <el-table-column label="Path" min-width="280">
+    <el-table-column label="Name" min-width="320">
       <template #default="{ row }">
-        <el-button link type="primary" @click="handleOpen(row)">
+        <el-button
+          link
+          type="primary"
+          @click="$emit(row.entry_type === 'folder' ? 'open-folder' : 'open-file', row.path)"
+        >
           <span class="table-path">
-            <span class="table-path__kind">{{ row.entry_type === "folder" ? "dir" : "file" }}</span>
+            <el-icon class="table-path__icon">
+              <folder-opened v-if="row.entry_type === 'folder'" />
+              <document v-else />
+            </el-icon>
             <span>{{ displayName(row.path) }}</span>
           </span>
         </el-button>
       </template>
     </el-table-column>
-    <el-table-column label="Last commit" min-width="220">
+    <el-table-column label="Last Commit" min-width="240">
       <template #default="{ row }">
         <div>{{ row.last_commit?.title || "Unknown" }}</div>
       </template>
@@ -65,6 +76,37 @@ function rowClassName(row) {
     <el-table-column label="Size" width="120" align="right">
       <template #default="{ row }">
         <span>{{ row.entry_type === "file" ? formatBytes(row.size) : "-" }}</span>
+      </template>
+    </el-table-column>
+    <el-table-column label="Actions" width="168" align="right">
+      <template #default="{ row }">
+        <div class="table-actions">
+          <el-button
+            :icon="Right"
+            circle
+            plain
+            :aria-label="row.entry_type === 'folder' ? 'Open folder ' + row.path : 'Open file ' + row.path"
+            @click="$emit(row.entry_type === 'folder' ? 'open-folder' : 'open-file', row.path)"
+          />
+          <el-button
+            v-if="row.entry_type === 'file'"
+            :icon="Download"
+            circle
+            plain
+            tag="a"
+            :href="downloadUrl(row.path)"
+            :aria-label="'Download ' + row.path"
+          />
+          <el-button
+            v-if="canWrite"
+            :icon="Delete"
+            circle
+            plain
+            type="danger"
+            :aria-label="'Delete ' + row.path"
+            @click="$emit('delete-entry', row)"
+          />
+        </div>
       </template>
     </el-table-column>
   </el-table>

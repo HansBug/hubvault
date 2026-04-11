@@ -1,4 +1,5 @@
 const README_CANDIDATES = ["README.md", "README.markdown", "README.rst", "README.txt"];
+const IMAGE_EXTENSIONS = [".avif", ".gif", ".jpeg", ".jpg", ".png", ".svg", ".webp"];
 const TEXT_EXTENSIONS = [
   ".cfg",
   ".css",
@@ -37,6 +38,16 @@ export function isJsonPath(path) {
   return /\.json$/i.test(String(path || ""));
 }
 
+export function isImagePath(path) {
+  const text = String(path || "").toLowerCase();
+  for (let index = 0; index < IMAGE_EXTENSIONS.length; index += 1) {
+    if (text.endsWith(IMAGE_EXTENSIONS[index])) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function isTextLikePath(path) {
   const text = String(path || "").toLowerCase();
   for (let index = 0; index < TEXT_EXTENSIONS.length; index += 1) {
@@ -45,6 +56,10 @@ export function isTextLikePath(path) {
     }
   }
   return false;
+}
+
+export function isCodeLikePath(path) {
+  return isTextLikePath(path) && !isMarkdownPath(path);
 }
 
 export function decodeUtf8Bytes(bytes) {

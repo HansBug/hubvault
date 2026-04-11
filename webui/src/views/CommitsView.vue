@@ -58,7 +58,7 @@ watch(
           </p>
         </div>
       </div>
-      <commit-timeline :commits="commits" :loading="loading" />
+      <commit-timeline :commits="commits" :loading="loading" :revision="props.revision" />
     </el-card>
   </div>
 </template>

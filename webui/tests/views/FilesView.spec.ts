@@ -12,7 +12,6 @@ const filesViewMocks = vi.hoisted(function buildFilesViewMocks() {
     applyCommit: vi.fn(),
     deleteRepoFile: vi.fn(),
     deleteRepoFolder: vi.fn(),
-    getBlobBytes: vi.fn(),
     getPathsInfo: vi.fn(),
     getRepoTree: vi.fn(),
     planCommit: vi.fn(),
@@ -43,7 +42,6 @@ vi.mock("@/api/client", function mockClientModule() {
     applyCommit: filesViewMocks.applyCommit,
     deleteRepoFile: filesViewMocks.deleteRepoFile,
     deleteRepoFolder: filesViewMocks.deleteRepoFolder,
-    getBlobBytes: filesViewMocks.getBlobBytes,
     getPathsInfo: filesViewMocks.getPathsInfo,
     getRepoTree: filesViewMocks.getRepoTree,
     planCommit: filesViewMocks.planCommit
@@ -72,28 +70,25 @@ vi.mock("@/utils/uploads", async function mockUploadsModule() {
 vi.mock("@/components/FileTable.vue", function mockFileTable() {
   return {
     default: {
-      props: ["entries", "selectedPath"],
+      props: ["entries", "revision", "canWrite"],
       template: [
         "<div data-testid=\"file-table\">",
-        "  <div data-testid=\"selected-path\">{{ selectedPath }}</div>",
         "  <button",
         "    v-for=\"entry in entries\"",
-        "    :key=\"entry.path\"",
+        "    :key=\"entry.path + '-open'\"",
         "    @click=\"$emit(entry.entry_type === 'folder' ? 'open-folder' : 'open-file', entry.path)\"",
         "  >",
-        "    {{ entry.path }}",
+        "    open {{ entry.path }}",
+        "  </button>",
+        "  <button",
+        "    v-for=\"entry in entries\"",
+        "    :key=\"entry.path + '-delete'\"",
+        "    @click=\"$emit('delete-entry', entry)\"",
+        "  >",
+        "    delete {{ entry.path }}",
         "  </button>",
         "</div>"
       ].join("")
-    }
-  };
-});
-
-vi.mock("@/components/FilePreviewPanel.vue", function mockPreviewPanel() {
-  return {
-    default: {
-      props: ["entry", "content", "previewMode", "loading", "revision"],
-      template: "<div data-testid=\"file-preview-panel\">{{ entry?.path || 'none' }}|{{ previewMode }}|{{ content }}</div>"
     }
   };
 });
@@ -116,13 +111,12 @@ describe("FilesView", function suite() {
       can_write: true
     };
     filesViewMocks.route.query = {
-      path: "docs/config.json"
+      path: "docs"
     };
     filesViewMocks.getPathsInfo.mockResolvedValue([
       {
-        path: "docs/config.json",
-        entry_type: "file",
-        size: 14
+        path: "docs",
+        entry_type: "folder"
       }
     ]);
     filesViewMocks.getRepoTree.mockResolvedValue([
@@ -136,13 +130,12 @@ describe("FilesView", function suite() {
         }
       }
     ]);
-    filesViewMocks.getBlobBytes.mockResolvedValue(new TextEncoder().encode("{\"version\":1}\n").buffer);
     vi.spyOn(ElMessage, "success").mockImplementation(function swallowSuccess() {
       return undefined as never;
     });
   });
 
-  it("loads a JSON preview and deletes the selected file through the write API", async function testPreviewAndDelete() {
+  it("loads a directory and deletes a file through the write API", async function testDeleteFlow() {
     vi.spyOn(ElMessageBox, "confirm").mockResolvedValue(undefined as never);
     filesViewMocks.deleteRepoFile.mockResolvedValue({
       oid: "delete-commit"
@@ -160,12 +153,10 @@ describe("FilesView", function suite() {
     await flushPromises();
     await flushPromises();
 
-    expect(filesViewMocks.getPathsInfo).toHaveBeenCalledWith("release/v1", ["docs/config.json"]);
+    expect(filesViewMocks.getPathsInfo).toHaveBeenCalledWith("release/v1", ["docs"]);
     expect(filesViewMocks.getRepoTree).toHaveBeenCalledWith("release/v1", "docs");
-    expect(filesViewMocks.getBlobBytes).toHaveBeenCalledWith("release/v1", "docs/config.json");
-    expect(wrapper.get("[data-testid='file-preview-panel']").text()).toContain("docs/config.json|json|");
 
-    await findButtonByText(wrapper, "Delete Selected").trigger("click");
+    await findButtonByText(wrapper, "delete docs/config.json").trigger("click");
     await flushPromises();
 
     expect(filesViewMocks.deleteRepoFile).toHaveBeenCalledWith({
@@ -174,20 +165,12 @@ describe("FilesView", function suite() {
       commit_message: "Delete docs/config.json with hubvault"
     });
     expect(filesViewMocks.bootstrapSession).toHaveBeenCalledWith("release/v1", { force: true });
-    expect(filesViewMocks.push).toHaveBeenCalledWith({
-      name: "files",
-      query: {
-        revision: "release/v1",
-        path: "docs"
-      }
-    });
   });
 
-  it("uploads files and surfaces stale-plan errors with a refresh hint", async function testUploadFlows() {
+  it("queues uploads, submits them, and surfaces stale-plan errors with a refresh hint", async function testUploadQueue() {
     const file = new File(["hello"], "notes.txt", {
       type: "text/plain"
     });
-    vi.spyOn(ElMessageBox, "prompt").mockResolvedValue({ value: "upload notes" } as never);
     filesViewMocks.route.query = {};
     filesViewMocks.getPathsInfo.mockResolvedValue([]);
     filesViewMocks.getRepoTree.mockResolvedValue([]);
@@ -229,6 +212,11 @@ describe("FilesView", function suite() {
     filesViewMocks.planCommit
       .mockResolvedValueOnce({
         base_head: "base-1",
+        statistics: {
+          planned_upload_bytes: 5,
+          copy_file_count: 0,
+          chunk_fast_upload_file_count: 0
+        },
         operations: [
           {
             index: 0,
@@ -269,6 +257,13 @@ describe("FilesView", function suite() {
     await input.trigger("change");
     await flushPromises();
 
+    expect(wrapper.text()).toContain("notes.txt");
+
+    await wrapper.get("input[placeholder='Commit message for the queued upload batch']").setValue("upload notes");
+    await findButtonByText(wrapper, "Commit Queued Uploads").trigger("click");
+    await flushPromises();
+    await flushPromises();
+
     expect(filesViewMocks.planCommit).toHaveBeenNthCalledWith(1, {
       revision: "release/v1",
       commit_message: "upload notes",
@@ -298,6 +293,11 @@ describe("FilesView", function suite() {
         ],
         upload_plan: {
           base_head: "base-1",
+          statistics: {
+            planned_upload_bytes: 5,
+            copy_file_count: 0,
+            chunk_fast_upload_file_count: 0
+          },
           operations: [
             {
               index: 0,
@@ -314,15 +314,20 @@ describe("FilesView", function suite() {
           file: file,
           fileName: "notes.txt"
         }
-      ]
+      ],
+      {
+        onUploadProgress: expect.any(Function)
+      }
     );
 
     Object.defineProperty(inputElement, "files", {
       configurable: true,
       value: [file]
     });
-    inputElement.value = "C:\\fakepath\\notes.txt";
     await input.trigger("change");
+    await flushPromises();
+    await findButtonByText(wrapper, "Commit Queued Uploads").trigger("click");
+    await flushPromises();
     await flushPromises();
 
     expect(wrapper.text()).toContain("Repository changed during upload planning. Refresh the page and retry the upload.");

@@ -11,6 +11,9 @@ The module contains:
 * :func:`encode_repo_entry` - Serialize file and folder entries
 * :func:`encode_git_refs` - Serialize branch and tag refs
 * :func:`encode_git_commit_info` - Serialize commit-list entries
+* :func:`encode_commit_file_version_info` - Serialize one commit diff file side
+* :func:`encode_commit_change_info` - Serialize one commit diff entry
+* :func:`encode_commit_detail_info` - Serialize one commit detail payload
 * :func:`encode_reflog_entry` - Serialize reflog entries
 * :func:`encode_commit_info` - Serialize write-commit metadata
 * :func:`encode_merge_result` - Serialize structured merge results
@@ -27,7 +30,10 @@ from typing import Iterable, List, Optional
 from ..models import (
     BlobLfsInfo,
     BlobSecurityInfo,
+    CommitChangeInfo,
+    CommitDetailInfo,
     CommitInfo,
+    CommitFileVersionInfo,
     GcReport,
     GitCommitInfo,
     GitRefInfo,
@@ -215,6 +221,65 @@ def encode_git_commit_list(values: Iterable[GitCommitInfo]) -> List[dict]:
     """
 
     return [encode_git_commit_info(value) for value in values]
+
+
+def encode_commit_file_version_info(value: Optional[CommitFileVersionInfo]) -> Optional[dict]:
+    """
+    Serialize one optional commit-diff file-side entry.
+
+    :param value: Commit-diff file-side metadata, if available
+    :type value: Optional[CommitFileVersionInfo]
+    :return: JSON-compatible file-side payload or ``None``
+    :rtype: Optional[dict]
+    """
+
+    if value is None:
+        return None
+    return {
+        "path": value.path,
+        "size": value.size,
+        "oid": value.oid,
+        "blob_id": value.blob_id,
+        "sha256": value.sha256,
+    }
+
+
+def encode_commit_change_info(value: CommitChangeInfo) -> dict:
+    """
+    Serialize one file-level commit change entry.
+
+    :param value: File-level commit change metadata
+    :type value: CommitChangeInfo
+    :return: JSON-compatible commit change payload
+    :rtype: dict
+    """
+
+    return {
+        "path": value.path,
+        "change_type": value.change_type,
+        "old_file": encode_commit_file_version_info(value.old_file),
+        "new_file": encode_commit_file_version_info(value.new_file),
+        "is_binary": value.is_binary,
+        "unified_diff": value.unified_diff,
+    }
+
+
+def encode_commit_detail_info(value: CommitDetailInfo) -> dict:
+    """
+    Serialize one commit-detail payload.
+
+    :param value: Commit detail metadata
+    :type value: CommitDetailInfo
+    :return: JSON-compatible commit detail payload
+    :rtype: dict
+    """
+
+    return {
+        "commit": encode_git_commit_info(value.commit),
+        "parent_commit_ids": list(value.parent_commit_ids),
+        "compare_parent_commit_id": value.compare_parent_commit_id,
+        "changes": [encode_commit_change_info(item) for item in value.changes],
+    }
 
 
 def encode_commit_info(value: CommitInfo) -> dict:

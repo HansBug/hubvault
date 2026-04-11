@@ -10,15 +10,17 @@ The module contains:
 * :data:`HubVaultRemoteAPI` - Compatibility alias for the preferred class name
 """
 
+import io
 import json
 from fnmatch import fnmatch
 import os
 from os import PathLike
 from pathlib import Path
-from typing import BinaryIO, Optional, Sequence, Union
+from typing import BinaryIO, Callable, Optional, Sequence, Union
 from urllib.parse import quote
 
 from ..errors import EntryNotFoundError
+from ..optional import MissingOptionalDependencyError, import_optional_dependency
 from ..operations import CommitOperationAdd, CommitOperationCopy, CommitOperationDelete
 from ..storage import ChunkStore
 from .cache import (
@@ -29,6 +31,7 @@ from .cache import (
 )
 from .client import build_http_client, request_bytes, request_json
 from .serde import (
+    decode_commit_detail_info,
     decode_commit_info,
     decode_gc_report,
     decode_git_commit_list,
@@ -111,6 +114,147 @@ def _filter_local_paths(paths, *, allow_patterns=None, ignore_patterns=None) -> 
 
 
 FAST_UPLOAD_CHUNK_THRESHOLD = 1024 * 1024
+
+
+class _UploadProgressState:
+    """
+    Track aggregate multipart upload progress for one commit request.
+
+    :param total_bytes: Total request payload bytes attributed to upload parts
+    :type total_bytes: int
+    :param progress_callback: Optional callback receiving ``(sent, total)``
+    :type progress_callback: Optional[Callable[[int, int], None]]
+    """
+
+    def __init__(self, total_bytes: int, progress_callback: Optional[Callable[[int, int], None]] = None) -> None:
+        """
+        Initialize one upload-progress tracker.
+
+        :param total_bytes: Total request payload bytes attributed to upload parts
+        :type total_bytes: int
+        :param progress_callback: Optional callback receiving ``(sent, total)``
+        :type progress_callback: Optional[Callable[[int, int], None]]
+        :return: ``None``.
+        :rtype: None
+        """
+
+        self.total_bytes = max(int(total_bytes), 0)
+        self.sent_bytes = 0
+        self._progress_callback = progress_callback
+        if self._progress_callback is not None:
+            self._progress_callback(self.sent_bytes, self.total_bytes)
+
+    def advance(self, delta: int) -> None:
+        """
+        Advance the tracked upload byte counter.
+
+        :param delta: Number of newly streamed bytes
+        :type delta: int
+        :return: ``None``.
+        :rtype: None
+        """
+
+        if delta <= 0:
+            return
+        self.sent_bytes = min(self.total_bytes, self.sent_bytes + int(delta))
+        if self._progress_callback is not None:
+            self._progress_callback(self.sent_bytes, self.total_bytes)
+
+    def finish(self) -> None:
+        """
+        Mark the upload as fully streamed.
+
+        :return: ``None``.
+        :rtype: None
+        """
+
+        self.sent_bytes = self.total_bytes
+        if self._progress_callback is not None:
+            self._progress_callback(self.sent_bytes, self.total_bytes)
+
+
+class _UploadProgressReader(io.BytesIO):
+    """
+    Wrap one in-memory upload part and report streamed bytes.
+
+    :param data: Upload payload bytes
+    :type data: bytes
+    :param state: Shared aggregate upload-progress tracker
+    :type state: _UploadProgressState
+    """
+
+    def __init__(self, data: bytes, state: _UploadProgressState) -> None:
+        """
+        Build one progress-reporting upload reader.
+
+        :param data: Upload payload bytes
+        :type data: bytes
+        :param state: Shared aggregate upload-progress tracker
+        :type state: _UploadProgressState
+        :return: ``None``.
+        :rtype: None
+        """
+
+        super(_UploadProgressReader, self).__init__(data)
+        self._state = state
+
+    def read(self, size: int = -1) -> bytes:
+        """
+        Read upload bytes while updating shared progress.
+
+        :param size: Requested byte count
+        :type size: int
+        :return: Read payload bytes
+        :rtype: bytes
+        """
+
+        chunk = super(_UploadProgressReader, self).read(size)
+        self._state.advance(len(chunk))
+        return chunk
+
+
+def _build_progress_callback(
+    total_bytes: int,
+    *,
+    progress_callback: Optional[Callable[[int, int], None]] = None,
+    show_progress: bool = False,
+) -> tuple:
+    """
+    Build one upload-progress callback and optional tqdm cleanup hook.
+
+    :param total_bytes: Total request payload bytes attributed to upload parts
+    :type total_bytes: int
+    :param progress_callback: Optional explicit progress callback
+    :type progress_callback: Optional[Callable[[int, int], None]]
+    :param show_progress: Whether a local tqdm progress bar should be shown
+    :type show_progress: bool
+    :return: Tuple of ``(callback, close_callback)``
+    :rtype: tuple
+    """
+
+    if progress_callback is not None:
+        return progress_callback, None
+    if not show_progress or total_bytes <= 0:
+        return None, None
+
+    try:
+        tqdm_auto = import_optional_dependency(
+            "tqdm.auto",
+            extra="remote",
+            feature="remote upload progress reporting",
+            missing_names={"tqdm"},
+        )
+    except MissingOptionalDependencyError:
+        return None, None
+
+    progress_bar = tqdm_auto.tqdm(total=total_bytes, unit="B", unit_scale=True, desc="hubvault upload")
+
+    def _progress_callback(sent_bytes: int, total: int) -> None:
+        progress_bar.total = total
+        progress_bar.n = sent_bytes
+        progress_bar.refresh()
+
+    return _progress_callback, progress_bar.close
 
 
 class HubVaultRemoteApi:
@@ -303,7 +447,14 @@ class HubVaultRemoteApi:
             upload_sources,
         )
 
-    def _planned_commit_request(self, manifest: dict, upload_sources: dict):
+    def _planned_commit_request(
+        self,
+        manifest: dict,
+        upload_sources: dict,
+        *,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        show_progress: bool = False,
+    ):
         """
         Execute the ``commit-plan`` / ``commit`` upload flow.
 
@@ -311,6 +462,12 @@ class HubVaultRemoteApi:
         :type manifest: dict
         :param upload_sources: Local upload sources indexed by operation number
         :type upload_sources: dict
+        :param progress_callback: Optional callback receiving ``(sent, total)``
+            upload-byte updates for streamed file/chunk parts
+        :type progress_callback: Optional[Callable[[int, int], None]]
+        :param show_progress: Whether to show a tqdm progress bar when no
+            explicit callback is provided
+        :type show_progress: bool
         :return: Commit metadata for the created commit
         :rtype: hubvault.models.CommitInfo
         """
@@ -321,6 +478,19 @@ class HubVaultRemoteApi:
                 "POST",
                 "/api/v1/write/commit-plan",
                 json=manifest,
+            )
+            progress_callback, close_progress = _build_progress_callback(
+                int(plan.get("statistics", {}).get("planned_upload_bytes", 0)),
+                progress_callback=progress_callback,
+                show_progress=show_progress,
+            )
+            progress_state = (
+                _UploadProgressState(
+                    int(plan.get("statistics", {}).get("planned_upload_bytes", 0)),
+                    progress_callback,
+                )
+                if progress_callback is not None
+                else None
             )
             apply_manifest = dict(manifest)
             if apply_manifest.get("parent_commit") is None:
@@ -336,12 +506,15 @@ class HubVaultRemoteApi:
                     continue
                 if planned_operation.get("strategy") == "upload-full":
                     field_name = str(planned_operation["field_name"])
+                    payload_data = bytes(source["data"])
                     files.append(
                         (
                             field_name,
                             (
                                 field_name,
-                                bytes(source["data"]),
+                                _UploadProgressReader(payload_data, progress_state)
+                                if progress_state is not None
+                                else payload_data,
                                 "application/octet-stream",
                             ),
                         )
@@ -349,32 +522,41 @@ class HubVaultRemoteApi:
                 elif planned_operation.get("strategy") == "chunk-upload":
                     for chunk_payload in planned_operation.get("missing_chunks", []):
                         chunk_index = int(chunk_payload["chunk_index"])
+                        payload_data = bytes(source["chunks"][chunk_index])
                         files.append(
                             (
                                 str(chunk_payload["field_name"]),
                                 (
                                     str(chunk_payload["chunk_id"]) + ".bin",
-                                    bytes(source["chunks"][chunk_index]),
+                                    _UploadProgressReader(payload_data, progress_state)
+                                    if progress_state is not None
+                                    else payload_data,
                                     "application/octet-stream",
                                 ),
                             )
                         )
 
-            if files:
-                payload = request_json(
-                    client,
-                    "POST",
-                    "/api/v1/write/commit",
-                    data={"manifest": json.dumps(apply_manifest)},
-                    files=files,
-                )
-            else:
-                payload = request_json(
-                    client,
-                    "POST",
-                    "/api/v1/write/commit",
-                    json=apply_manifest,
-                )
+            try:
+                if files:
+                    payload = request_json(
+                        client,
+                        "POST",
+                        "/api/v1/write/commit",
+                        data={"manifest": json.dumps(apply_manifest)},
+                        files=files,
+                    )
+                else:
+                    payload = request_json(
+                        client,
+                        "POST",
+                        "/api/v1/write/commit",
+                        json=apply_manifest,
+                    )
+                if progress_state is not None:
+                    progress_state.finish()
+            finally:
+                if close_progress is not None:
+                    close_progress()
         return decode_commit_info(payload)
 
     def create_commit(
@@ -385,6 +567,8 @@ class HubVaultRemoteApi:
         commit_description: Optional[str] = None,
         revision: Optional[str] = None,
         parent_commit: Optional[str] = None,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        show_progress: bool = False,
     ):
         """
         Create one remote commit through the planned upload protocol.
@@ -399,6 +583,12 @@ class HubVaultRemoteApi:
         :type revision: Optional[str]
         :param parent_commit: Optional optimistic-concurrency base head
         :type parent_commit: Optional[str]
+        :param progress_callback: Optional callback receiving ``(sent, total)``
+            upload-byte updates for streamed file/chunk parts
+        :type progress_callback: Optional[Callable[[int, int], None]]
+        :param show_progress: Whether to show a tqdm progress bar when no
+            explicit callback is provided
+        :type show_progress: bool
         :return: Commit metadata for the created commit
         :rtype: hubvault.models.CommitInfo
         """
@@ -410,7 +600,12 @@ class HubVaultRemoteApi:
             revision=revision,
             parent_commit=parent_commit,
         )
-        return self._planned_commit_request(manifest, upload_sources)
+        return self._planned_commit_request(
+            manifest,
+            upload_sources,
+            progress_callback=progress_callback,
+            show_progress=show_progress,
+        )
 
     def merge(
         self,
@@ -838,6 +1033,29 @@ class HubVaultRemoteApi:
             )
         return decode_git_commit_list(payload)
 
+    def get_commit_detail(self, commit_id: str, *, formatted: bool = False):
+        """
+        Return one remote commit together with its first-parent file changes.
+
+        :param commit_id: Public commit ID or revision resolving to a commit
+        :type commit_id: str
+        :param formatted: Whether HTML-formatted title/message fields should be populated
+        :type formatted: bool
+        :return: Commit metadata with file-level changes
+        :rtype: hubvault.models.CommitDetailInfo
+        """
+
+        with self.build_client() as client:
+            payload = request_json(
+                client,
+                "GET",
+                "/api/v1/history/commits/%s" % (quote(commit_id, safe=""),),
+                params={
+                    "formatted": formatted,
+                },
+            )
+        return decode_commit_detail_info(payload)
+
     def list_repo_refs(self, *, include_pull_requests: bool = False):
         """
         List visible remote branch and tag refs in HF-style form.
@@ -902,6 +1120,8 @@ class HubVaultRemoteApi:
         commit_message: Optional[str] = None,
         commit_description: Optional[str] = None,
         parent_commit: Optional[str] = None,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        show_progress: bool = False,
     ):
         """
         Upload one file through the remote planned-commit protocol.
@@ -918,6 +1138,12 @@ class HubVaultRemoteApi:
         :type commit_description: Optional[str]
         :param parent_commit: Optional optimistic-concurrency base head
         :type parent_commit: Optional[str]
+        :param progress_callback: Optional callback receiving ``(sent, total)``
+            upload-byte updates for streamed file/chunk parts
+        :type progress_callback: Optional[Callable[[int, int], None]]
+        :param show_progress: Whether to show a tqdm progress bar when no
+            explicit callback is provided
+        :type show_progress: bool
         :return: Commit metadata for the created commit
         :rtype: hubvault.models.CommitInfo
         """
@@ -928,6 +1154,8 @@ class HubVaultRemoteApi:
             commit_description=commit_description,
             revision=revision,
             parent_commit=parent_commit,
+            progress_callback=progress_callback,
+            show_progress=show_progress,
         )
 
     def upload_folder(
@@ -942,6 +1170,8 @@ class HubVaultRemoteApi:
         allow_patterns: Optional[Union[Sequence[str], str]] = None,
         ignore_patterns: Optional[Union[Sequence[str], str]] = None,
         delete_patterns: Optional[Union[Sequence[str], str]] = None,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        show_progress: bool = False,
     ):
         """
         Upload one local folder through the remote planned-commit protocol.
@@ -965,6 +1195,12 @@ class HubVaultRemoteApi:
         :param delete_patterns: Optional denylist applied to already uploaded
             repo files below ``path_in_repo``
         :type delete_patterns: Optional[Union[Sequence[str], str]]
+        :param progress_callback: Optional callback receiving ``(sent, total)``
+            upload-byte updates for streamed file/chunk parts
+        :type progress_callback: Optional[Callable[[int, int], None]]
+        :param show_progress: Whether to show a tqdm progress bar when no
+            explicit callback is provided
+        :type show_progress: bool
         :return: Commit metadata for the created commit
         :rtype: hubvault.models.CommitInfo
         :raises ValueError: Raised when ``folder_path`` is not a local
@@ -1029,6 +1265,8 @@ class HubVaultRemoteApi:
             commit_description=commit_description,
             revision=revision,
             parent_commit=parent_commit,
+            progress_callback=progress_callback,
+            show_progress=show_progress,
         )
 
     def upload_large_folder(
@@ -1038,6 +1276,8 @@ class HubVaultRemoteApi:
         revision: Optional[str] = None,
         allow_patterns: Optional[Union[Sequence[str], str]] = None,
         ignore_patterns: Optional[Union[Sequence[str], str]] = None,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+        show_progress: bool = False,
     ):
         """
         Upload one local folder through the remote large-folder flow.
@@ -1050,6 +1290,12 @@ class HubVaultRemoteApi:
         :type allow_patterns: Optional[Union[Sequence[str], str]]
         :param ignore_patterns: Optional denylist for local relative paths
         :type ignore_patterns: Optional[Union[Sequence[str], str]]
+        :param progress_callback: Optional callback receiving ``(sent, total)``
+            upload-byte updates for streamed file/chunk parts
+        :type progress_callback: Optional[Callable[[int, int], None]]
+        :param show_progress: Whether to show a tqdm progress bar when no
+            explicit callback is provided
+        :type show_progress: bool
         :return: Commit metadata for the created commit
         :rtype: hubvault.models.CommitInfo
         """
@@ -1064,6 +1310,8 @@ class HubVaultRemoteApi:
             allow_patterns=allow_patterns,
             ignore_patterns=ignore_patterns,
             delete_patterns=None,
+            progress_callback=progress_callback,
+            show_progress=show_progress,
         )
 
     def delete_file(

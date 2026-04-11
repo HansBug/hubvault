@@ -24,6 +24,7 @@ class TestServerContentRoutes:
         )
         tree_response = client.get("/api/v1/content/tree", headers=ro_headers())
         files_response = client.get("/api/v1/content/files", headers=ro_headers())
+        blob_response = client.get("/api/v1/content/blob/configs/config.json", headers=ro_headers())
         download_response = client.get("/api/v1/content/download/artifacts/model.bin", headers=ro_headers())
 
         assert paths_response.status_code == 200
@@ -45,10 +46,38 @@ class TestServerContentRoutes:
         assert files_response.status_code == 200
         assert sorted(files_response.json()) == sorted(seeded["api"].list_repo_files())
 
+        assert blob_response.status_code == 200
+        assert blob_response.content == b'{"version": 1}\n'
+        assert blob_response.headers["content-type"] == "application/json"
+
         assert download_response.status_code == 200
         assert download_response.content == seeded["model_bytes"]
         assert download_response.headers["X-HubVault-Repo-Path"] == "artifacts/model.bin"
         assert download_response.headers["ETag"] == seeded["api"].get_paths_info("artifacts/model.bin")[0].etag
+        assert download_response.headers["content-type"] == "application/octet-stream"
+
+    def test_blob_and_download_accept_query_token_for_browser_urls(self, tmp_path):
+        repo_dir = tmp_path / "repo"
+        seeded = seed_phase45_repo(repo_dir)
+        TestClient = get_fastapi_test_client()
+        client = TestClient(create_phase45_app(repo_dir))
+
+        blob_response = client.get(
+            "/api/v1/content/blob/configs/config.json",
+            params={"token": "ro-token"},
+        )
+        download_response = client.get(
+            "/api/v1/content/download/artifacts/model.bin",
+            params={"token": "ro-token"},
+        )
+
+        assert blob_response.status_code == 200
+        assert blob_response.content == b'{"version": 1}\n'
+        assert blob_response.headers["content-type"] == "application/json"
+
+        assert download_response.status_code == 200
+        assert download_response.content == seeded["model_bytes"]
+        assert download_response.headers["content-type"] == "application/octet-stream"
 
     def test_range_route_matches_local_api_and_surfaces_validation_errors(self, tmp_path):
         repo_dir = tmp_path / "repo"

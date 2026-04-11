@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { buildBreadcrumbs, findReadmePath, isMarkdownPath, isTextLikePath } from "@/utils/files";
+import {
+  buildBreadcrumbs,
+  findReadmePath,
+  isCodeLikePath,
+  isImagePath,
+  isMarkdownPath,
+  isTextLikePath
+} from "@/utils/files";
 
 describe("file helpers", function suite() {
   it("finds the highest-priority readme file", function testFindReadmePath() {
@@ -10,7 +17,10 @@ describe("file helpers", function suite() {
 
   it("detects markdown and text-like paths", function testPathKinds() {
     expect(isMarkdownPath("README.md")).toBe(true);
+    expect(isImagePath("images/logo.png")).toBe(true);
     expect(isTextLikePath("config.yaml")).toBe(true);
+    expect(isCodeLikePath("src/app.py")).toBe(true);
+    expect(isCodeLikePath("README.md")).toBe(false);
     expect(isTextLikePath("model.bin")).toBe(false);
   });
 

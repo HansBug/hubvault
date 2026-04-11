@@ -11,6 +11,7 @@ The module contains:
 """
 
 from fnmatch import fnmatch
+import mimetypes
 from typing import Iterable, List, Optional
 from urllib.parse import quote, urlencode
 
@@ -85,6 +86,20 @@ def _download_url_for(path_in_repo: str, revision: str) -> str:
         path=quote(path_in_repo, safe="/"),
         query=urlencode({"revision": revision}),
     )
+
+
+def _media_type_for(path_in_repo: str) -> str:
+    """
+    Guess a safe response media type for one repository path.
+
+    :param path_in_repo: Repo-relative file path
+    :type path_in_repo: str
+    :return: Guessed media type or ``"application/octet-stream"``
+    :rtype: str
+    """
+
+    media_type, _encoding = mimetypes.guess_type(str(path_in_repo))
+    return media_type or "application/octet-stream"
 
 
 def create_content_router(*, api=None, api_factory=None, authorizer):
@@ -240,7 +255,7 @@ def create_content_router(*, api=None, api_factory=None, authorizer):
         del auth
         return Response(
             content=get_api().read_bytes(path_in_repo, revision=revision),
-            media_type="application/octet-stream",
+            media_type=_media_type_for(path_in_repo),
         )
 
     @router.get("/download/{path_in_repo:path}")
@@ -269,7 +284,7 @@ def create_content_router(*, api=None, api_factory=None, authorizer):
             headers["ETag"] = str(file_info[0].etag)
         return Response(
             content=current_api.read_bytes(path_in_repo, revision=revision),
-            media_type="application/octet-stream",
+            media_type=_media_type_for(path_in_repo),
             headers=headers,
         )
 

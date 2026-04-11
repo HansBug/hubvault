@@ -5,6 +5,7 @@ import pytest
 from hubvault.errors import EntryNotFoundError
 from hubvault.remote.errors import HubVaultRemoteAuthError, HubVaultRemoteProtocolError
 from hubvault.remote.serde import (
+    decode_commit_detail_info,
     decode_commit_info,
     decode_error_response,
     decode_gc_report,
@@ -209,6 +210,87 @@ class TestRemoteSerde:
 
         with pytest.raises(HubVaultRemoteProtocolError, match="Reflog entries must be a JSON array"):
             decode_reflog_entries({})
+
+        with pytest.raises(HubVaultRemoteProtocolError, match="parent_commit_ids must be a JSON array"):
+            decode_commit_detail_info(
+                {
+                    "commit": {
+                        "commit_id": "commit-1",
+                        "authors": [],
+                        "created_at": datetime(2026, 4, 11, 10, 0, 0).isoformat(),
+                        "title": "seed",
+                        "message": "",
+                        "formatted_title": None,
+                        "formatted_message": None,
+                    },
+                    "parent_commit_ids": "commit-0",
+                    "compare_parent_commit_id": "commit-0",
+                    "changes": [],
+                }
+            )
+
+        with pytest.raises(HubVaultRemoteProtocolError, match="changes must be a JSON array"):
+            decode_commit_detail_info(
+                {
+                    "commit": {
+                        "commit_id": "commit-1",
+                        "authors": [],
+                        "created_at": datetime(2026, 4, 11, 10, 0, 0).isoformat(),
+                        "title": "seed",
+                        "message": "",
+                        "formatted_title": None,
+                        "formatted_message": None,
+                    },
+                    "parent_commit_ids": [],
+                    "compare_parent_commit_id": None,
+                    "changes": {},
+                }
+            )
+
+    def test_decode_commit_detail_info_round_trip_shape(self):
+        detail = decode_commit_detail_info(
+            {
+                "commit": {
+                    "commit_id": "commit-2",
+                    "authors": ["HubVault <hubvault@local>"],
+                    "created_at": datetime(2026, 4, 11, 11, 0, 0).isoformat(),
+                    "title": "update docs",
+                    "message": "body",
+                    "formatted_title": "<strong>update docs</strong>",
+                    "formatted_message": "<p>body</p>",
+                },
+                "parent_commit_ids": ["commit-1"],
+                "compare_parent_commit_id": "commit-1",
+                "changes": [
+                    {
+                        "path": "docs/guide.md",
+                        "change_type": "modified",
+                        "old_file": {
+                            "path": "docs/guide.md",
+                            "size": 10,
+                            "oid": "1111111111111111111111111111111111111111",
+                            "blob_id": "blob-old",
+                            "sha256": "old-sha",
+                        },
+                        "new_file": {
+                            "path": "docs/guide.md",
+                            "size": 12,
+                            "oid": "2222222222222222222222222222222222222222",
+                            "blob_id": "blob-new",
+                            "sha256": "new-sha",
+                        },
+                        "is_binary": False,
+                        "unified_diff": "diff --git a/docs/guide.md b/docs/guide.md\n",
+                    }
+                ],
+            }
+        )
+
+        assert detail.commit.commit_id == "commit-2"
+        assert detail.parent_commit_ids == ["commit-1"]
+        assert detail.compare_parent_commit_id == "commit-1"
+        assert detail.changes[0].new_file.sha256 == "new-sha"
+        assert detail.changes[0].unified_diff.startswith("diff --git")
 
     def test_decode_commit_merge_verify_and_maintenance_reports(self):
         commit = decode_commit_info(
