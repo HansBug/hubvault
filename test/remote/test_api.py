@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from hubvault import CommitOperationAdd
+from hubvault import CommitOperationAdd, CommitOperationCopy, CommitOperationDelete
 from hubvault.errors import EntryNotFoundError
 from hubvault.optional import MissingOptionalDependencyError
 from hubvault.remote import HubVaultRemoteAPI, HubVaultRemoteApi
@@ -189,6 +189,46 @@ class TestRemoteApi:
         assert seeded["api"].read_bytes("docs/from-path.txt") == b"path upload\n"
         assert seeded["api"].read_bytes("docs/from-fileobj.txt") == b"fileobj upload\n"
 
+    def test_remote_write_methods_support_copy_delete_reset_and_folder_delete(self, monkeypatch, tmp_path):
+        repo_dir = tmp_path / "repo"
+        seeded = seed_phase78_repo(repo_dir)
+        app = create_phase45_app(repo_dir)
+        patch_remote_test_client(monkeypatch, app)
+        remote_api = HubVaultRemoteApi("http://testserver", token="rw-token", revision=TEST_DEFAULT_BRANCH)
+
+        copy_delete_commit = remote_api.create_commit(
+            operations=[
+                CommitOperationCopy(
+                    src_path_in_repo="docs/source.txt",
+                    path_in_repo="docs/copied.txt",
+                    src_revision=TEST_DEFAULT_BRANCH,
+                ),
+                CommitOperationDelete("README.md", is_folder=False),
+            ],
+            commit_message="copy and delete remotely",
+        )
+
+        assert copy_delete_commit.commit_message == "copy and delete remotely"
+        assert seeded["api"].read_bytes("docs/copied.txt") == seeded["shared_text"]
+        assert "README.md" not in seeded["api"].list_repo_files()
+
+        reset_commit = remote_api.reset_ref(TEST_DEFAULT_BRANCH, to_revision=seeded["seed_commit"].oid)
+        assert reset_commit.oid == seeded["seed_commit"].oid
+        assert seeded["api"].repo_info().head == seeded["seed_commit"].oid
+
+        folder_delete_commit = remote_api.delete_folder("docs", revision=TEST_DEFAULT_BRANCH)
+        assert folder_delete_commit.oid == seeded["api"].repo_info().head
+        assert all(not path.startswith("docs/") for path in seeded["api"].list_repo_files())
+
+    def test_remote_create_commit_rejects_unsupported_operation_objects(self):
+        remote_api = HubVaultRemoteApi("http://testserver", token="rw-token", revision=TEST_DEFAULT_BRANCH)
+
+        with pytest.raises(TypeError, match="Unsupported commit operation"):
+            remote_api.create_commit(
+                operations=[object()],
+                commit_message="bad operation",
+            )
+
     def test_remote_upload_and_delete_folder_and_large_file_round_trip(self, monkeypatch, tmp_path):
         repo_dir = tmp_path / "repo"
         seeded = seed_phase78_repo(repo_dir)
@@ -219,6 +259,62 @@ class TestRemoteApi:
         assert seeded["api"].read_bytes("bundle/nested/new.txt") == b"nested upload\n"
         assert "bundle/copy-source.txt" not in seeded["api"].list_repo_files()
         assert seeded["api"].read_bytes("artifacts/large.bin") == seeded["large_update"]
+
+    def test_remote_upload_folder_supports_delete_patterns_and_large_folder_helper(self, monkeypatch, tmp_path):
+        repo_dir = tmp_path / "repo"
+        seeded = seed_phase78_repo(repo_dir)
+        seeded["api"].create_commit(
+            operations=[
+                CommitOperationAdd("bundle/.gitattributes", b"filter=lfs diff=lfs merge=lfs -text\n"),
+                CommitOperationAdd("bundle/keep.txt", b"old keep\n"),
+                CommitOperationAdd("bundle/remove.txt", b"old remove\n"),
+            ],
+            commit_message="seed bundle",
+        )
+        app = create_phase45_app(repo_dir)
+        patch_remote_test_client(monkeypatch, app)
+        remote_api = HubVaultRemoteApi("http://testserver", token="rw-token", revision=TEST_DEFAULT_BRANCH)
+        source_dir = tmp_path / "sync-dir"
+        source_dir.mkdir()
+        (source_dir / "keep.txt").write_bytes(b"new keep\n")
+        (source_dir / "drop.log").write_bytes(b"drop me\n")
+        (source_dir / "skip.bin").write_bytes(b"skip\n")
+        nested_dir = source_dir / "nested"
+        nested_dir.mkdir()
+        (nested_dir / "nested.txt").write_bytes(b"nested keep\n")
+        large_dir = tmp_path / "large-dir"
+        large_dir.mkdir()
+        (large_dir / "huge.bin").write_bytes(seeded["large_update"])
+
+        upload_commit = remote_api.upload_folder(
+            folder_path=source_dir,
+            path_in_repo="bundle",
+            allow_patterns=["*.txt", "nested/", "skip.bin"],
+            ignore_patterns="skip.bin",
+            delete_patterns="*",
+        )
+        large_commit = remote_api.upload_large_folder(folder_path=large_dir, allow_patterns="*.bin")
+
+        assert upload_commit.commit_message == "Upload folder using hubvault"
+        assert seeded["api"].read_bytes("bundle/keep.txt") == b"new keep\n"
+        assert seeded["api"].read_bytes("bundle/nested/nested.txt") == b"nested keep\n"
+        assert "bundle/drop.log" not in seeded["api"].list_repo_files()
+        assert "bundle/remove.txt" not in seeded["api"].list_repo_files()
+        assert "bundle/skip.bin" not in seeded["api"].list_repo_files()
+        assert seeded["api"].read_bytes("bundle/.gitattributes") == b"filter=lfs diff=lfs merge=lfs -text\n"
+        assert large_commit.commit_message == "Upload large folder using hubvault"
+        assert seeded["api"].read_bytes("huge.bin") == seeded["large_update"]
+
+    def test_remote_upload_folder_rejects_non_directory_inputs(self, monkeypatch, tmp_path):
+        repo_dir = tmp_path / "repo"
+        seed_phase78_repo(repo_dir)
+        app = create_phase45_app(repo_dir)
+        patch_remote_test_client(monkeypatch, app)
+        remote_api = HubVaultRemoteApi("http://testserver", token="rw-token", revision=TEST_DEFAULT_BRANCH)
+        missing_dir = tmp_path / "missing"
+
+        with pytest.raises(ValueError, match="folder_path must point to an existing local directory"):
+            remote_api.upload_folder(folder_path=missing_dir)
 
     def test_remote_merge_conflict_and_maintenance_reports_round_trip(self, monkeypatch, tmp_path):
         repo_dir = tmp_path / "repo"
