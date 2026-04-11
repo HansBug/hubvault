@@ -57,6 +57,36 @@ def seed_phase45_repo(repo_dir: Path):
     }
 
 
+def seed_phase78_repo(repo_dir: Path):
+    chunk_unit = bytes(range(256)) * 4096
+    large_base = (chunk_unit * 20) + (b"shared-phase78-block\n" * 8192)
+    large_update = large_base + b"phase78-tail\n"
+
+    api = HubVaultApi(repo_dir, revision=TEST_DEFAULT_BRANCH)
+    api.create_repo(default_branch=TEST_DEFAULT_BRANCH, large_file_threshold=1024 * 1024)
+    seed_commit = api.create_commit(
+        operations=[
+            CommitOperationAdd("README.md", b"# phase78\n"),
+            CommitOperationAdd("docs/source.txt", b"shared-document\n"),
+            CommitOperationAdd("artifacts/large.bin", large_base),
+        ],
+        commit_message="seed phase78",
+    )
+    api.create_branch(branch="feature", revision=seed_commit.oid)
+    api.create_commit(
+        revision="feature",
+        operations=[CommitOperationAdd("docs/source.txt", b"feature-change\n")],
+        commit_message="diverge feature",
+    )
+    return {
+        "api": api,
+        "seed_commit": seed_commit,
+        "large_base": large_base,
+        "large_update": large_update,
+        "shared_text": b"shared-document\n",
+    }
+
+
 def create_phase45_app(repo_dir: Path):
     return create_app(
         ServerConfig(

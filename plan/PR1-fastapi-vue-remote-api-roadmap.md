@@ -2,7 +2,7 @@
 
 ## Status
 
-- 状态：In Progress（Phase 1-6 已完成，Phase 7-9 待完成）
+- 状态：In Progress（Phase 1-8 已完成，Phase 9 待完成）
 - PR：https://github.com/HansBug/hubvault/pull/1
 - 目标分支：`main`
 - 工作分支：`dev/api`
@@ -1205,24 +1205,36 @@ Phase 6 前端建议拆成以下复用组件：
 
 ### Goal
 
-把远程写路径打通，让 server 与 remote client 都能完成核心 repo 修改动作。
+把远程写路径打通，让 server 与 remote client 都能完成核心 repo 修改动作，并为上传链路补齐可重试、可校验、可减少实际传输字节数的 fast-path。
 
 ### Todo
 
-* [ ] 实现 `create_commit` 的 multipart manifest 协议。
-* [ ] 实现 `upload_file`、`create_branch`、`delete_branch`、`create_tag`、`delete_tag`。
-* [ ] 实现 `merge`、`reset_ref`、`delete_file`、`delete_folder`。
-* [ ] 实现 `upload_folder`、`upload_large_folder` 的首版 multipart 协议。
-* [ ] 对齐 `HubVaultRemoteApi` 的写方法。
-* [ ] 为 `CommitOperationAdd` 的路径 / bytes / fileobj 三种输入写完整测试。
-* [ ] 增加 `test/server/test_routes_writes.py` 与 remote 写路径测试。
+* [x] 实现 `create_commit` 的 multipart manifest 协议。
+* [x] 在 upload manifest 中补齐 `base_head` / `parent_commit` 约束，避免预检与实际写入之间被并发写操作污染。
+* [x] 实现基于目标 base revision snapshot 的“秒传/快传”：
+  - 完全相同文件可直接复用已有对象而不再上传文件字节
+  - 大文件可基于已存在 chunk 只补传缺失 chunk，减少实际上传流量
+* [x] 实现 `upload_file`、`create_branch`、`delete_branch`、`create_tag`、`delete_tag`。
+* [x] 实现 `merge`、`reset_ref`、`delete_file`、`delete_folder`。
+* [x] 实现 `upload_folder`、`upload_large_folder` 的首版 multipart 协议。
+* [x] 对齐 `HubVaultRemoteApi` 的写方法。
+* [x] 为 `CommitOperationAdd` 的路径 / bytes / fileobj 三种输入写完整测试。
+* [x] 增加 `test/server/test_routes_writes.py` 与 remote 写路径测试。
 
 ### Checklist
 
-* [ ] `rw` token 可以完成核心写操作。
-* [ ] `ro` token 在所有写路径上被稳定拒绝。
-* [ ] merge 冲突能通过 HTTP 与 remote 保持结构化返回。
-* [ ] `make unittest` 通过。
+* [x] `rw` token 可以完成核心写操作。
+* [x] `ro` token 在所有写路径上被稳定拒绝。
+* [x] merge 冲突能通过 HTTP 与 remote 保持结构化返回。
+* [x] 上传预检结果与最终提交之间存在并发写入时，服务端会稳定返回冲突并要求重新 plan。
+* [x] 完全重复文件不需要重复上传字节；可复用 chunk 的大文件实际上传字节显著减少。
+* [x] `make unittest` 通过。
+
+### Conclusion
+
+- 截至 2026-04-11，server `write` 路由、`hubvault.server.uploads` 与 `HubVaultRemoteApi` 已打通同一套 `commit-plan` / `commit` 协议，并用 `base_head` / `parent_commit` 拒绝脏 plan。
+- 秒传严格限定为目标分支 base snapshot 上的完全相同文件复用；快传严格限定为该 snapshot 可见 chunk 的复用，避免“预检看到的对象”和“实际提交时的对象”不一致。
+- 本阶段已通过本地验证：`make unittest`，其中包含 `test/server/test_routes_writes.py`、`test/remote/test_api.py`、`test/remote/test_serde.py` 等写路径与冲突场景回归。
 
 ## Phase 8. 前端写操作、维护操作与可执行文件闭环
 
@@ -1232,19 +1244,27 @@ Phase 6 前端建议拆成以下复用组件：
 
 ### Todo
 
-* [ ] Vue 前端接入上传文件、上传目录、delete、commit、branch/tag、merge、reset。
-* [ ] 实现维护 API：`quick_verify`、`full_verify`、`get_storage_overview`、`gc`、`squash_history`。
-* [ ] Vue 前端接入 verify / storage / gc / squash history 页面与操作对话框。
-* [ ] 扩展 `make test_cli` 或新增 smoke 测试，验证可执行文件的 `serve --mode frontend`。
-* [ ] 验证 PyInstaller 产物包含前端静态资源。
-* [ ] 增加前端 e2e 与 Python 端到端联测。
+* [x] Vue 前端接入上传文件、上传目录、delete、commit、branch/tag、merge、reset。
+* [x] 浏览器端上传至少支持 exact-match 秒传，并与服务端 `base_head` 校验保持一致。
+* [x] 实现维护 API：`quick_verify`、`full_verify`、`get_storage_overview`、`gc`、`squash_history`。
+* [x] Vue 前端接入 verify / storage / gc / squash history 页面与操作对话框。
+* [x] 扩展 `make test_cli` 或新增 smoke 测试，验证可执行文件的 `serve --mode frontend`。
+* [x] 验证 PyInstaller 产物包含前端静态资源。
+* [x] 增加前端 e2e 与 Python 端到端联测。
 
 ### Checklist
 
-* [ ] 浏览器端可完成常见 repo 维护动作。
-* [ ] 可执行文件可直接启动完整 `frontend` 模式。
-* [ ] `/` 与 `/api/v1/meta/service` 在可执行文件模式下均可访问。
-* [ ] `make unittest`、`make build`、`make test_cli` 通过。
+* [x] 浏览器端可完成常见 repo 维护动作。
+* [x] 浏览器端上传在预检过期时会明确提示用户刷新后重试，不会基于脏 plan 继续写入。
+* [x] 可执行文件可直接启动完整 `frontend` 模式。
+* [x] `/` 与 `/api/v1/meta/service` 在可执行文件模式下均可访问。
+* [x] `make unittest`、`make build`、`make test_cli` 通过。
+
+### Conclusion
+
+- 浏览器端已接入 upload / delete / refs / maintenance 全链路；上传使用 `commit-plan` 预检，命中完全相同文件时可直接秒传，预检过期时前端会明确提示刷新后重试。
+- 前端回归已覆盖真实服务与组件层：`cd webui && npm run test`、`cd webui && npm run build`、`cd webui && npm run test:e2e` 全部通过。
+- `make build` 现固定走本地 `./venv/bin/python -m PyInstaller`，并在 spec 生成阶段收集 `fastapi` / `uvicorn` / `multipart` 等惰性可选依赖，使打包产物中的 `hubvault serve --mode frontend`、`/` 与 `/api/v1/meta/service` 均通过 `make test_cli` 实测。
 
 ## Phase 9. 文档、发布、回归矩阵与收尾
 

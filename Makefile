@@ -25,6 +25,7 @@ WEBUI_INSTALL_STAMP := ${WEBUI_DIR}/node_modules/.hubvault-install.stamp
 WEBUI_BUILD_STAMP := ${BUILD_DIR}/webui/.hubvault-build.stamp
 WEBUI_LEGACY_BUILD_STAMP := ${WEBUI_DIST_DIR}/.hubvault-build.stamp
 NPM ?= $(shell which npm)
+PYINSTALLER ?= $(PYTHON) -m PyInstaller
 WEBUI_INSTALL_ACTION := $(if $(wildcard ${WEBUI_DIR}/package-lock.json),ci,install)
 WEBUI_INSTALL_DEPS := ${WEBUI_DIR}/package.json
 WEBUI_BUILD_DEPS := $(shell find ${WEBUI_DIR}/src -type f 2>/dev/null) \
@@ -190,7 +191,7 @@ webui_clean:
 build: webui_package
 	@test -f ${CLI_ENTRY} || (echo "Missing CLI entry file: ${CLI_ENTRY}" && exit 1)
 	$(PYTHON) -m tools.generate_spec -o hubvault.spec
-	pyinstaller hubvault.spec
+	$(PYINSTALLER) hubvault.spec
 
 test_cli:
 	@test -f ${CLI_BIN} || (echo "Missing CLI executable: ${CLI_BIN}. Run 'make build' first." && exit 1)

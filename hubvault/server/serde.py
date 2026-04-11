@@ -12,8 +12,12 @@ The module contains:
 * :func:`encode_git_refs` - Serialize branch and tag refs
 * :func:`encode_git_commit_info` - Serialize commit-list entries
 * :func:`encode_reflog_entry` - Serialize reflog entries
+* :func:`encode_commit_info` - Serialize write-commit metadata
+* :func:`encode_merge_result` - Serialize structured merge results
 * :func:`encode_verify_report` - Serialize repository verification reports
 * :func:`encode_storage_overview` - Serialize repository storage analysis
+* :func:`encode_gc_report` - Serialize storage reclamation reports
+* :func:`encode_squash_report` - Serialize history-squash reports
 * :func:`build_snapshot_plan_payload` - Build the remote snapshot manifest
 """
 
@@ -23,16 +27,21 @@ from typing import Iterable, List, Optional
 from ..models import (
     BlobLfsInfo,
     BlobSecurityInfo,
+    CommitInfo,
+    GcReport,
     GitCommitInfo,
     GitRefInfo,
     GitRefs,
     LastCommitInfo,
+    MergeConflict,
+    MergeResult,
     ReflogEntry,
     RepoFile,
     RepoFolder,
     RepoInfo,
     StorageOverview,
     StorageSectionInfo,
+    SquashReport,
     VerifyReport,
 )
 
@@ -208,6 +217,75 @@ def encode_git_commit_list(values: Iterable[GitCommitInfo]) -> List[dict]:
     return [encode_git_commit_info(value) for value in values]
 
 
+def encode_commit_info(value: CommitInfo) -> dict:
+    """
+    Serialize one write-commit result.
+
+    :param value: Commit metadata returned by a write API
+    :type value: CommitInfo
+    :return: JSON-compatible commit payload
+    :rtype: dict
+    """
+
+    return {
+        "commit_url": value.commit_url,
+        "commit_message": value.commit_message,
+        "commit_description": value.commit_description,
+        "oid": value.oid,
+        "pr_url": value.pr_url,
+        "repo_url": value.repo_url,
+        "pr_revision": value.pr_revision,
+        "pr_num": value.pr_num,
+        "_url": str(value),
+    }
+
+
+def encode_merge_conflict(value: MergeConflict) -> dict:
+    """
+    Serialize one structured merge conflict.
+
+    :param value: Merge conflict model
+    :type value: MergeConflict
+    :return: JSON-compatible conflict payload
+    :rtype: dict
+    """
+
+    return {
+        "path": value.path,
+        "conflict_type": value.conflict_type,
+        "message": value.message,
+        "base_oid": value.base_oid,
+        "target_oid": value.target_oid,
+        "source_oid": value.source_oid,
+        "related_path": value.related_path,
+    }
+
+
+def encode_merge_result(value: MergeResult) -> dict:
+    """
+    Serialize one structured merge result.
+
+    :param value: Merge result model
+    :type value: MergeResult
+    :return: JSON-compatible merge payload
+    :rtype: dict
+    """
+
+    return {
+        "status": value.status,
+        "target_revision": value.target_revision,
+        "source_revision": value.source_revision,
+        "base_commit": value.base_commit,
+        "target_head_before": value.target_head_before,
+        "source_head": value.source_head,
+        "head_after": value.head_after,
+        "commit": None if value.commit is None else encode_commit_info(value.commit),
+        "conflicts": [encode_merge_conflict(item) for item in value.conflicts],
+        "fast_forward": value.fast_forward,
+        "created_commit": value.created_commit,
+    }
+
+
 def encode_git_ref_info(value: GitRefInfo) -> dict:
     """
     Serialize one git reference entry.
@@ -336,6 +414,51 @@ def encode_storage_overview(value: StorageOverview) -> dict:
         "reclaimable_temporary_size": value.reclaimable_temporary_size,
         "sections": [encode_storage_section_info(item) for item in value.sections],
         "recommendations": list(value.recommendations),
+    }
+
+
+def encode_gc_report(value: GcReport) -> dict:
+    """
+    Serialize one garbage-collection report.
+
+    :param value: GC report model
+    :type value: GcReport
+    :return: JSON-compatible GC payload
+    :rtype: dict
+    """
+
+    return {
+        "dry_run": value.dry_run,
+        "checked_refs": list(value.checked_refs),
+        "reclaimed_size": value.reclaimed_size,
+        "reclaimed_object_size": value.reclaimed_object_size,
+        "reclaimed_chunk_size": value.reclaimed_chunk_size,
+        "reclaimed_cache_size": value.reclaimed_cache_size,
+        "reclaimed_temporary_size": value.reclaimed_temporary_size,
+        "removed_file_count": value.removed_file_count,
+        "notes": list(value.notes),
+    }
+
+
+def encode_squash_report(value: SquashReport) -> dict:
+    """
+    Serialize one history-squash report.
+
+    :param value: Squash report model
+    :type value: SquashReport
+    :return: JSON-compatible squash payload
+    :rtype: dict
+    """
+
+    return {
+        "ref_name": value.ref_name,
+        "old_head": value.old_head,
+        "new_head": value.new_head,
+        "root_commit_before": value.root_commit_before,
+        "rewritten_commit_count": value.rewritten_commit_count,
+        "dropped_ancestor_count": value.dropped_ancestor_count,
+        "blocking_refs": list(value.blocking_refs),
+        "gc_report": None if value.gc_report is None else encode_gc_report(value.gc_report),
     }
 
 

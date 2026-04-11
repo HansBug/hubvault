@@ -15,6 +15,10 @@ const state = reactive({
   error: ""
 });
 
+interface BootstrapSessionOptions {
+  force?: boolean;
+}
+
 export function restoreSessionToken() {
   if (typeof window === "undefined" || !window.sessionStorage) {
     return;
@@ -47,18 +51,19 @@ export function clearSession() {
   state.error = "";
 }
 
-export async function bootstrapSession(revision) {
+export async function bootstrapSession(revision, options: BootstrapSessionOptions = {}) {
   if (!state.token) {
     throw new Error("Missing API token.");
   }
 
+  const forceRefresh = Boolean(options && options.force);
   state.loading = true;
   state.error = "";
   try {
     const baseResults = await Promise.all([
-      state.service ? Promise.resolve(state.service) : getServiceMeta(),
-      state.auth ? Promise.resolve(state.auth) : getWhoAmI(),
-      state.refs ? Promise.resolve(state.refs) : getRepoRefs()
+      !forceRefresh && state.service ? Promise.resolve(state.service) : getServiceMeta(),
+      !forceRefresh && state.auth ? Promise.resolve(state.auth) : getWhoAmI(),
+      !forceRefresh && state.refs ? Promise.resolve(state.refs) : getRepoRefs()
     ]);
     state.service = baseResults[0];
     state.auth = baseResults[1];

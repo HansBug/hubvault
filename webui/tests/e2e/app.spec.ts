@@ -52,3 +52,47 @@ test("readonly frontend renders overview, files, refs, commits, and storage", as
     fullPage: true
   });
 });
+
+test("read-write frontend can upload, mutate refs, and run maintenance actions", async ({ page }) => {
+  await page.goto("/login");
+  await page.getByPlaceholder("Paste a read-only or read-write token").fill("rw-token");
+  await page.getByRole("button", { name: "Enter Repository" }).click();
+
+  await page.getByRole("menuitem", { name: "Files" }).click();
+  await expect(page.getByRole("button", { name: "Upload Files" })).toBeVisible();
+  await page.getByTestId("upload-file-input").setInputFiles({
+    name: "notes.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("rw upload\n")
+  });
+  const uploadDialog = page.getByRole("dialog", { name: "Upload to Repository" });
+  await expect(uploadDialog).toBeVisible();
+  await uploadDialog.getByRole("textbox", { name: "Commit message" }).fill("upload from playwright");
+  await uploadDialog.getByRole("button", { name: "Upload", exact: true }).click();
+  await expect(page.getByText("notes.txt")).toBeVisible();
+
+  await page.getByRole("button", { name: /notes\.txt/i }).click();
+  await page.getByRole("button", { name: "Delete Selected" }).click();
+  const deleteDialog = page.getByRole("dialog", { name: "Delete File" });
+  await expect(deleteDialog).toBeVisible();
+  await deleteDialog.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(page.getByText("notes.txt")).toHaveCount(0);
+
+  await page.getByRole("menuitem", { name: "Refs" }).click();
+  await page.getByRole("button", { name: "New Branch" }).click();
+  const createBranchDialog = page.getByRole("dialog", { name: "Create Branch" });
+  await expect(createBranchDialog).toBeVisible();
+  await createBranchDialog.getByRole("textbox", { name: "Branch name" }).fill("playwright-branch");
+  await createBranchDialog.getByRole("button", { name: "Create", exact: true }).click();
+  await expect(page.getByRole("button", { name: "playwright-branch" })).toBeVisible();
+
+  await page.getByRole("menuitem", { name: "Storage" }).click();
+  await page.getByRole("button", { name: "Preview GC" }).click();
+  await expect(page.getByText("Latest GC Result")).toBeVisible();
+  await page.getByRole("button", { name: "Squash Current Branch" }).click();
+  const squashDialog = page.getByRole("dialog", { name: /Squash / });
+  await expect(squashDialog).toBeVisible();
+  await squashDialog.getByRole("textbox", { name: "Optional replacement commit message for the new root" }).fill("squash from playwright");
+  await squashDialog.getByRole("button", { name: "Squash", exact: true }).click();
+  await expect(page.getByText("Latest Squash Result")).toBeVisible();
+});

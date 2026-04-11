@@ -176,3 +176,112 @@ export function runFullVerify() {
     url: "/api/v1/maintenance/full-verify"
   });
 }
+
+export function planCommit(manifest) {
+  return request({
+    method: "post",
+    url: "/api/v1/write/commit-plan",
+    data: manifest
+  });
+}
+
+export function applyCommit(manifest, uploads) {
+  const items = Array.isArray(uploads) ? uploads : [];
+  if (!items.length) {
+    return request({
+      method: "post",
+      url: "/api/v1/write/commit",
+      data: manifest
+    });
+  }
+
+  const formData = new FormData();
+  formData.append("manifest", JSON.stringify(manifest));
+  items.forEach(function appendUpload(item) {
+    formData.append(String(item.fieldName), item.file, item.fileName || item.file.name || "upload.bin");
+  });
+
+  return request({
+    method: "post",
+    url: "/api/v1/write/commit",
+    data: formData
+  });
+}
+
+export function createBranchRef(payload) {
+  return request({
+    method: "post",
+    url: "/api/v1/write/branches",
+    data: payload
+  });
+}
+
+export function deleteBranchRef(branch) {
+  return request({
+    method: "delete",
+    url: "/api/v1/write/branches/" + encodeURIComponent(branch)
+  });
+}
+
+export function createTagRef(payload) {
+  return request({
+    method: "post",
+    url: "/api/v1/write/tags",
+    data: payload
+  });
+}
+
+export function deleteTagRef(tag) {
+  return request({
+    method: "delete",
+    url: "/api/v1/write/tags/" + encodeURIComponent(tag)
+  });
+}
+
+export function mergeRevision(payload) {
+  return request({
+    method: "post",
+    url: "/api/v1/write/merge",
+    data: payload
+  });
+}
+
+export function resetBranchRef(payload) {
+  return request({
+    method: "post",
+    url: "/api/v1/write/reset-ref",
+    data: payload
+  });
+}
+
+export function deleteRepoFile(payload) {
+  return request({
+    method: "post",
+    url: "/api/v1/write/delete-file",
+    data: payload
+  });
+}
+
+export function deleteRepoFolder(payload) {
+  return request({
+    method: "post",
+    url: "/api/v1/write/delete-folder",
+    data: payload
+  });
+}
+
+export function runGc(payload) {
+  return request({
+    method: "post",
+    url: "/api/v1/maintenance/gc",
+    data: payload || {}
+  });
+}
+
+export function runSquashHistory(payload) {
+  return request({
+    method: "post",
+    url: "/api/v1/maintenance/squash-history",
+    data: payload
+  });
+}

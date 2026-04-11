@@ -1,13 +1,21 @@
+import io
 from pathlib import Path
 
 import pytest
 
+from hubvault import CommitOperationAdd
 from hubvault.errors import EntryNotFoundError
 from hubvault.optional import MissingOptionalDependencyError
 from hubvault.remote import HubVaultRemoteAPI, HubVaultRemoteApi
 from hubvault.remote.cache import build_snapshot_target, get_remote_cache_layout
 from hubvault.remote.errors import HubVaultRemoteAuthError
-from test.support import TEST_DEFAULT_BRANCH, create_phase45_app, patch_remote_test_client, seed_phase45_repo
+from test.support import (
+    TEST_DEFAULT_BRANCH,
+    create_phase45_app,
+    patch_remote_test_client,
+    seed_phase45_repo,
+    seed_phase78_repo,
+)
 
 
 @pytest.mark.unittest
@@ -149,3 +157,92 @@ class TestRemoteApi:
         assert rebuilt_dir == partial_target
         assert (rebuilt_dir / "artifacts" / "model.bin").read_bytes() == seeded["model_bytes"]
         assert (rebuilt_dir / "docs" / "guide.md").read_bytes() == seeded["guide_bytes"]
+
+    def test_remote_write_methods_support_add_sources_and_ref_updates(self, monkeypatch, tmp_path):
+        repo_dir = tmp_path / "repo"
+        seeded = seed_phase78_repo(repo_dir)
+        app = create_phase45_app(repo_dir)
+        patch_remote_test_client(monkeypatch, app)
+        remote_api = HubVaultRemoteApi("http://testserver", token="rw-token", revision=TEST_DEFAULT_BRANCH)
+        local_file = tmp_path / "path-upload.txt"
+        local_file.write_bytes(b"path upload\n")
+        fileobj = io.BytesIO(b"fileobj upload\n")
+        fileobj.seek(4)
+        file_operation = CommitOperationAdd("docs/from-fileobj.txt", fileobj)
+
+        commit = remote_api.create_commit(
+            operations=[
+                CommitOperationAdd("docs/from-bytes.txt", b"bytes upload\n"),
+                CommitOperationAdd("docs/from-path.txt", local_file),
+                file_operation,
+            ],
+            commit_message="add remote sources",
+        )
+        remote_api.create_branch(branch="hotfix")
+        remote_api.create_tag(tag="remote-v1")
+        remote_api.delete_tag(tag="remote-v1")
+        remote_api.delete_branch(branch="hotfix")
+
+        assert commit.commit_message == "add remote sources"
+        assert fileobj.tell() == 0
+        assert seeded["api"].read_bytes("docs/from-bytes.txt") == b"bytes upload\n"
+        assert seeded["api"].read_bytes("docs/from-path.txt") == b"path upload\n"
+        assert seeded["api"].read_bytes("docs/from-fileobj.txt") == b"fileobj upload\n"
+
+    def test_remote_upload_and_delete_folder_and_large_file_round_trip(self, monkeypatch, tmp_path):
+        repo_dir = tmp_path / "repo"
+        seeded = seed_phase78_repo(repo_dir)
+        app = create_phase45_app(repo_dir)
+        patch_remote_test_client(monkeypatch, app)
+        remote_api = HubVaultRemoteApi("http://testserver", token="rw-token", revision=TEST_DEFAULT_BRANCH)
+        source_dir = tmp_path / "upload-dir"
+        source_dir.mkdir()
+        (source_dir / "copy-source.txt").write_bytes(seeded["shared_text"])
+        nested_dir = source_dir / "nested"
+        nested_dir.mkdir()
+        (nested_dir / "new.txt").write_bytes(b"nested upload\n")
+
+        upload_commit = remote_api.upload_folder(
+            folder_path=source_dir,
+            path_in_repo="bundle",
+            delete_patterns=["obsolete/*"],
+        )
+        delete_commit = remote_api.delete_file("bundle/copy-source.txt")
+        large_commit = remote_api.upload_file(
+            path_or_fileobj=seeded["large_update"],
+            path_in_repo="artifacts/large.bin",
+        )
+
+        assert upload_commit.commit_message == "Upload folder using hubvault"
+        assert delete_commit.commit_message == "Delete bundle/copy-source.txt with hubvault"
+        assert large_commit.commit_message == "Upload artifacts/large.bin with hubvault"
+        assert seeded["api"].read_bytes("bundle/nested/new.txt") == b"nested upload\n"
+        assert "bundle/copy-source.txt" not in seeded["api"].list_repo_files()
+        assert seeded["api"].read_bytes("artifacts/large.bin") == seeded["large_update"]
+
+    def test_remote_merge_conflict_and_maintenance_reports_round_trip(self, monkeypatch, tmp_path):
+        repo_dir = tmp_path / "repo"
+        seeded = seed_phase78_repo(repo_dir)
+        seeded["api"].create_commit(
+            operations=[CommitOperationAdd("docs/source.txt", b"main-side\n")],
+            commit_message="change main source",
+        )
+        app = create_phase45_app(repo_dir)
+        patch_remote_test_client(monkeypatch, app)
+        remote_api = HubVaultRemoteApi("http://testserver", token="rw-token", revision=TEST_DEFAULT_BRANCH)
+
+        merge_result = remote_api.merge("feature")
+        quick_report = remote_api.quick_verify()
+        full_report = remote_api.full_verify()
+        overview = remote_api.get_storage_overview()
+        gc_report = remote_api.gc(dry_run=True, prune_cache=True)
+        squash_report = remote_api.squash_history(TEST_DEFAULT_BRANCH, run_gc=False)
+
+        assert merge_result.status == "conflict"
+        assert merge_result.conflicts
+        assert quick_report.ok is True
+        assert full_report.ok is True
+        assert overview.total_size > 0
+        assert overview.reachable_size > 0
+        assert gc_report.dry_run is True
+        assert squash_report.ref_name == "refs/heads/%s" % (TEST_DEFAULT_BRANCH,)

@@ -1,18 +1,20 @@
 """
 Maintenance route factory for :mod:`hubvault.server`.
 
-This module exposes read-only repository verification and storage-analysis
-endpoints over HTTP so the bundled frontend can render operator-facing
-diagnostics without importing backend internals.
+This module exposes repository verification, storage-analysis, and
+operator-triggered maintenance endpoints over HTTP so the bundled frontend can
+render diagnostics and run controlled maintenance actions without importing
+backend internals.
 
 The module contains:
 
 * :func:`create_maintenance_router` - Build the ``/api/v1/maintenance`` router
 """
 
-from ..auth import build_read_auth_dependency
+from ..auth import build_read_auth_dependency, build_write_auth_dependency
 from ..deps import build_repo_api_getter
-from ..serde import encode_storage_overview, encode_verify_report
+from ..schemas import normalize_gc_request, normalize_squash_history_request
+from ..serde import encode_gc_report, encode_squash_report, encode_storage_overview, encode_verify_report
 
 
 def create_maintenance_router(*, api=None, api_factory=None, authorizer):
@@ -48,6 +50,7 @@ def create_maintenance_router(*, api=None, api_factory=None, authorizer):
     router = APIRouter(prefix="/api/v1/maintenance", tags=["maintenance"])
     get_api = build_repo_api_getter(api=api, api_factory=api_factory)
     require_read = build_read_auth_dependency(authorizer)
+    require_write = build_write_auth_dependency(authorizer)
 
     @router.post("/quick-verify")
     def quick_verify(auth=Depends(require_read)):
@@ -90,5 +93,39 @@ def create_maintenance_router(*, api=None, api_factory=None, authorizer):
 
         del auth
         return encode_storage_overview(get_api().get_storage_overview())
+
+    @router.post("/gc")
+    def run_gc(payload=fastapi.Body(default=None), auth=Depends(require_write)):
+        """
+        Run one repository GC pass.
+
+        :param payload: Raw GC request body
+        :type payload: object
+        :param auth: Resolved caller authorization context
+        :type auth: hubvault.server.auth.AuthContext
+        :return: JSON-compatible GC report
+        :rtype: dict
+        """
+
+        del auth
+        options = normalize_gc_request(payload)
+        return encode_gc_report(get_api().gc(**options))
+
+    @router.post("/squash-history")
+    def squash_history(payload=fastapi.Body(...), auth=Depends(require_write)):
+        """
+        Rewrite one branch history chain.
+
+        :param payload: Raw squash-history request body
+        :type payload: object
+        :param auth: Resolved caller authorization context
+        :type auth: hubvault.server.auth.AuthContext
+        :return: JSON-compatible squash report
+        :rtype: dict
+        """
+
+        del auth
+        options = normalize_squash_history_request(payload)
+        return encode_squash_report(get_api().squash_history(**options))
 
     return router

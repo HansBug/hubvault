@@ -14,12 +14,6 @@ export default defineConfig({
         "safari >= 11",
         "edge >= 18"
       ],
-      modernTargets: [
-        "chrome >= 64",
-        "firefox >= 67",
-        "safari >= 11",
-        "edge >= 18"
-      ],
       modernPolyfills: true,
       renderLegacyChunks: true
     })
@@ -30,6 +24,7 @@ export default defineConfig({
     }
   },
   build: {
+    target: "es2015",
     outDir: "dist",
     cssTarget: "chrome61",
     sourcemap: true

@@ -5,14 +5,20 @@ import pytest
 from hubvault.errors import EntryNotFoundError
 from hubvault.remote.errors import HubVaultRemoteAuthError, HubVaultRemoteProtocolError
 from hubvault.remote.serde import (
+    decode_commit_info,
     decode_error_response,
+    decode_gc_report,
     decode_git_commit_info,
     decode_git_commit_list,
     decode_git_refs,
+    decode_merge_result,
     decode_reflog_entries,
     decode_repo_entry,
     decode_repo_entries,
     decode_snapshot_plan,
+    decode_squash_report,
+    decode_storage_overview,
+    decode_verify_report,
 )
 
 
@@ -203,3 +209,102 @@ class TestRemoteSerde:
 
         with pytest.raises(HubVaultRemoteProtocolError, match="Reflog entries must be a JSON array"):
             decode_reflog_entries({})
+
+    def test_decode_commit_merge_verify_and_maintenance_reports(self):
+        commit = decode_commit_info(
+            {
+                "commit_url": "file:///tmp/repo#commit=abc",
+                "commit_message": "seed",
+                "commit_description": "body",
+                "oid": "abc",
+                "pr_url": None,
+                "_url": "file:///tmp/repo#blob=main:demo.txt",
+            }
+        )
+        merge = decode_merge_result(
+            {
+                "status": "conflict",
+                "target_revision": "main",
+                "source_revision": "feature",
+                "base_commit": "base",
+                "target_head_before": "target",
+                "source_head": "source",
+                "head_after": "target",
+                "commit": None,
+                "conflicts": [
+                    {
+                        "path": "demo.txt",
+                        "conflict_type": "modify/modify",
+                        "message": "Both sides changed demo.txt differently.",
+                        "base_oid": "base-oid",
+                        "target_oid": "target-oid",
+                        "source_oid": "source-oid",
+                        "related_path": None,
+                    }
+                ],
+                "fast_forward": False,
+                "created_commit": False,
+            }
+        )
+        verify = decode_verify_report(
+            {
+                "ok": True,
+                "checked_refs": ["refs/heads/main"],
+                "warnings": [],
+                "errors": [],
+            }
+        )
+        overview = decode_storage_overview(
+            {
+                "total_size": 10,
+                "reachable_size": 8,
+                "historical_retained_size": 1,
+                "reclaimable_gc_size": 1,
+                "reclaimable_cache_size": 0,
+                "reclaimable_temporary_size": 0,
+                "sections": [
+                    {
+                        "name": "cache",
+                        "path": "cache/",
+                        "total_size": 1,
+                        "file_count": 1,
+                        "reclaimable_size": 1,
+                        "reclaim_strategy": "prune-cache",
+                        "notes": "Detached cache files.",
+                    }
+                ],
+                "recommendations": ["Run gc()."],
+            }
+        )
+        gc_report = decode_gc_report(
+            {
+                "dry_run": True,
+                "checked_refs": ["refs/heads/main"],
+                "reclaimed_size": 10,
+                "reclaimed_object_size": 4,
+                "reclaimed_chunk_size": 3,
+                "reclaimed_cache_size": 2,
+                "reclaimed_temporary_size": 1,
+                "removed_file_count": 2,
+                "notes": ["dry-run"],
+            }
+        )
+        squash = decode_squash_report(
+            {
+                "ref_name": "refs/heads/main",
+                "old_head": "old",
+                "new_head": "new",
+                "root_commit_before": "root",
+                "rewritten_commit_count": 2,
+                "dropped_ancestor_count": 1,
+                "blocking_refs": [],
+                "gc_report": None,
+            }
+        )
+
+        assert commit.oid == "abc"
+        assert merge.conflicts[0].conflict_type == "modify/modify"
+        assert verify.ok is True
+        assert overview.sections[0].name == "cache"
+        assert gc_report.reclaimed_chunk_size == 3
+        assert squash.new_head == "new"

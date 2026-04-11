@@ -27,6 +27,7 @@ from .routes.maintenance import create_maintenance_router
 from .routes.meta import create_meta_router
 from .routes.refs import create_refs_router
 from .routes.repo import create_repo_router
+from .routes.writes import create_writes_router
 
 
 def _coerce_config(config: Optional[ServerConfig], **kwargs) -> ServerConfig:
@@ -210,6 +211,7 @@ def create_app(config: Optional[ServerConfig] = None, **kwargs):
     app.include_router(create_refs_router(api_factory=api_factory, authorizer=authorizer))
     app.include_router(create_history_router(api_factory=api_factory, authorizer=authorizer))
     app.include_router(create_maintenance_router(api_factory=api_factory, authorizer=authorizer))
+    app.include_router(create_writes_router(api_factory=api_factory, authorizer=authorizer))
 
     if config.ui_enabled:
         _register_frontend_routes(app, static_dir)

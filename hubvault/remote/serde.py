@@ -27,14 +27,22 @@ from ..errors import (
 from ..models import (
     BlobLfsInfo,
     BlobSecurityInfo,
+    CommitInfo,
+    GcReport,
     GitCommitInfo,
     GitRefInfo,
     GitRefs,
     LastCommitInfo,
+    MergeConflict,
+    MergeResult,
     ReflogEntry,
     RepoFile,
     RepoFolder,
     RepoInfo,
+    SquashReport,
+    StorageOverview,
+    StorageSectionInfo,
+    VerifyReport,
 )
 from .errors import HubVaultRemoteAuthError, HubVaultRemoteProtocolError
 
@@ -218,6 +226,27 @@ def decode_repo_info(payload) -> RepoInfo:
     )
 
 
+def decode_commit_info(payload) -> CommitInfo:
+    """
+    Decode one write-commit result from JSON.
+
+    :param payload: Raw commit payload
+    :type payload: object
+    :return: Decoded commit metadata
+    :rtype: CommitInfo
+    """
+
+    data = _require_dict(payload, "commit info")
+    return CommitInfo(
+        commit_url=str(data["commit_url"]),
+        commit_message=str(data["commit_message"]),
+        commit_description=str(data.get("commit_description", "")),
+        oid=str(data["oid"]),
+        pr_url=None if data.get("pr_url") is None else str(data.get("pr_url")),
+        _url=None if data.get("_url") is None else str(data.get("_url")),
+    )
+
+
 def decode_repo_entry(payload):
     """
     Decode one repository file or folder entry.
@@ -376,6 +405,167 @@ def decode_reflog_entries(payload) -> list:
     if not isinstance(payload, list):
         raise HubVaultRemoteProtocolError("Reflog entries must be a JSON array.")
     return [decode_reflog_entry(item) for item in payload]
+
+
+def decode_merge_conflict(payload) -> MergeConflict:
+    """
+    Decode one merge conflict from JSON.
+
+    :param payload: Raw conflict payload
+    :type payload: object
+    :return: Decoded merge conflict
+    :rtype: MergeConflict
+    """
+
+    data = _require_dict(payload, "merge conflict")
+    return MergeConflict(
+        path=str(data["path"]),
+        conflict_type=str(data["conflict_type"]),
+        message=str(data["message"]),
+        base_oid=None if data.get("base_oid") is None else str(data.get("base_oid")),
+        target_oid=None if data.get("target_oid") is None else str(data.get("target_oid")),
+        source_oid=None if data.get("source_oid") is None else str(data.get("source_oid")),
+        related_path=None if data.get("related_path") is None else str(data.get("related_path")),
+    )
+
+
+def decode_merge_result(payload) -> MergeResult:
+    """
+    Decode one structured merge result from JSON.
+
+    :param payload: Raw merge payload
+    :type payload: object
+    :return: Decoded merge result
+    :rtype: MergeResult
+    """
+
+    data = _require_dict(payload, "merge result")
+    return MergeResult(
+        status=str(data["status"]),
+        target_revision=str(data["target_revision"]),
+        source_revision=str(data["source_revision"]),
+        base_commit=None if data.get("base_commit") is None else str(data.get("base_commit")),
+        target_head_before=None
+        if data.get("target_head_before") is None
+        else str(data.get("target_head_before")),
+        source_head=None if data.get("source_head") is None else str(data.get("source_head")),
+        head_after=None if data.get("head_after") is None else str(data.get("head_after")),
+        commit=None if data.get("commit") is None else decode_commit_info(data.get("commit")),
+        conflicts=[decode_merge_conflict(item) for item in data.get("conflicts", [])],
+        fast_forward=bool(data.get("fast_forward")),
+        created_commit=bool(data.get("created_commit")),
+    )
+
+
+def decode_verify_report(payload) -> VerifyReport:
+    """
+    Decode one verification report from JSON.
+
+    :param payload: Raw verification payload
+    :type payload: object
+    :return: Decoded verification report
+    :rtype: VerifyReport
+    """
+
+    data = _require_dict(payload, "verify report")
+    return VerifyReport(
+        ok=bool(data["ok"]),
+        checked_refs=[str(item) for item in data.get("checked_refs", [])],
+        warnings=[str(item) for item in data.get("warnings", [])],
+        errors=[str(item) for item in data.get("errors", [])],
+    )
+
+
+def decode_storage_section_info(payload) -> StorageSectionInfo:
+    """
+    Decode one storage-section entry from JSON.
+
+    :param payload: Raw storage-section payload
+    :type payload: object
+    :return: Decoded storage-section entry
+    :rtype: StorageSectionInfo
+    """
+
+    data = _require_dict(payload, "storage section")
+    return StorageSectionInfo(
+        name=str(data["name"]),
+        path=str(data["path"]),
+        total_size=int(data["total_size"]),
+        file_count=int(data["file_count"]),
+        reclaimable_size=int(data["reclaimable_size"]),
+        reclaim_strategy=str(data["reclaim_strategy"]),
+        notes=str(data["notes"]),
+    )
+
+
+def decode_storage_overview(payload) -> StorageOverview:
+    """
+    Decode one storage-overview report from JSON.
+
+    :param payload: Raw storage-overview payload
+    :type payload: object
+    :return: Decoded storage overview
+    :rtype: StorageOverview
+    """
+
+    data = _require_dict(payload, "storage overview")
+    return StorageOverview(
+        total_size=int(data["total_size"]),
+        reachable_size=int(data["reachable_size"]),
+        historical_retained_size=int(data["historical_retained_size"]),
+        reclaimable_gc_size=int(data["reclaimable_gc_size"]),
+        reclaimable_cache_size=int(data["reclaimable_cache_size"]),
+        reclaimable_temporary_size=int(data["reclaimable_temporary_size"]),
+        sections=[decode_storage_section_info(item) for item in data.get("sections", [])],
+        recommendations=[str(item) for item in data.get("recommendations", [])],
+    )
+
+
+def decode_gc_report(payload) -> GcReport:
+    """
+    Decode one GC report from JSON.
+
+    :param payload: Raw GC payload
+    :type payload: object
+    :return: Decoded GC report
+    :rtype: GcReport
+    """
+
+    data = _require_dict(payload, "gc report")
+    return GcReport(
+        dry_run=bool(data["dry_run"]),
+        checked_refs=[str(item) for item in data.get("checked_refs", [])],
+        reclaimed_size=int(data["reclaimed_size"]),
+        reclaimed_object_size=int(data["reclaimed_object_size"]),
+        reclaimed_chunk_size=int(data["reclaimed_chunk_size"]),
+        reclaimed_cache_size=int(data["reclaimed_cache_size"]),
+        reclaimed_temporary_size=int(data["reclaimed_temporary_size"]),
+        removed_file_count=int(data["removed_file_count"]),
+        notes=[str(item) for item in data.get("notes", [])],
+    )
+
+
+def decode_squash_report(payload) -> SquashReport:
+    """
+    Decode one history-squash report from JSON.
+
+    :param payload: Raw squash payload
+    :type payload: object
+    :return: Decoded squash report
+    :rtype: SquashReport
+    """
+
+    data = _require_dict(payload, "squash report")
+    return SquashReport(
+        ref_name=str(data["ref_name"]),
+        old_head=str(data["old_head"]),
+        new_head=str(data["new_head"]),
+        root_commit_before=str(data["root_commit_before"]),
+        rewritten_commit_count=int(data["rewritten_commit_count"]),
+        dropped_ancestor_count=int(data["dropped_ancestor_count"]),
+        blocking_refs=[str(item) for item in data.get("blocking_refs", [])],
+        gc_report=None if data.get("gc_report") is None else decode_gc_report(data.get("gc_report")),
+    )
 
 
 def decode_snapshot_plan(payload) -> dict:
