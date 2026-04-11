@@ -1,8 +1,17 @@
+import asyncio
+import re
+
 import pytest
 
 from hubvault.server import ServerConfig, create_app
 from hubvault.server.asgi import create_app as create_asgi_app
-from test.support import get_fastapi_test_client, rw_headers
+from test.support import get_fastapi_test_client, ro_headers, rw_headers, seed_phase45_repo
+
+
+def _first_asset_path(html):
+    match = re.search(r'(?:src|href)="(?P<path>/assets/[^"]+)"', html)
+    assert match is not None
+    return match.group("path")
 
 
 @pytest.mark.unittest
@@ -63,13 +72,52 @@ class TestServerApp:
             )
         )
 
-        asset_response = client.get("/__init__.py")
         fallback_response = client.get("/missing/path")
         api_namespace_response = client.get("/api/not-found")
+        asset_path = _first_asset_path(fallback_response.text)
+        asset_response = client.get(asset_path)
 
         assert asset_response.status_code == 200
-        assert "placeholder" not in asset_response.text.lower()
+        assert asset_response.text
         assert fallback_response.status_code == 200
-        assert "hubvault web ui placeholder" in fallback_response.text.lower()
+        assert "/assets/index-" in fallback_response.text
+        assert "vite-legacy-entry" in fallback_response.text
         assert api_namespace_response.status_code == 404
         assert api_namespace_response.json()["error"]["type"] == "HTTPException"
+
+    def test_app_handles_parallel_read_requests(self, tmp_path):
+        httpx = pytest.importorskip("httpx")
+        repo_dir = tmp_path / "repo"
+        seed_phase45_repo(repo_dir)
+
+        app = create_app(
+            ServerConfig(
+                repo_path=repo_dir,
+                mode="api",
+                token_ro=("ro-token",),
+                token_rw=("rw-token",),
+            )
+        )
+
+        async def _exercise_requests():
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://testserver",
+                headers=ro_headers(),
+            ) as client:
+                async def _one_round():
+                    service_response, refs_response, whoami_response = await asyncio.gather(
+                        client.get("/api/v1/meta/service"),
+                        client.get("/api/v1/refs"),
+                        client.get("/api/v1/meta/whoami"),
+                    )
+                    assert service_response.status_code == 200
+                    assert refs_response.status_code == 200
+                    assert whoami_response.status_code == 200
+                    assert service_response.json()["repo"]["default_branch"] == "release/v1"
+                    assert whoami_response.json()["access"] == "ro"
+
+                await asyncio.gather(*[_one_round() for _ in range(24)])
+
+        asyncio.run(_exercise_requests())

@@ -1,10 +1,34 @@
 {
   "name": "hubvault-webui",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "type": "module",
   "scripts": {
-    "test": "node scripts/test.js",
-    "build": "node scripts/build.js",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
     "sync": "python ../tools/webui_sync.py"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.1",
+    "axios": "^1.8.4",
+    "dayjs": "^1.11.13",
+    "dompurify": "^3.2.3",
+    "element-plus": "^2.10.1",
+    "markdown-it": "^14.1.0",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.54.2",
+    "@vitejs/plugin-legacy": "^6.1.1",
+    "@vitejs/plugin-vue": "^6.0.1",
+    "@vue/test-utils": "^2.4.6",
+    "jsdom": "^26.0.0",
+    "sass": "^1.87.0",
+    "vite": "^6.3.5",
+    "vitest": "^2.1.9"
   }
 }

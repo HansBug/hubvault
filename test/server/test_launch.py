@@ -1,4 +1,5 @@
 import runpy
+import re
 import subprocess
 import sys
 from importlib import import_module
@@ -13,6 +14,12 @@ from hubvault.server.config import DEFAULT_SERVER_PORT
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _first_asset_path(html):
+    match = re.search(r'(?:src|href)="(?P<path>/assets/[^"]+)"', html)
+    assert match is not None
+    return match.group("path")
 
 
 @pytest.mark.unittest
@@ -124,9 +131,12 @@ class TestServerLaunch:
         )
         frontend_client = TestClient(frontend_app)
         frontend_root_response = frontend_client.get("/")
+        frontend_asset_response = frontend_client.get(_first_asset_path(frontend_root_response.text))
 
         assert frontend_root_response.status_code == 200
-        assert "hubvault web ui placeholder" in frontend_root_response.text.lower()
+        assert "/assets/index-" in frontend_root_response.text
+        assert frontend_asset_response.status_code == 200
+        assert frontend_asset_response.text
 
     def test_main_forwards_arguments_to_launch(self, monkeypatch, tmp_path):
         launch_module = import_module("hubvault.server.launch")

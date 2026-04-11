@@ -12,6 +12,8 @@ The module contains:
 * :func:`encode_git_refs` - Serialize branch and tag refs
 * :func:`encode_git_commit_info` - Serialize commit-list entries
 * :func:`encode_reflog_entry` - Serialize reflog entries
+* :func:`encode_verify_report` - Serialize repository verification reports
+* :func:`encode_storage_overview` - Serialize repository storage analysis
 * :func:`build_snapshot_plan_payload` - Build the remote snapshot manifest
 """
 
@@ -29,6 +31,9 @@ from ..models import (
     RepoFile,
     RepoFolder,
     RepoInfo,
+    StorageOverview,
+    StorageSectionInfo,
+    VerifyReport,
 )
 
 
@@ -271,6 +276,67 @@ def encode_reflog_entries(values: Iterable[ReflogEntry]) -> List[dict]:
     """
 
     return [encode_reflog_entry(value) for value in values]
+
+
+def encode_verify_report(value: VerifyReport) -> dict:
+    """
+    Serialize one repository verification report.
+
+    :param value: Verification report model
+    :type value: VerifyReport
+    :return: JSON-compatible verification payload
+    :rtype: dict
+    """
+
+    return {
+        "ok": value.ok,
+        "checked_refs": list(value.checked_refs),
+        "warnings": list(value.warnings),
+        "errors": list(value.errors),
+    }
+
+
+def encode_storage_section_info(value: StorageSectionInfo) -> dict:
+    """
+    Serialize one storage section analysis entry.
+
+    :param value: Storage section analysis model
+    :type value: StorageSectionInfo
+    :return: JSON-compatible storage section payload
+    :rtype: dict
+    """
+
+    return {
+        "name": value.name,
+        "path": value.path,
+        "total_size": value.total_size,
+        "file_count": value.file_count,
+        "reclaimable_size": value.reclaimable_size,
+        "reclaim_strategy": value.reclaim_strategy,
+        "notes": value.notes,
+    }
+
+
+def encode_storage_overview(value: StorageOverview) -> dict:
+    """
+    Serialize repository-wide storage analysis.
+
+    :param value: Storage analysis model
+    :type value: StorageOverview
+    :return: JSON-compatible storage overview payload
+    :rtype: dict
+    """
+
+    return {
+        "total_size": value.total_size,
+        "reachable_size": value.reachable_size,
+        "historical_retained_size": value.historical_retained_size,
+        "reclaimable_gc_size": value.reclaimable_gc_size,
+        "reclaimable_cache_size": value.reclaimable_cache_size,
+        "reclaimable_temporary_size": value.reclaimable_temporary_size,
+        "sections": [encode_storage_section_info(item) for item in value.sections],
+        "recommendations": list(value.recommendations),
+    }
 
 
 def build_snapshot_plan_payload(

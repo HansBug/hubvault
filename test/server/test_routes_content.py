@@ -37,6 +37,10 @@ class TestServerContentRoutes:
             "configs",
             "docs",
         ]
+        tree_payload = {item["path"]: item for item in tree_response.json()}
+        assert tree_payload["README.md"]["last_commit"]["title"] == "seed release"
+        assert tree_payload["artifacts"]["last_commit"]["title"] == "update release artifacts"
+        assert tree_payload["docs"]["last_commit"]["title"] == "update release artifacts"
 
         assert files_response.status_code == 200
         assert sorted(files_response.json()) == sorted(seeded["api"].list_repo_files())

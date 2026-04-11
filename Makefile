@@ -1,4 +1,4 @@
-.PHONY: help docs docs_en docs_zh pdocs rst_auto test unittest benchmark benchmark_smoke benchmark_standard benchmark_phase9 benchmark_phase9_smoke benchmark_phase9_standard benchmark_phase9_pressure benchmark_phase12 benchmark_phase12_raw benchmark_phase12_summary benchmark_phase12_smoke benchmark_phase12_standard benchmark_phase12_nightly benchmark_phase12_pressure benchmark_compare benchmark_phase12_compare build test_cli package clean webui_test webui_build webui_sync
+.PHONY: help docs docs_en docs_zh pdocs rst_auto test unittest benchmark benchmark_smoke benchmark_standard benchmark_phase9 benchmark_phase9_smoke benchmark_phase9_standard benchmark_phase9_pressure benchmark_phase12 benchmark_phase12_raw benchmark_phase12_summary benchmark_phase12_smoke benchmark_phase12_standard benchmark_phase12_nightly benchmark_phase12_pressure benchmark_compare benchmark_phase12_compare build test_cli package clean webui_install webui_test webui_e2e webui_build webui_sync webui_package webui_check webui_clean
 
 PYTHON := $(shell [ -x ./venv/bin/python ] && printf '%s' ./venv/bin/python || which python)
 SPHINXBUILD ?= $(shell which sphinx-build)
@@ -14,6 +14,29 @@ SRC_DIR      := ${PROJ_DIR}/${PROJECT_NAME}
 TOOLS_DIR    := ${PROJ_DIR}/tools
 CLI_ENTRY    := ${PROJ_DIR}/hubvault_cli.py
 CLI_BIN      := ${DIST_DIR}/${PROJECT_NAME}$(if ${IS_WIN},.exe,)
+WEBUI_DIR    := ${PROJ_DIR}/webui
+WEBUI_DIST_DIR := ${WEBUI_DIR}/dist
+WEBUI_STATIC_DIR := ${SRC_DIR}/server/static/webui
+WEBUI_REPORT_DIR := ${WEBUI_DIR}/playwright-report
+WEBUI_RESULTS_DIR := ${WEBUI_DIR}/test-results
+WEBUI_VITE_CACHE_DIR := ${WEBUI_DIR}/node_modules/.vite
+WEBUI_INSTALL_STAMP := ${WEBUI_DIR}/node_modules/.hubvault-install.stamp
+WEBUI_BUILD_STAMP := ${BUILD_DIR}/webui/.hubvault-build.stamp
+WEBUI_LEGACY_BUILD_STAMP := ${WEBUI_DIST_DIR}/.hubvault-build.stamp
+NPM ?= $(shell which npm)
+WEBUI_INSTALL_ACTION := $(if $(wildcard ${WEBUI_DIR}/package-lock.json),ci,install)
+WEBUI_INSTALL_DEPS := ${WEBUI_DIR}/package.json
+WEBUI_BUILD_DEPS := $(shell find ${WEBUI_DIR}/src -type f 2>/dev/null) \
+	$(shell find ${WEBUI_DIR}/tests -type f 2>/dev/null) \
+	${WEBUI_DIR}/index.html \
+	${WEBUI_DIR}/package.json \
+	${WEBUI_DIR}/vite.config.js \
+	${WEBUI_DIR}/vitest.config.js \
+	${WEBUI_DIR}/playwright.config.js
+ifneq ($(wildcard ${WEBUI_DIR}/package-lock.json),)
+WEBUI_INSTALL_DEPS += ${WEBUI_DIR}/package-lock.json
+WEBUI_BUILD_DEPS += ${WEBUI_DIR}/package-lock.json
+endif
 
 RANGE_DIR           ?= .
 RANGE_TEST_DIR      := ${TEST_DIR}/${RANGE_DIR}
@@ -55,9 +78,16 @@ help:
 	@echo "  make package      - Build Python package (sdist and wheel)"
 	@echo "  make build        - Build standalone executable with PyInstaller"
 	@echo "  make clean        - Remove build and packaging artifacts"
-	@echo "  make webui_test   - Run placeholder frontend validation scripts"
-	@echo "  make webui_build  - Build placeholder frontend assets into webui/dist/"
+	@echo "  make webui_install"
+	@echo "                    - Install frontend dependencies with npm ci/install"
+	@echo "  make webui_test   - Run frontend unit/component tests"
+	@echo "  make webui_e2e    - Run frontend Playwright end-to-end checks"
+	@echo "  make webui_build  - Build frontend assets into webui/dist/"
 	@echo "  make webui_sync   - Sync webui/dist/ into hubvault/server/static/webui/"
+	@echo "  make webui_package"
+	@echo "                    - Build frontend assets and deploy them into the Python package path"
+	@echo "  make webui_check  - Run frontend tests and end-to-end checks"
+	@echo "  make webui_clean  - Remove frontend dist/ and transient test/report artifacts"
 	@echo ""
 	@echo "Testing:"
 	@echo "  make test         - Run all tests (alias for unittest)"
@@ -112,19 +142,43 @@ help:
 	@echo "  MIN_COVERAGE=<n>  - Minimum required coverage percentage"
 	@echo "  WORKERS=<n>       - Number of pytest-xdist workers"
 
-package:
+package: webui_package
 	$(PYTHON) -m build --sdist --wheel --outdir ${DIST_DIR}
 
-webui_test:
-	cd webui && npm run test
+webui_install: ${WEBUI_INSTALL_STAMP}
 
-webui_build:
-	cd webui && npm run build
+${WEBUI_INSTALL_STAMP}: ${WEBUI_INSTALL_DEPS}
+	@test -f ${WEBUI_DIR}/package.json || (echo "Missing frontend package manifest: ${WEBUI_DIR}/package.json" && exit 1)
+	@test -n "${NPM}" || (echo "npm not found. Install Node.js/npm first." && exit 1)
+	cd ${WEBUI_DIR} && ${NPM} ${WEBUI_INSTALL_ACTION}
+	@touch ${WEBUI_INSTALL_STAMP}
 
-webui_sync:
+webui_test: webui_install
+	cd ${WEBUI_DIR} && ${NPM} run test
+
+webui_e2e: webui_package
+	cd ${WEBUI_DIR} && ${NPM} run test:e2e
+
+webui_build: ${WEBUI_BUILD_STAMP}
+
+${WEBUI_BUILD_STAMP}: ${WEBUI_INSTALL_STAMP} ${WEBUI_BUILD_DEPS}
+	cd ${WEBUI_DIR} && ${NPM} run build
+	@mkdir -p $(dir $@)
+	@touch ${WEBUI_BUILD_STAMP}
+
+webui_sync: webui_build
+	rm -f ${WEBUI_LEGACY_BUILD_STAMP}
 	$(PYTHON) -m tools.webui_sync
 
-build:
+webui_package: webui_sync
+
+webui_check: webui_test webui_e2e
+
+webui_clean:
+	rm -rf ${WEBUI_DIST_DIR} ${WEBUI_REPORT_DIR} ${WEBUI_RESULTS_DIR} ${WEBUI_VITE_CACHE_DIR}
+	rm -f ${WEBUI_BUILD_STAMP} ${WEBUI_LEGACY_BUILD_STAMP}
+
+build: webui_package
 	@test -f ${CLI_ENTRY} || (echo "Missing CLI entry file: ${CLI_ENTRY}" && exit 1)
 	$(PYTHON) -m tools.generate_spec -o hubvault.spec
 	pyinstaller hubvault.spec
@@ -136,6 +190,7 @@ test_cli:
 clean:
 	rm -rf ${DIST_DIR} ${BUILD_DIR} *.egg-info
 	rm -f ${PROJECT_NAME}.spec junit.xml
+	@$(MAKE) webui_clean
 
 test: unittest
 

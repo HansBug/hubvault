@@ -48,6 +48,7 @@ from ..models import (
     GitCommitInfo,
     GitRefInfo,
     GitRefs,
+    LastCommitInfo,
     MergeConflict,
     MergeResult,
     ReflogEntry,
@@ -1979,19 +1980,29 @@ class RepositoryBackend(object):
         self._ensure_repo()
         self._rollback_interrupted_ref_updates_if_needed()
         with self._read_locked():
-            snapshot = self._snapshot_for_revision(revision)
+            head_commit_id = self._resolve_revision(revision)
+            snapshot = self._snapshot_for_commit(head_commit_id)
             requested_paths = [paths] if isinstance(paths, str) else list(paths)
             infos = []
+            resolved_paths = []
             for raw_path in requested_paths:
                 normalized_path = _normalize_repo_path(raw_path)
                 if normalized_path in snapshot:
                     infos.append(self._repo_file_info(normalized_path, snapshot[normalized_path]))
+                    resolved_paths.append(normalized_path)
                     continue
 
                 prefix = normalized_path + "/"
                 if any(path.startswith(prefix) for path in snapshot):
                     infos.append(self._repo_folder_info(revision, normalized_path))
-            return infos
+                    resolved_paths.append(normalized_path)
+
+            last_commit_by_path = self._last_commit_info_by_path_unlocked(
+                head_commit_id,
+                resolved_paths,
+                head_snapshot=snapshot,
+            )
+            return [self._entry_with_last_commit(item, last_commit_by_path.get(item.path)) for item in infos]
 
     def list_repo_tree(
         self,
@@ -2056,7 +2067,13 @@ class RepositoryBackend(object):
                 prefix = _normalize_repo_path(path_in_repo)
                 tree_id = self._tree_id_for_directory(root_tree_id, prefix)
 
-            return self._list_tree_entries(tree_id, prefix=prefix, recursive=recursive)
+            entries = self._list_tree_entries(tree_id, prefix=prefix, recursive=recursive)
+            last_commit_by_path = self._last_commit_info_by_path_unlocked(
+                head_commit_id,
+                [item.path for item in entries],
+                head_snapshot=self._snapshot_for_commit(head_commit_id),
+            )
+            return [self._entry_with_last_commit(item, last_commit_by_path.get(item.path)) for item in entries]
 
     def list_repo_files(self, revision: str = DEFAULT_BRANCH) -> List[str]:
         """
@@ -6526,6 +6543,190 @@ class RepositoryBackend(object):
             else:
                 raise IntegrityError("unknown tree entry type")
         return snapshot
+
+    @staticmethod
+    def _path_state_from_snapshot(snapshot: Dict[str, str], normalized_path: str):
+        """
+        Resolve the logical file or subtree state for one visible repo path.
+
+        The returned value is only used for equality comparison while locating
+        the newest reachable commit that introduced the currently visible path
+        state. Files are identified by file object ID. Directories are
+        identified by a stable tuple of descendant relative paths and file
+        object IDs so any subtree change also changes the directory state.
+
+        :param snapshot: Flat snapshot mapping for one commit
+        :type snapshot: Dict[str, str]
+        :param normalized_path: Normalized repo-relative path
+        :type normalized_path: str
+        :return: Comparable logical state token, or ``None`` when the path is absent
+        :rtype: Optional[Tuple[str, object]]
+        """
+
+        file_object_id = snapshot.get(normalized_path)
+        if file_object_id is not None:
+            return "file", file_object_id
+
+        prefix = normalized_path + "/"
+        descendants = []
+        for path, object_id in snapshot.items():
+            if path.startswith(prefix):
+                descendants.append((path[len(prefix) :], object_id))
+        if not descendants:
+            return None
+        return "tree", tuple(sorted(descendants))
+
+    def _last_commit_info_for_commit(self, commit_id: str) -> LastCommitInfo:
+        """
+        Build path-listing last-commit metadata for one commit.
+
+        :param commit_id: Internal commit object identifier
+        :type commit_id: str
+        :return: Public last-commit metadata
+        :rtype: LastCommitInfo
+        """
+
+        commit_payload = self._read_object_payload("commits", commit_id)
+        raw_message = str(commit_payload.get("message", ""))
+        title = str(commit_payload.get("title", ""))
+        if not title:
+            title, _ = self._split_commit_message(raw_message)
+        return LastCommitInfo(
+            oid=self._public_commit_oid(commit_id),
+            title=title,
+            date=_parse_utc_timestamp(str(commit_payload["created_at"])),
+        )
+
+    def _last_commit_info_by_path_unlocked(
+        self,
+        head_commit_id: Optional[str],
+        paths: Sequence[str],
+        head_snapshot: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, LastCommitInfo]:
+        """
+        Resolve the newest reachable commit that introduced each visible path state.
+
+        :param head_commit_id: Commit object selected by the caller revision
+        :type head_commit_id: Optional[str]
+        :param paths: Visible repo-relative paths to inspect
+        :type paths: Sequence[str]
+        :param head_snapshot: Optional precomputed head snapshot
+        :type head_snapshot: Optional[Dict[str, str]]
+        :return: Mapping of repo-relative path to last-commit metadata
+        :rtype: Dict[str, LastCommitInfo]
+        """
+
+        if head_commit_id is None:
+            return {}
+
+        normalized_paths = []
+        seen_paths = set()
+        for path in paths:
+            normalized_path = _normalize_repo_path(path)
+            if normalized_path in seen_paths:
+                continue
+            seen_paths.add(normalized_path)
+            normalized_paths.append(normalized_path)
+
+        current_snapshot = dict(head_snapshot or self._snapshot_for_commit(head_commit_id))
+        target_states = {
+            path: self._path_state_from_snapshot(current_snapshot, path)
+            for path in normalized_paths
+        }
+        unresolved = {
+            path
+            for path in normalized_paths
+            if target_states.get(path) is not None
+        }
+        if not unresolved:
+            return {}
+
+        snapshot_cache = {
+            None: {},
+            head_commit_id: current_snapshot,
+        }
+        commit_cache = {}
+
+        def _snapshot_for(commit_id: Optional[str]) -> Dict[str, str]:
+            cached_snapshot = snapshot_cache.get(commit_id)
+            if cached_snapshot is not None:
+                return cached_snapshot
+            snapshot = self._snapshot_for_commit(commit_id)
+            snapshot_cache[commit_id] = snapshot
+            return snapshot
+
+        def _commit_payload_for(commit_id: str) -> dict:
+            cached_payload = commit_cache.get(commit_id)
+            if cached_payload is not None:
+                return cached_payload
+            payload = self._read_object_payload("commits", commit_id)
+            commit_cache[commit_id] = payload
+            return payload
+
+        resolved = {}
+        pending = [head_commit_id]
+        visited = set()
+        while pending and unresolved:
+            commit_id = pending.pop(0)
+            if commit_id is None or commit_id in visited:
+                continue
+            visited.add(commit_id)
+
+            commit_payload = _commit_payload_for(commit_id)
+            parent_ids = [str(parent_id) for parent_id in commit_payload.get("parents", [])]
+            commit_snapshot = _snapshot_for(commit_id)
+
+            for path in list(unresolved):
+                target_state = target_states[path]
+                if self._path_state_from_snapshot(commit_snapshot, path) != target_state:
+                    continue
+                if not parent_ids:
+                    resolved[path] = self._last_commit_info_for_commit(commit_id)
+                    unresolved.remove(path)
+                    continue
+                if all(self._path_state_from_snapshot(_snapshot_for(parent_id), path) != target_state for parent_id in parent_ids):
+                    resolved[path] = self._last_commit_info_for_commit(commit_id)
+                    unresolved.remove(path)
+
+            pending.extend(parent_ids)
+
+        return resolved
+
+    @staticmethod
+    def _entry_with_last_commit(
+        entry: Union[RepoFile, RepoFolder],
+        last_commit: Optional[LastCommitInfo],
+    ) -> Union[RepoFile, RepoFolder]:
+        """
+        Return one repo entry with normalized last-commit metadata attached.
+
+        :param entry: Existing repo entry
+        :type entry: Union[RepoFile, RepoFolder]
+        :param last_commit: Last-commit metadata to attach
+        :type last_commit: Optional[LastCommitInfo]
+        :return: Repo entry carrying ``last_commit``
+        :rtype: Union[RepoFile, RepoFolder]
+        """
+
+        if isinstance(entry, RepoFile):
+            return RepoFile(
+                path=entry.path,
+                size=entry.size,
+                blob_id=entry.blob_id,
+                lfs=entry.lfs,
+                last_commit=last_commit,
+                security=entry.security,
+                oid=entry.oid,
+                sha256=entry.sha256,
+                etag=entry.etag,
+            )
+        if isinstance(entry, RepoFolder):
+            return RepoFolder(
+                path=entry.path,
+                tree_id=entry.tree_id,
+                last_commit=last_commit,
+            )
+        raise TypeError("Unsupported repository entry model: %r." % (type(entry).__name__,))
 
     def _compose_commit_text(self, commit_message: str, commit_description: str) -> str:
         """

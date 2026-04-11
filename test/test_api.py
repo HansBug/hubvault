@@ -228,6 +228,42 @@ class TestApi:
         with pytest.raises(RevisionNotFoundError):
             api.list_repo_commits(revision="missing")
 
+    def test_tree_and_path_info_include_last_commit_metadata(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+
+        first_commit = api.create_commit(
+            operations=[
+                CommitOperationAdd("README.md", b"# hubvault\n"),
+                CommitOperationAdd("docs/guide.md", b"v1\n"),
+            ],
+            commit_message="seed docs",
+        )
+        second_commit = api.create_commit(
+            operations=[
+                CommitOperationAdd("docs/guide.md", b"v2\n"),
+                CommitOperationAdd("artifacts/model.bin", b"model-v1\n"),
+            ],
+            commit_message="update docs and add model",
+        )
+
+        root_items = {item.path: item for item in api.list_repo_tree()}
+        docs_items = {item.path: item for item in api.list_repo_tree("docs")}
+        path_items = {item.path: item for item in api.get_paths_info(["README.md", "docs", "artifacts/model.bin"])}
+
+        assert root_items["README.md"].last_commit.oid == first_commit.oid
+        assert root_items["README.md"].last_commit.title == "seed docs"
+        assert root_items["docs"].last_commit.oid == second_commit.oid
+        assert root_items["docs"].last_commit.title == "update docs and add model"
+        assert root_items["artifacts"].last_commit.oid == second_commit.oid
+
+        assert docs_items["docs/guide.md"].last_commit.oid == second_commit.oid
+        assert docs_items["docs/guide.md"].last_commit.title == "update docs and add model"
+
+        assert path_items["README.md"].last_commit.oid == first_commit.oid
+        assert path_items["docs"].last_commit.oid == second_commit.oid
+        assert path_items["artifacts/model.bin"].last_commit.oid == second_commit.oid
+
     def test_snapshot_download_reuses_current_detached_local_dir_without_rewriting_views(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")
         api.create_repo()

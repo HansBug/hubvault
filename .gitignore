@@ -785,6 +785,15 @@ pip-selfcheck.json
 *.dmp
 *.rpx
 *.rpt
+!webui/*.js
+!webui/src/**/*.js
+!webui/tests/**/*.js
+!hubvault/server/static/webui/assets/*.js
+!hubvault/server/static/webui/assets/*.css
+!hubvault/server/static/webui/assets/*.js.map
+webui/dist
+webui/playwright-report/
+webui/test-results/
 *_stub.v
 *_stub.vhdl
 *_funcsim.v

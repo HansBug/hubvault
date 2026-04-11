@@ -15,6 +15,7 @@ from typing import Iterable, List, Optional
 from urllib.parse import quote, urlencode
 
 from ..auth import build_read_auth_dependency
+from ..deps import build_repo_api_getter
 from ..schemas import normalize_paths_request, normalize_snapshot_plan_request
 from ..serde import build_snapshot_plan_payload, encode_repo_entries
 from ...errors import HubVaultValidationError
@@ -86,18 +87,23 @@ def _download_url_for(path_in_repo: str, revision: str) -> str:
     )
 
 
-def create_content_router(*, api, authorizer):
+def create_content_router(*, api=None, api_factory=None, authorizer):
     """
     Build the content router for the server app.
 
-    :param api: Repository API bound to the current app
-    :type api: hubvault.api.HubVaultApi
+    :param api: Optional repository API reused by the router
+    :type api: Optional[hubvault.api.HubVaultApi]
+    :param api_factory: Optional zero-argument factory returning one fresh
+        repository API per request
+    :type api_factory: Optional[Callable[[], hubvault.api.HubVaultApi]]
     :param authorizer: Shared token authorizer
     :type authorizer: hubvault.server.auth.TokenAuthorizer
     :return: Router exposing read-only content endpoints
     :rtype: fastapi.APIRouter
     :raises hubvault.optional.MissingOptionalDependencyError: Raised when the
         API extra is not installed.
+    :raises TypeError: Raised when both ``api`` and ``api_factory`` are
+        provided or when neither input is provided.
     """
 
     from ...optional import import_optional_dependency
@@ -120,6 +126,7 @@ def create_content_router(*, api, authorizer):
     Response = fastapi_responses.Response
 
     router = APIRouter(prefix="/api/v1/content", tags=["content"])
+    get_api = build_repo_api_getter(api=api, api_factory=api_factory)
     require_read = build_read_auth_dependency(authorizer)
 
     @router.post("/paths-info")
@@ -139,7 +146,7 @@ def create_content_router(*, api, authorizer):
 
         del auth
         paths = normalize_paths_request(payload)
-        return encode_repo_entries(api.get_paths_info(paths, revision=revision))
+        return encode_repo_entries(get_api().get_paths_info(paths, revision=revision))
 
     @router.get("/tree")
     def list_repo_tree(
@@ -164,7 +171,7 @@ def create_content_router(*, api, authorizer):
         """
 
         del auth
-        return encode_repo_entries(api.list_repo_tree(path_in_repo, recursive=recursive, revision=revision))
+        return encode_repo_entries(get_api().list_repo_tree(path_in_repo, recursive=recursive, revision=revision))
 
     @router.get("/files")
     def list_repo_files(revision: Optional[str] = None, auth=Depends(require_read)):
@@ -180,7 +187,7 @@ def create_content_router(*, api, authorizer):
         """
 
         del auth
-        return list(api.list_repo_files(revision=revision))
+        return list(get_api().list_repo_files(revision=revision))
 
     @router.get("/blob/{path_in_repo:path}/range")
     def read_range(
@@ -208,8 +215,9 @@ def create_content_router(*, api, authorizer):
         """
 
         del auth
+        current_api = get_api()
         try:
-            payload = api.read_range(path_in_repo, start=start, length=length, revision=revision)
+            payload = current_api.read_range(path_in_repo, start=start, length=length, revision=revision)
         except ValueError as err:
             raise HubVaultValidationError(str(err))
         return Response(content=payload, media_type="application/octet-stream")
@@ -230,7 +238,10 @@ def create_content_router(*, api, authorizer):
         """
 
         del auth
-        return Response(content=api.read_bytes(path_in_repo, revision=revision), media_type="application/octet-stream")
+        return Response(
+            content=get_api().read_bytes(path_in_repo, revision=revision),
+            media_type="application/octet-stream",
+        )
 
     @router.get("/download/{path_in_repo:path}")
     def download_file(path_in_repo: str, revision: Optional[str] = None, auth=Depends(require_read)):
@@ -248,7 +259,8 @@ def create_content_router(*, api, authorizer):
         """
 
         del auth
-        file_info = api.get_paths_info(path_in_repo, revision=revision)
+        current_api = get_api()
+        file_info = current_api.get_paths_info(path_in_repo, revision=revision)
         headers = {
             "X-HubVault-Repo-Path": path_in_repo,
             "Content-Disposition": 'attachment; filename="%s"' % (path_in_repo.split("/")[-1],),
@@ -256,7 +268,7 @@ def create_content_router(*, api, authorizer):
         if file_info and isinstance(file_info[0], RepoFile) and file_info[0].etag is not None:
             headers["ETag"] = str(file_info[0].etag)
         return Response(
-            content=api.read_bytes(path_in_repo, revision=revision),
+            content=current_api.read_bytes(path_in_repo, revision=revision),
             media_type="application/octet-stream",
             headers=headers,
         )
@@ -277,16 +289,17 @@ def create_content_router(*, api, authorizer):
         """
 
         del auth
+        current_api = get_api()
         options = normalize_snapshot_plan_request(payload)
-        repo_info = api.repo_info(revision=revision)
+        repo_info = current_api.repo_info(revision=revision)
         selected_revision = revision or repo_info.default_branch
         resolved_revision = repo_info.head or selected_revision
         file_paths = _filter_repo_paths(
-            api.list_repo_files(revision=revision),
+            current_api.list_repo_files(revision=revision),
             allow_patterns=options["allow_patterns"],
             ignore_patterns=options["ignore_patterns"],
         )
-        file_infos = api.get_paths_info(file_paths, revision=revision) if file_paths else []
+        file_infos = current_api.get_paths_info(file_paths, revision=revision) if file_paths else []
         files = []
         for item in file_infos:
             if not isinstance(item, RepoFile):

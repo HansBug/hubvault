@@ -11,23 +11,29 @@ The module contains:
 
 from ...config.meta import __TITLE__, __VERSION__
 from ..auth import build_read_auth_dependency
+from ..deps import build_repo_api_getter
 from ..serde import build_meta_service_payload, build_whoami_payload
 
 
-def create_meta_router(*, config, api, authorizer):
+def create_meta_router(*, config, api=None, api_factory=None, authorizer):
     """
     Build the metadata router for the server app.
 
     :param config: Server configuration bound to the current app
     :type config: hubvault.server.config.ServerConfig
-    :param api: Repository API bound to the current app
-    :type api: hubvault.api.HubVaultApi
+    :param api: Optional repository API reused by the router
+    :type api: Optional[hubvault.api.HubVaultApi]
+    :param api_factory: Optional zero-argument factory returning one fresh
+        repository API per request
+    :type api_factory: Optional[Callable[[], hubvault.api.HubVaultApi]]
     :param authorizer: Shared token authorizer
     :type authorizer: hubvault.server.auth.TokenAuthorizer
     :return: Router exposing the metadata endpoints
     :rtype: fastapi.APIRouter
     :raises hubvault.optional.MissingOptionalDependencyError: Raised when the
         API extra is not installed.
+    :raises TypeError: Raised when both ``api`` and ``api_factory`` are
+        provided or when neither input is provided.
     """
 
     from ...optional import import_optional_dependency
@@ -42,6 +48,7 @@ def create_meta_router(*, config, api, authorizer):
     Depends = fastapi.Depends
 
     router = APIRouter(prefix="/api/v1/meta", tags=["meta"])
+    get_api = build_repo_api_getter(api=api, api_factory=api_factory)
     require_read = build_read_auth_dependency(authorizer)
 
     @router.get("/service")
@@ -55,7 +62,7 @@ def create_meta_router(*, config, api, authorizer):
         :rtype: dict
         """
 
-        repo_info = api.repo_info()
+        repo_info = get_api().repo_info()
         return build_meta_service_payload(
             service=__TITLE__,
             version=__VERSION__,

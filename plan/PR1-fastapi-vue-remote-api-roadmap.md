@@ -971,6 +971,208 @@ MVP 建议收敛为：
 
 先交付一套只读 Web UI，让用户在浏览器中登录、浏览、查看历史，而无需先补复杂写操作。
 
+### Frontend Implementation Detail
+
+Phase 6 的 UI 目标不是只做一个占位页，而是交付一套接近 Hugging Face repo 页信息架构的只读前端外壳。除不实现 README tag / pipeline tag / social metrics 这类当前本地 repo 不具备的数据外，页面布局和主要阅读流保持 HF 风格：
+
+- 顶部 repo header：
+  - repo 名称与本地路径标识
+  - branch / tag 切换器
+  - 访问级别标记（`ro` / `rw`）
+  - 默认分支、当前 revision、HEAD、refs 数量、文件数等关键信息
+- 一级导航采用 repo 视图而非操作台：
+  - `Overview`
+  - `Files`
+  - `Commits`
+  - `Refs`
+  - `Storage`
+- `Overview` 页承担 HF 的 model card / repo home 角色：
+  - 读取并渲染根目录 `README.md`
+  - 展示 repo 元信息摘要
+  - 展示 refs / commits / files / storage 的摘要卡片
+  - 最近提交列表放在侧栏
+- `Files` 页承担 HF 的 Files and versions 角色：
+  - 当前目录 breadcrumb
+  - 文件/目录表格
+  - 每一行都展示最近改动 commit 标题与时间
+  - 文件详情区支持文本预览、README markdown 预览、二进制摘要与下载按钮
+- `Commits` 页承担 HF 的 commit history 角色：
+  - 基于当前 revision 展示 commit timeline
+  - 展示 commit title、message 摘要、commit id、作者、时间
+- `Refs` 页承担 branch / tag 浏览角色：
+  - branch、tag 分栏列表
+  - 当前选中 revision 高亮
+  - 默认分支显式标注
+- `Storage` 页承担本地 repo 特有的运维只读摘要角色：
+  - repo 存储分析总览
+  - 分 section 的大小与 reclaim strategy
+  - quick / full verify 结果摘要
+
+### Data Mapping
+
+前端所有读取都必须经由 `/api/v1/**`，不允许直接读静态 JSON 或绕过 server app state。
+
+Phase 6 预期使用的数据源如下：
+
+- `/api/v1/meta/service`
+  - UI 顶部 repo / mode / auth / default branch 摘要
+- `/api/v1/meta/whoami`
+  - token 校验与角色探测
+- `/api/v1/repo`
+  - revision 切换后的 repo 元信息
+- `/api/v1/content/files`
+  - README 探测与全量文件数量
+- `/api/v1/content/tree`
+  - Files 页目录浏览
+- `/api/v1/content/paths-info`
+  - 指定路径详情与最近改动 commit / time
+- `/api/v1/content/blob/{path}`
+  - README 与文本文件预览
+- `/api/v1/content/download/{path}`
+  - 单文件下载
+- `/api/v1/history/commits`
+  - commit timeline
+- `/api/v1/refs`
+  - branch / tag 切换器与 Refs 页
+- `/api/v1/maintenance/quick-verify`
+  - Storage 页 verify 摘要
+- `/api/v1/maintenance/full-verify`
+  - Storage 页深度 verify 摘要
+- `/api/v1/maintenance/storage-overview`
+  - Storage 页总览与 section 明细
+
+### Frontend Stack
+
+- 使用 `Vue 3` + `Vue Router` + `Element Plus` + `Vite`
+- 状态管理保持轻量，优先使用组合式 API 与 app-level reactive store，不额外引入复杂 store 框架
+- README markdown 渲染需做显式 HTML sanitization
+- token 仅保存在 `sessionStorage`
+- 构建目标显式收敛到 `es2015`
+- 允许使用额外成熟 JS 库来减少重复造轮子，但最终产物仍需通过 `Vite/esbuild` 输出为 `es2015` 兼容代码
+- 需要兼顾 2018 年前后主流浏览器环境，首版兼容目标至少覆盖当年的主流 Chrome / Firefox / Safari / Edge，而不是只面向最新浏览器
+- API client 统一处理：
+  - bearer token 注入
+  - HTTP 错误展开
+  - revision query 透传
+  - 文本 / 二进制下载分流
+
+### Information Architecture
+
+前端路由与页面壳按 HF repo page 的阅读顺序组织，但保持 `hubvault` 自己的视觉语言：
+
+- `/login`
+  - token 输入
+  - 调用 `/api/v1/meta/whoami` 做即时校验
+  - 成功后跳转到当前 revision 的 `Overview`
+- `/`
+  - 重定向到 `/repo/overview?revision=<selected-ref>`
+- `/repo/overview?revision=<selected-ref>`
+  - repo header
+  - README 主区
+  - repo / refs / commits / files / storage 摘要侧栏
+  - 最近提交列表
+- `/repo/files?revision=<selected-ref>&path=<dir-or-file>`
+  - breadcrumb
+  - branch/tag 切换器
+  - 文件表格
+  - 当前选中文件预览 / 下载
+- `/repo/commits?revision=<selected-ref>`
+  - commit timeline
+  - commit title / body / time / oid
+- `/repo/refs?revision=<selected-ref>`
+  - branches / tags 双列表
+  - 当前 revision 高亮
+- `/repo/storage?revision=<selected-ref>`
+  - storage overview 卡片
+  - sections 表格
+  - quick/full verify 摘要
+
+其中 `revision` 可以是 branch、tag 或具体 commit，统一放在 query string 中以兼容带 `/` 的 ref 名，并确保页面内所有读取都带相同 revision 查询参数。
+
+### Component Plan
+
+Phase 6 前端建议拆成以下复用组件：
+
+- `AppShell`
+  - 顶部品牌、repo 摘要、revision 切换器、权限徽标
+- `RepoRevisionSwitch`
+  - 统一展示 branches / tags
+  - 支持筛选、当前项高亮、切换后保留当前 tab
+- `RepoSummaryCards`
+  - repo、refs、files、storage 总览卡
+- `ReadmeViewer`
+  - markdown 渲染、sanitize、代码块样式
+- `FileTable`
+  - 路径、类型、大小、最近提交标题、最近时间
+- `FilePreviewPanel`
+  - markdown / text / binary 三种预览模式
+- `CommitTimeline`
+  - commit 列表与相对时间展示
+- `RefsPanel`
+  - branches / tags 分栏
+- `StorageOverviewPanel`
+  - usage summary、recommendations、sections 明细、verify 状态
+
+### Data Semantics
+
+- `content/tree` 与 `content/paths-info` 返回的 `RepoFile` / `RepoFolder` 必须补齐 `last_commit`
+- `Files` 页每一行至少展示：
+  - repo-relative path
+  - entry type
+  - size（目录显示 `-`）
+  - 最近改动 commit title
+  - 最近改动时间
+- `Overview` 页的 README 加载规则：
+  - 优先探测 `README.md`
+  - 再回退 `README.rst`、`README.txt`
+  - 无 README 时显示明确 empty state
+- 文本预览首版支持：
+  - markdown
+  - 常见 UTF-8 文本
+  - JSON pretty display
+  - 二进制文件给出 metadata + download CTA
+
+### Interaction Details
+
+- revision 切换必须是全局状态，但仍以 URL 为准，避免刷新后状态丢失
+- 进入页面时若 token 缺失或失效，统一跳转回 `/login`
+- `ro` 用户只显示只读导航，不展示写操作 CTA
+- 页面加载采用 skeleton / empty / error 三态，避免裸白屏
+- `Files` 页桌面端采用“表格 + 右侧预览”，移动端收敛为单列卡片加抽屉预览
+- README 与文件预览都不得绕过 API 直接读取静态资源
+- 所有下载链接都通过 `/api/v1/content/download/{path}` 暴露
+- 避免把过新的 Web API 当作 correctness 前提，例如仅最新浏览器才稳定支持的 API、CSS 特性或模块语法
+
+### Visual Direction
+
+- 参考 HF repo 页的信息密度和阅读顺序，但不照搬品牌色
+- 视觉基调采用偏纸张/文档感的浅色背景、暖灰边框、深墨色正文与琥珀色强调
+- 重点不是“后台系统感”，而是“可阅读的仓库主页”
+- 桌面端采用主内容 + 侧栏摘要布局，移动端收敛为单列卡片流
+- 首页主区优先强调 README / content，可读性高于“控制台面板感”
+- 文件表格和 commit timeline 允许更高信息密度，尽量接近 HF 页面那种浏览节奏
+- 动效仅限页面初载入、tab 切换和 skeleton 淡入，不做过度 hover 装饰
+
+### Testing and Validation
+
+- `webui/tests/unit/`
+  - 格式化函数、markdown/preview 选择逻辑、token/session 状态逻辑
+- `webui/tests/components/`
+  - branch switcher、file table、README viewer、storage summary 等核心组件
+- `webui/tests/e2e/`
+  - 登录、revision 切换、README 渲染、文件浏览、commit/refs/storage 页面跳转
+- Python 侧补 `test/server/test_ui.py`
+  - `api` 模式不暴露 UI
+  - `frontend` 模式托管 built assets
+  - 前端所有读取流量仍经由 `/api/v1/**`
+- 交付前需执行一次真实视觉校验：
+  - build frontend
+  - sync 到 `hubvault/server/static/webui/`
+  - 启动 `frontend` 模式 server
+  - 使用浏览器自动化生成截图并检查关键布局、README、文件表格、commit timeline、storage 卡片是否真实渲染
+  - 保留 Playwright 截图与 HTML report 以便回看
+- 构建配置需同时验证 legacy bundle 存在且页面在非最新浏览器语法目标下仍可加载
+
 ### Todo
 
 * [ ] 建立 `webui/` 的 Vue 3 + Element Plus + Vite 骨架。

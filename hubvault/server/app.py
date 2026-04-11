@@ -19,10 +19,11 @@ from ..optional import import_optional_dependency
 from ..repo import LARGE_FILE_THRESHOLD
 from ..repo.backend import RepositoryBackend
 from .config import ServerConfig
-from .deps import get_token_authorizer
+from .deps import get_repo_api_factory, get_token_authorizer
 from .exception_handlers import register_exception_handlers
 from .routes.content import create_content_router
 from .routes.history import create_history_router
+from .routes.maintenance import create_maintenance_router
 from .routes.meta import create_meta_router
 from .routes.refs import create_refs_router
 from .routes.repo import create_repo_router
@@ -187,7 +188,8 @@ def create_app(config: Optional[ServerConfig] = None, **kwargs):
     FastAPI = fastapi.FastAPI
 
     config = _coerce_config(config, **kwargs)
-    api = _prepare_repo_api(config)
+    _prepare_repo_api(config)
+    api_factory = get_repo_api_factory(config)
     authorizer = get_token_authorizer(config)
     static_dir = _static_webui_dir()
 
@@ -198,15 +200,16 @@ def create_app(config: Optional[ServerConfig] = None, **kwargs):
         redoc_url="/redoc" if config.mode == "api" else None,
     )
     app.state.server_config = config
-    app.state.repo_api = api
+    app.state.repo_api_factory = api_factory
     app.state.token_authorizer = authorizer
 
     register_exception_handlers(app)
-    app.include_router(create_meta_router(config=config, api=api, authorizer=authorizer))
-    app.include_router(create_repo_router(api=api, authorizer=authorizer))
-    app.include_router(create_content_router(api=api, authorizer=authorizer))
-    app.include_router(create_refs_router(api=api, authorizer=authorizer))
-    app.include_router(create_history_router(api=api, authorizer=authorizer))
+    app.include_router(create_meta_router(config=config, api_factory=api_factory, authorizer=authorizer))
+    app.include_router(create_repo_router(api_factory=api_factory, authorizer=authorizer))
+    app.include_router(create_content_router(api_factory=api_factory, authorizer=authorizer))
+    app.include_router(create_refs_router(api_factory=api_factory, authorizer=authorizer))
+    app.include_router(create_history_router(api_factory=api_factory, authorizer=authorizer))
+    app.include_router(create_maintenance_router(api_factory=api_factory, authorizer=authorizer))
 
     if config.ui_enabled:
         _register_frontend_routes(app, static_dir)

@@ -11,21 +11,27 @@ The module contains:
 from typing import Optional
 
 from ..auth import build_read_auth_dependency
+from ..deps import build_repo_api_getter
 from ..serde import encode_git_commit_list, encode_reflog_entries
 
 
-def create_history_router(*, api, authorizer):
+def create_history_router(*, api=None, api_factory=None, authorizer):
     """
     Build the history router for the server app.
 
-    :param api: Repository API bound to the current app
-    :type api: hubvault.api.HubVaultApi
+    :param api: Optional repository API reused by the router
+    :type api: Optional[hubvault.api.HubVaultApi]
+    :param api_factory: Optional zero-argument factory returning one fresh
+        repository API per request
+    :type api_factory: Optional[Callable[[], hubvault.api.HubVaultApi]]
     :param authorizer: Shared token authorizer
     :type authorizer: hubvault.server.auth.TokenAuthorizer
     :return: Router exposing history endpoints
     :rtype: fastapi.APIRouter
     :raises hubvault.optional.MissingOptionalDependencyError: Raised when the
         API extra is not installed.
+    :raises TypeError: Raised when both ``api`` and ``api_factory`` are
+        provided or when neither input is provided.
     """
 
     from ...optional import import_optional_dependency
@@ -40,6 +46,7 @@ def create_history_router(*, api, authorizer):
     Depends = fastapi.Depends
 
     router = APIRouter(prefix="/api/v1/history", tags=["history"])
+    get_api = build_repo_api_getter(api=api, api_factory=api_factory)
     require_read = build_read_auth_dependency(authorizer)
 
     @router.get("/commits")
@@ -58,7 +65,7 @@ def create_history_router(*, api, authorizer):
         """
 
         del auth
-        return encode_git_commit_list(api.list_repo_commits(revision=revision, formatted=formatted))
+        return encode_git_commit_list(get_api().list_repo_commits(revision=revision, formatted=formatted))
 
     @router.get("/reflog/{ref_name:path}")
     def list_repo_reflog(ref_name: str, limit: Optional[int] = None, auth=Depends(require_read)):
@@ -76,6 +83,6 @@ def create_history_router(*, api, authorizer):
         """
 
         del auth
-        return encode_reflog_entries(api.list_repo_reflog(ref_name, limit=limit))
+        return encode_reflog_entries(get_api().list_repo_reflog(ref_name, limit=limit))
 
     return router
