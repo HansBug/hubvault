@@ -74,6 +74,24 @@ SVG_V2 = b"""<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" vi
 </svg>
 """
 
+ICON_AUDIT_FILES = (
+    ("icon-audit/README.md", b"# Icon Audit\n\nFrontend icon alignment fixtures.\n"),
+    ("icon-audit/blob.bin", b"\x00hubvault-binary-icon-fixture\x01"),
+    ("icon-audit/clip.wav", b"RIFF$\x00\x00\x00WAVEfmt "),
+    ("icon-audit/config.yaml", b"name: icon-audit\n"),
+    ("icon-audit/data.csv", b"step,loss\n1,0.25\n"),
+    ("icon-audit/demo.mp4", b"\x00\x00\x00\x18ftypmp42"),
+    ("icon-audit/Dockerfile", b"FROM python:3.11-slim\n"),
+    ("icon-audit/file.zip", b"PK\x03\x04hubvault-zip-icon-fixture"),
+    ("icon-audit/image.png", b"\x89PNG\r\n\x1a\n"),
+    ("icon-audit/model.onnx", b"fixture-onnx-icon\n"),
+    ("icon-audit/model.safetensors", b"fixture-safetensors-icon\n"),
+    ("icon-audit/notes.md", b"# Notes\n\nIcon audit markdown.\n"),
+    ("icon-audit/script.py", b"print('icon audit')\n"),
+    ("icon-audit/stats.json", b"{\"icons\": true}\n"),
+    ("icon-audit/web.ts", b"export const iconAudit = true;\n"),
+)
+
 
 def _build_fixture_repo(repo_dir: Path) -> None:
     api = HubVaultApi(repo_dir, revision="release/v1")
@@ -118,7 +136,29 @@ def _build_fixture_repo(repo_dir: Path) -> None:
             CommitOperationAdd("src/app.py", b"def render_message():\n    return 'fixture v1'\n"),
             CommitOperationAdd("images/logo.svg", SVG_V1),
             CommitOperationAdd("artifacts/model.bin", b"fixture-model-v1\n"),
-        ],
+            CommitOperationAdd(
+                ".gitattributes",
+                (
+                    b"*.safetensors filter=lfs diff=lfs merge=lfs -text\n"
+                    b"*.ckpt filter=lfs diff=lfs merge=lfs -text\n"
+                    b"*.onnx filter=lfs diff=lfs merge=lfs -text\n"
+                    b"*.parquet filter=lfs diff=lfs merge=lfs -text\n"
+                    b"*.pt filter=lfs diff=lfs merge=lfs -text\n"
+                    b"*.pth filter=lfs diff=lfs merge=lfs -text\n"
+                    b"*.joblib filter=lfs diff=lfs merge=lfs -text\n"
+                    b"*.h5 filter=lfs diff=lfs merge=lfs -text\n"
+                    b"*tfevents* filter=lfs diff=lfs merge=lfs -text\n"
+                ),
+            ),
+            CommitOperationAdd("Dockerfile", b"FROM python:3.11-slim\n"),
+            CommitOperationAdd("models/model.safetensors", b"fixture-safetensors-v1\n"),
+            CommitOperationAdd("models/checkpoint.ckpt", b"fixture-ckpt-v1\n"),
+            CommitOperationAdd("models/network.onnx", b"fixture-onnx-v1\n"),
+            CommitOperationAdd("data/train.parquet", b"fixture-parquet-v1\n"),
+            CommitOperationAdd("data/records.jsonl", b"{\"step\": 1}\n"),
+            CommitOperationAdd("runs/events.out.tfevents.1710000000.fixture", b"fixture-tfevents-v1\n"),
+            CommitOperationAdd("frontend/app.tsx", b"export const title = 'fixture';\n"),
+        ] + [CommitOperationAdd(path, content) for path, content in ICON_AUDIT_FILES],
         commit_message="seed frontend fixture",
     )
     api.create_branch(branch="dev", revision=first_commit.oid)
@@ -131,7 +171,7 @@ def _build_fixture_repo(repo_dir: Path) -> None:
             CommitOperationAdd("images/logo.svg", SVG_V2),
             CommitOperationAdd("artifacts/model.bin", b"fixture-model-v2\n"),
         ],
-        commit_message="update guide model and ui assets",
+        commit_message="update guide model and ui assets with long overview wrapping coverage and richer repository file icon fixtures",
     )
     api.hf_hub_download("artifacts/model.bin")
 

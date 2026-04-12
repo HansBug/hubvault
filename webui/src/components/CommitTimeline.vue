@@ -58,7 +58,7 @@ function openCommit(commitId) {
             class="timeline-card__title-link"
             @click="openCommit(commit.commit_id)"
           >
-            {{ commit.title }}
+            <span class="timeline-card__title-text">{{ commit.title }}</span>
           </el-button>
           <span class="mono muted">{{ shortOid(commit.commit_id) }}</span>
         </div>

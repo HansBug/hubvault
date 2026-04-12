@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { Connection, PriceTag } from "@element-plus/icons-vue";
+
 const props = defineProps({
   refs: {
     type: Object,
@@ -35,8 +37,10 @@ function handleSelect(value) {
         <el-button
           v-for="branch in props.refs.branches || []"
           :key="'branch-' + branch.name"
-          :type="branch.name === currentRevision ? 'primary' : 'default'"
-          plain
+          class="refs-select-button refs-select-button--branch"
+          :icon="Connection"
+          :plain="branch.name !== currentRevision"
+          :type="branch.name === currentRevision ? 'primary' : 'info'"
           @click="handleSelect(branch.name)"
         >
           {{ branch.name }}
@@ -55,8 +59,10 @@ function handleSelect(value) {
         <el-button
           v-for="tag in props.refs.tags || []"
           :key="'tag-' + tag.name"
-          :type="tag.name === currentRevision ? 'primary' : 'default'"
-          plain
+          class="refs-select-button refs-select-button--tag"
+          :icon="PriceTag"
+          :plain="tag.name !== currentRevision"
+          :type="tag.name === currentRevision ? 'success' : 'default'"
           @click="handleSelect(tag.name)"
         >
           {{ tag.name }}

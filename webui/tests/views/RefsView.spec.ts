@@ -116,6 +116,10 @@ describe("RefsView", function suite() {
       }
     });
 
+    expect(wrapper.get("[data-testid='refs-action-create-branch']").text()).toContain("New Branch");
+    expect(wrapper.get("[data-testid='refs-action-create-tag']").text()).toContain("New Tag");
+    expect(wrapper.get("[data-testid='refs-action-merge']").text()).toContain("Merge Into Current");
+
     await findButton(wrapper, "New Branch").trigger("click");
     await flushPromises();
 

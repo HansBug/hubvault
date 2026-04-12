@@ -7,7 +7,8 @@ const overviewMocks = vi.hoisted(function buildOverviewMocks() {
     getBlobBytes: vi.fn(),
     getCommits: vi.fn(),
     getRepoFiles: vi.fn(),
-    getStorageOverview: vi.fn()
+    getStorageOverview: vi.fn(),
+    push: vi.fn()
   };
 });
 
@@ -31,6 +32,16 @@ vi.mock("@/stores/session", function mockSessionStore() {
     useSessionStore: function useSessionStore() {
       return {
         state: readonly(sessionState)
+      };
+    }
+  };
+});
+
+vi.mock("vue-router", function mockVueRouter() {
+  return {
+    useRouter: function useRouter() {
+      return {
+        push: overviewMocks.push
       };
     }
   };
@@ -61,6 +72,10 @@ const overviewStubs = {
     props: ["title"],
     template: `<div class="el-alert">{{ title }}</div>`
   },
+  ElButton: {
+    emits: ["click"],
+    template: `<button @click="$emit('click')"><slot /></button>`
+  },
   ElCard: {
     template: `<div class="el-card"><slot /></div>`
   },
@@ -72,6 +87,14 @@ const overviewStubs = {
     template: `<div class="el-empty">{{ description }}</div>`
   }
 };
+
+function findButtonByText(wrapper, value: string) {
+  const button = wrapper.findAll("button").find(function findMatch(item) {
+    return item.text().indexOf(value) >= 0;
+  });
+  expect(button).toBeTruthy();
+  return button!;
+}
 
 describe("OverviewView", function suite() {
   beforeEach(function resetSessionState() {
@@ -92,7 +115,7 @@ describe("OverviewView", function suite() {
     };
   });
 
-  it("loads summary data and keeps overview side cards isolated from README content", async function testOverviewSuccess() {
+  it("loads summary data, keeps overview side cards isolated, and opens commit detail from recent commits", async function testOverviewSuccess() {
     overviewMocks.getRepoFiles.mockResolvedValueOnce(["README.md", "docs/guide.md"]);
     overviewMocks.getCommits.mockResolvedValueOnce([
       {
@@ -123,6 +146,18 @@ describe("OverviewView", function suite() {
     expect(wrapper.get("[data-testid='overview-commits-card']").text()).toContain("first");
     expect(wrapper.get(".overview-content-grid").classes()).toContain("overview-content-grid");
     expect(wrapper.get(".overview-sidebar").classes()).toContain("overview-sidebar");
+
+    await findButtonByText(wrapper, "first").trigger("click");
+
+    expect(overviewMocks.push).toHaveBeenCalledWith({
+      name: "commit-detail",
+      params: {
+        commitId: "1234567890abcdef1234567890abcdef12345678"
+      },
+      query: {
+        revision: "release/v1"
+      }
+    });
   });
 
   it("shows a route-level error when loading fails", async function testOverviewFailure() {

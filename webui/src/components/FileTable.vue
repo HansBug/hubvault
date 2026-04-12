@@ -3,12 +3,25 @@ import {
   Delete,
   Document,
   Download,
+  Files,
   FolderOpened,
+  Headset,
+  VideoPlay,
   View
 } from "@element-plus/icons-vue";
+import { Icon } from "@iconify/vue";
 
 import { buildDownloadUrl } from "@/api/client";
+import { materialFileIcons } from "@/icons/materialFileIcons";
 import { formatBytes, formatRelativeDate } from "@/utils/format";
+import { getFileIconMeta } from "@/utils/fileIcons";
+
+const FALLBACK_ICONS = {
+  audio: Headset,
+  binary: Files,
+  folder: FolderOpened,
+  video: VideoPlay
+};
 
 const props = defineProps({
   entries: {
@@ -38,6 +51,20 @@ function downloadUrl(path) {
   return buildDownloadUrl(props.revision, path);
 }
 
+function entryVisual(row) {
+  return getFileIconMeta(row.path, row.entry_type);
+}
+
+function fallbackIcon(row) {
+  const visual = entryVisual(row);
+  return FALLBACK_ICONS[visual.icon] || Document;
+}
+
+function materialIcon(row) {
+  const visual = entryVisual(row);
+  return materialFileIcons[visual.icon] || materialFileIcons.document;
+}
+
 function openEntry(row) {
   emit(row.entry_type === "folder" ? "open-folder" : "open-file", row.path);
 }
@@ -61,14 +88,23 @@ function openCommit(row) {
         <el-button
           link
           type="primary"
+          class="table-path__button"
+          :data-file-kind="entryVisual(row).kind"
           @click="openEntry(row)"
         >
-          <span class="table-path">
-            <el-icon class="table-path__icon">
-              <folder-opened v-if="row.entry_type === 'folder'" />
-              <document v-else />
-            </el-icon>
-            <span>{{ displayName(row.path) }}</span>
+          <span class="table-path" :data-file-kind="entryVisual(row).kind">
+            <span
+              class="table-path__icon"
+              :class="'table-path__icon--' + entryVisual(row).tone"
+              :data-file-icon="entryVisual(row).icon"
+              :data-icon-source="entryVisual(row).source"
+            >
+              <el-icon v-if="entryVisual(row).source === 'element'" class="table-path__glyph">
+                <component :is="fallbackIcon(row)" />
+              </el-icon>
+              <icon v-else class="table-path__glyph" :icon="materialIcon(row)" />
+            </span>
+            <span class="table-path__label">{{ displayName(row.path) }}</span>
           </span>
         </el-button>
       </template>

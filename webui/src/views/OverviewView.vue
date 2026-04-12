@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from "vue";
+import { useRouter } from "vue-router";
 
 import { getBlobBytes, getCommits, getRepoFiles, getStorageOverview } from "@/api/client";
 import ReadmeViewer from "@/components/ReadmeViewer.vue";
@@ -16,6 +17,7 @@ const props = defineProps({
 });
 
 const { state } = useSessionStore();
+const router = useRouter();
 
 const loading = ref(false);
 const error = ref("");
@@ -24,6 +26,18 @@ const commits = ref([]);
 const storageOverview = ref(null);
 const readmePath = ref("");
 const readmeContent = ref("");
+
+function openCommit(commitId) {
+  router.push({
+    name: "commit-detail",
+    params: {
+      commitId: commitId
+    },
+    query: {
+      revision: props.revision
+    }
+  });
+}
 
 async function loadOverview() {
   loading.value = true;
@@ -147,7 +161,14 @@ watch(
               class="timeline-card"
             >
               <div class="timeline-card__title">
-                <strong>{{ commit.title }}</strong>
+                <el-button
+                  link
+                  type="primary"
+                  class="timeline-card__title-link"
+                  @click="openCommit(commit.commit_id)"
+                >
+                  <span class="timeline-card__title-text">{{ commit.title }}</span>
+                </el-button>
                 <span class="mono muted">{{ shortOid(commit.commit_id) }}</span>
               </div>
               <div class="muted">{{ formatDateTime(commit.created_at) }}</div>

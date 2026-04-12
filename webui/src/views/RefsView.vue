@@ -1,6 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
+import {
+  CollectionTag,
+  Connection,
+  Delete,
+  Plus,
+  RefreshLeft
+} from "@element-plus/icons-vue";
 import { useRouter } from "vue-router";
 
 import { createBranchRef, createTagRef, deleteBranchRef, deleteTagRef, mergeRevision, resetBranchRef } from "@/api/client";
@@ -221,15 +228,35 @@ async function handleResetCurrentBranch() {
         :closable="false"
         :title="writeError"
       />
-      <div v-if="canWrite" class="app-shell__meta" style="margin-bottom: 18px;">
-        <el-button :loading="writing" type="primary" plain @click="handleCreateBranch">
+      <div v-if="canWrite" class="refs-toolbar" style="margin-bottom: 18px;">
+        <el-button
+          data-testid="refs-action-create-branch"
+          class="refs-toolbar__button"
+          :icon="Plus"
+          :loading="writing"
+          type="primary"
+          plain
+          @click="handleCreateBranch"
+        >
           New Branch
         </el-button>
-        <el-button :loading="writing" plain @click="handleCreateTag">
+        <el-button
+          data-testid="refs-action-create-tag"
+          class="refs-toolbar__button"
+          :icon="CollectionTag"
+          :loading="writing"
+          type="success"
+          plain
+          @click="handleCreateTag"
+        >
           New Tag
         </el-button>
         <el-button
+          data-testid="refs-action-merge"
+          class="refs-toolbar__button"
+          :icon="Connection"
           :loading="writing"
+          type="warning"
           plain
           :disabled="!currentBranch"
           @click="handleMergeIntoCurrent"
@@ -237,7 +264,11 @@ async function handleResetCurrentBranch() {
           Merge Into Current
         </el-button>
         <el-button
+          data-testid="refs-action-reset"
+          class="refs-toolbar__button"
+          :icon="RefreshLeft"
           :loading="writing"
+          type="info"
           plain
           :disabled="!currentBranch"
           @click="handleResetCurrentBranch"
@@ -245,6 +276,9 @@ async function handleResetCurrentBranch() {
           Reset Current
         </el-button>
         <el-button
+          data-testid="refs-action-delete"
+          class="refs-toolbar__button"
+          :icon="Delete"
           :loading="writing"
           plain
           type="danger"
@@ -259,31 +293,25 @@ async function handleResetCurrentBranch() {
         :current-revision="props.revision"
         @select="handleSelect"
       />
-      <el-card
-        v-if="mergeResult"
-        class="surface"
-        body-style="padding: 18px;"
-        style="margin-top: 18px;"
-      >
+      <el-card v-if="mergeResult" class="surface" body-style="padding: 18px; margin-top: 18px;">
         <div class="surface__header">
           <div>
             <h3 class="surface__title">Latest Merge Result</h3>
-            <p class="surface__subtitle">
-              The most recent merge attempt executed from this page.
-            </p>
+            <p class="surface__subtitle">Server response from the most recent merge request.</p>
           </div>
-          <el-tag :type="mergeResult.status === 'conflict' ? 'danger' : 'success'" effect="plain">
-            {{ mergeResult.status }}
-          </el-tag>
         </div>
         <div class="kv-list">
           <div class="kv-row">
-            <span>Target</span>
-            <strong>{{ mergeResult.target_revision }}</strong>
+            <span>Status</span>
+            <strong>{{ mergeResult.status }}</strong>
           </div>
           <div class="kv-row">
-            <span>Source</span>
+            <span>Source revision</span>
             <strong>{{ mergeResult.source_revision }}</strong>
+          </div>
+          <div class="kv-row">
+            <span>Target revision</span>
+            <strong>{{ mergeResult.target_revision }}</strong>
           </div>
           <div class="kv-row">
             <span>Conflicts</span>
