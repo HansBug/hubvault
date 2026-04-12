@@ -31,7 +31,6 @@ _DOC_PATH = os.path.dirname(os.path.abspath(__file__))
 _PROJ_PATH = os.path.abspath(os.path.join(_DOC_PATH, '..', '..'))
 _LIBS_PATH = os.path.join(_DOC_PATH, '_libs')
 _SHIMS_PATH = os.path.join(_DOC_PATH, '_shims')
-_ON_READTHEDOCS = os.environ.get('READTHEDOCS', '').lower() == 'true'
 os.chdir(_PROJ_PATH)
 
 # Set environment, remove the pre-installed package
@@ -52,33 +51,30 @@ if not os.environ.get("NO_CONTENTS_BUILD"):
         )
     )
 
-    if _ON_READTHEDOCS:
-        print("Read the Docs environment detected, skipping project-level build bootstrap.")
-    else:
-        if os.path.exists(os.path.join(_PROJ_PATH, 'requirements-build.txt')):
-            pip_build_cmd = (where.first('pip'), 'install', '-r', os.path.join(_PROJ_PATH, 'requirements-build.txt'))
-            print("Install pip requirements {cmd}...".format(cmd=repr(pip_build_cmd)))
-            pip_build = Popen(pip_build_cmd, stdout=sys.stdout, stderr=sys.stderr, env=_env, cwd=_PROJ_PATH)
-            if pip_build.wait() != 0:
-                raise ChildProcessError("Pip install failed with %d." % (pip_build.returncode,))
+    if os.path.exists(os.path.join(_PROJ_PATH, 'requirements-build.txt')):
+        pip_build_cmd = (where.first('pip'), 'install', '-r', os.path.join(_PROJ_PATH, 'requirements-build.txt'))
+        print("Install pip requirements {cmd}...".format(cmd=repr(pip_build_cmd)))
+        pip_build = Popen(pip_build_cmd, stdout=sys.stdout, stderr=sys.stderr, env=_env, cwd=_PROJ_PATH)
+        if pip_build.wait() != 0:
+            raise ChildProcessError("Pip install failed with %d." % (pip_build.returncode,))
 
-            make_build_cmd = (where.first('make'), 'clean', 'build')
-            print("Try building extensions {cmd}...".format(cmd=repr(make_build_cmd)))
-            make_build = Popen(make_build_cmd, stdout=sys.stdout, stderr=sys.stderr, env=_env, cwd=_PROJ_PATH)
-            if make_build.wait() != 0:
-                raise ChildProcessError("Extension build failed with %d." % (make_build.returncode,))
+        make_build_cmd = (where.first('make'), 'clean', 'build')
+        print("Try building extensions {cmd}...".format(cmd=repr(make_build_cmd)))
+        make_build = Popen(make_build_cmd, stdout=sys.stdout, stderr=sys.stderr, env=_env, cwd=_PROJ_PATH)
+        if make_build.wait() != 0:
+            raise ChildProcessError("Extension build failed with %d." % (make_build.returncode,))
 
-        pip_cmd = (where.first('pip'), 'install', '-r', os.path.join(_PROJ_PATH, 'requirements.txt'))
-        print("Install pip requirements {cmd}...".format(cmd=repr(pip_cmd)))
-        pip = Popen(pip_cmd, stdout=sys.stdout, stderr=sys.stderr, env=_env, cwd=_DOC_PATH)
-        if pip.wait() != 0:
-            raise ChildProcessError("Pip install failed with %d." % (pip.returncode,))
+    pip_cmd = (where.first('pip'), 'install', '-r', os.path.join(_PROJ_PATH, 'requirements.txt'))
+    print("Install pip requirements {cmd}...".format(cmd=repr(pip_cmd)))
+    pip = Popen(pip_cmd, stdout=sys.stdout, stderr=sys.stderr, env=_env, cwd=_DOC_PATH)
+    if pip.wait() != 0:
+        raise ChildProcessError("Pip install failed with %d." % (pip.returncode,))
 
-        pip_docs_cmd = (where.first('pip'), 'install', '-r', os.path.join(_PROJ_PATH, 'requirements-doc.txt'))
-        print("Install pip docs requirements {cmd}...".format(cmd=repr(pip_docs_cmd)))
-        pip_docs = Popen(pip_docs_cmd, stdout=sys.stdout, stderr=sys.stderr, env=_env, cwd=_DOC_PATH)
-        if pip_docs.wait() != 0:
-            raise ChildProcessError("Pip docs install failed with %d." % (pip.returncode,))
+    pip_docs_cmd = (where.first('pip'), 'install', '-r', os.path.join(_PROJ_PATH, 'requirements-doc.txt'))
+    print("Install pip docs requirements {cmd}...".format(cmd=repr(pip_docs_cmd)))
+    pip_docs = Popen(pip_docs_cmd, stdout=sys.stdout, stderr=sys.stderr, env=_env, cwd=_DOC_PATH)
+    if pip_docs.wait() != 0:
+        raise ChildProcessError("Pip docs install failed with %d." % (pip.returncode,))
 
     all_cmd = (where.first('make'), '-f', "all.mk", "build")
     print("Building all {cmd} at {cp}...".format(cmd=repr(all_cmd), cp=repr(_DOC_PATH)))
