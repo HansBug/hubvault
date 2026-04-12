@@ -20,6 +20,7 @@ hubvault.server
     schemas
     serde
     static/index
+    uploads
 
 \_\_all\_\_
 -----------------------------------------------------

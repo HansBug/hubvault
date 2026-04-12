@@ -1,8 +1,8 @@
 .PHONY: help docs docs_en docs_zh pdocs rst_auto test unittest benchmark benchmark_smoke benchmark_standard benchmark_phase9 benchmark_phase9_smoke benchmark_phase9_standard benchmark_phase9_pressure benchmark_phase12 benchmark_phase12_raw benchmark_phase12_summary benchmark_phase12_smoke benchmark_phase12_standard benchmark_phase12_nightly benchmark_phase12_pressure benchmark_compare benchmark_phase12_compare build test_cli package clean webui_install webui_test webui_coverage webui_e2e webui_build webui_sync webui_package webui_check webui_clean
 
 PYTHON := $(shell [ -x ./venv/bin/python ] && printf '%s' ./venv/bin/python || which python)
-SPHINXBUILD ?= $(shell which sphinx-build)
-SPHINXMULTIVERSION ?= $(shell which sphinx-multiversion)
+SPHINXBUILD ?= $(shell [ -x ./venv/bin/sphinx-build ] && printf '%s' ./venv/bin/sphinx-build || which sphinx-build)
+SPHINXMULTIVERSION ?= $(shell [ -x ./venv/bin/sphinx-multiversion ] && printf '%s' ./venv/bin/sphinx-multiversion || which sphinx-multiversion)
 
 PROJECT_NAME := hubvault
 PROJ_DIR     := .

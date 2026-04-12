@@ -1471,11 +1471,11 @@ Phase 6 前端建议拆成以下复用组件：
 
 ### Todo
 
-* [ ] 更新 `README.md`、`README_zh.md`，补 `serve`、`frontend` 模式、`HubVaultRemoteApi` 示例。
-* [ ] 更新 docs，补 service / remote / web UI 使用说明。
-* [ ] 在 README / docs 中明确 base install、`hubvault[api]`、`hubvault[remote]`、`hubvault[full]` 的安装与缺依赖报错语义。
-* [ ] 如涉及公开模块和 docstring，执行 `make rst_auto`。
-* [ ] 跑并记录：
+* [x] 更新 `README.md`、`README_zh.md`，补 `serve`、`frontend` 模式、`HubVaultRemoteApi` 示例。
+* [x] 更新 docs，补 service / remote / web UI 使用说明。
+* [x] 在 README / docs 中明确 base install、`hubvault[api]`、`hubvault[remote]`、`hubvault[full]` 的安装与缺依赖报错语义。
+* [x] 如涉及公开模块和 docstring，执行 `make rst_auto`。
+* [x] 跑并记录：
   - base install 下的 `make unittest`
   - full install 下的 `make unittest`
   - `make package`
@@ -1483,13 +1483,39 @@ Phase 6 前端建议拆成以下复用组件：
   - `make test_cli`
   - `cd webui && npm run test`
   - `cd webui && npm run build`
-* [ ] 检查 sdist / wheel / 可执行文件都包含前端资源。
-* [ ] 检查基础安装环境下 `import hubvault`、现有 CLI 与默认 unittest 收集保持稳定。
-* [ ] 补充发布注意事项，明确前端构建和静态资源同步流程。
+* [x] 检查 sdist / wheel / 可执行文件都包含前端资源。
+* [x] 检查基础安装环境下 `import hubvault`、现有 CLI 与默认 unittest 收集保持稳定。
+* [x] 补充发布注意事项，明确前端构建和静态资源同步流程。
 
 ### Checklist
 
-* [ ] 用户可以通过同一个 `hubvault` PyPI 包安装本地、API、remote 全部能力。
-* [ ] 用户可以通过同一个可执行文件启动 `api` 或 `frontend` 模式。
-* [ ] 文档、CLI help、README、实际行为保持一致。
-* [ ] 回归命令均实际跑过并有记录。
+* [x] 用户可以通过同一个 `hubvault` PyPI 包安装本地、API、remote 全部能力。
+* [x] 用户可以通过同一个可执行文件启动 `api` 或 `frontend` 模式。
+* [x] 文档、CLI help、README、实际行为保持一致。
+* [x] 回归命令均实际跑过并有记录。
+
+### Validation Record
+
+* [x] base install 验证使用临时环境 `build/phase10-base-venv`：
+  - `python -m pip install -r requirements-test.txt .`
+  - `import hubvault` 正常，`fastapi` / `httpx` 不存在，`hubvault -h` 正常。
+  - `hubvault.server.create_app(...)` 与 `HubVaultRemoteApi(...).build_client()` 均按预期抛出 `MissingOptionalDependencyError`，安装提示分别指向 `hubvault[api]` 与 `hubvault[remote]`。
+  - `make unittest PYTHON=./build/phase10-base-venv/bin/python` -> `232 passed, 59 skipped, 23 deselected in 92.94s`
+* [x] full install 验证使用本地 `./venv`：
+  - `python -m pip install -e '.[full]' -r requirements-test.txt`
+  - `make unittest` -> `290 passed, 1 skipped, 23 deselected in 172.11s`
+* [x] 文档与 API rst：
+  - `make rst_auto`
+  - `make docs_en`
+  - `make docs_zh`
+  - 两套 HTML 均成功构建；当前仍存在若干既有 autodoc warning，但本 phase 新增文档项已无 Sphinx error。
+* [x] 前端与浏览器验收：
+  - `cd webui && npm run test` -> `33 passed`, 总覆盖率 `96.73%`
+  - `cd webui && npm run build`
+  - `cd webui && npm run test:e2e` -> `3 passed`
+* [x] 打包与独立可执行文件：
+  - `make package`
+  - `python -m zipfile -l dist/hubvault-0.0.2-py3-none-any.whl | rg 'hubvault/server/static/webui/'`
+  - `tar -tf dist/hubvault-0.0.2.tar.gz | rg 'hubvault-0.0.2/hubvault/server/static/webui/'`
+  - `make build`
+  - `make test_cli` -> 内置可执行文件完成 `version/help/init/status/branch/tag/ls-tree/download/log/serve frontend` 全链路 smoke

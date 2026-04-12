@@ -92,9 +92,12 @@ If you are new to the project, the best order is:
 1. read :doc:`tutorials/installation/index`
 2. work through :doc:`tutorials/quick_start/index`
 3. continue with :doc:`tutorials/workflow/index` for branches, tags, and merge behavior
-4. use :doc:`tutorials/cli/index` if you prefer a command-line workflow
-5. study :doc:`tutorials/maintenance/index` before operating large long-lived repositories
-6. read :doc:`tutorials/structure/index` when you need to understand storage layout and safety design
+4. read :doc:`tutorials/service/index` when you want the embedded HTTP server or ASGI deployment
+5. continue with :doc:`tutorials/remote/index` for the Python remote client
+6. use :doc:`tutorials/webui/index` for the bundled browser UI
+7. use :doc:`tutorials/cli/index` if you prefer a command-line workflow
+8. study :doc:`tutorials/maintenance/index` before operating large long-lived repositories
+9. read :doc:`tutorials/structure/index` when you need to understand storage layout and safety design
 
 Tutorials
 ---------
@@ -107,6 +110,9 @@ Tutorials
     tutorials/installation/index
     tutorials/quick_start/index
     tutorials/workflow/index
+    tutorials/service/index
+    tutorials/remote/index
+    tutorials/webui/index
     tutorials/cli/index
     tutorials/maintenance/index
     tutorials/structure/index
@@ -117,6 +123,12 @@ Tutorials
   Create a repo, make commits, read files, and understand detached download/snapshot views.
 * :doc:`tutorials/workflow/index`
   Work with branches, tags, merge results, commit history, and reflog inspection.
+* :doc:`tutorials/service/index`
+  Start the embedded HTTP server, use the import-friendly server module, and deploy the ASGI app.
+* :doc:`tutorials/remote/index`
+  Use :class:`hubvault.remote.HubVaultRemoteApi` against a running server.
+* :doc:`tutorials/webui/index`
+  Operate the bundled browser UI, upload queue, and packaged static frontend flow.
 * :doc:`tutorials/cli/index`
   Use the git-like CLI without assuming Git's mutable workspace model.
 * :doc:`tutorials/maintenance/index`

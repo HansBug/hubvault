@@ -53,6 +53,32 @@ form so you know exactly where the package is installed:
 
     python -m pip install hubvault
 
+Choose extras only when you need the optional HTTP-facing surfaces:
+
+.. list-table::
+    :header-rows: 1
+
+    * - Install target
+      - Command
+      - Main capability
+    * - Base local repository
+      - ``pip install hubvault``
+      - local API, local CLI, embedded repo runtime
+    * - Embedded server + web UI
+      - ``pip install 'hubvault[api]'``
+      - ``hubvault serve`` and :mod:`hubvault.server`
+    * - Remote client
+      - ``pip install 'hubvault[remote]'``
+      - :class:`hubvault.remote.HubVaultRemoteApi`
+    * - Everything
+      - ``pip install 'hubvault[full]'``
+      - local + server + remote surfaces
+
+The base install remains valid for local repositories. Optional integrations
+use delayed imports, so ``import hubvault`` still works in a base environment.
+You only see a dependency error when you actually call an optional server or
+remote feature.
+
 Install from the development branch
 -----------------------------------
 
@@ -83,6 +109,19 @@ First verify that Python can import the package and see the main public class:
 
 If this fails, fix the Python environment before debugging the CLI. The most
 common cause is installing into one interpreter and running another one.
+
+You can also verify the lazy optional-dependency behavior explicitly:
+
+.. code-block:: python
+
+    from hubvault.optional import MissingOptionalDependencyError
+    from hubvault.server import create_app
+
+    try:
+        create_app(repo_path="demo-repo", token_rw=("dev-token",))
+    except MissingOptionalDependencyError as err:
+        print(err)
+        # ... requires optional dependencies from 'hubvault[api]' ...
 
 Verify the CLI
 --------------

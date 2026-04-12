@@ -54,6 +54,42 @@ encode\_git\_commit\_list
 .. autofunction:: encode_git_commit_list
 
 
+encode\_commit\_file\_version\_info
+-----------------------------------------------------
+
+.. autofunction:: encode_commit_file_version_info
+
+
+encode\_commit\_change\_info
+-----------------------------------------------------
+
+.. autofunction:: encode_commit_change_info
+
+
+encode\_commit\_detail\_info
+-----------------------------------------------------
+
+.. autofunction:: encode_commit_detail_info
+
+
+encode\_commit\_info
+-----------------------------------------------------
+
+.. autofunction:: encode_commit_info
+
+
+encode\_merge\_conflict
+-----------------------------------------------------
+
+.. autofunction:: encode_merge_conflict
+
+
+encode\_merge\_result
+-----------------------------------------------------
+
+.. autofunction:: encode_merge_result
+
+
 encode\_git\_ref\_info
 -----------------------------------------------------
 
@@ -76,6 +112,42 @@ encode\_reflog\_entries
 -----------------------------------------------------
 
 .. autofunction:: encode_reflog_entries
+
+
+encode\_verify\_report
+-----------------------------------------------------
+
+.. autofunction:: encode_verify_report
+
+
+encode\_storage\_section\_info
+-----------------------------------------------------
+
+.. autofunction:: encode_storage_section_info
+
+
+encode\_storage\_summary
+-----------------------------------------------------
+
+.. autofunction:: encode_storage_summary
+
+
+encode\_storage\_overview
+-----------------------------------------------------
+
+.. autofunction:: encode_storage_overview
+
+
+encode\_gc\_report
+-----------------------------------------------------
+
+.. autofunction:: encode_gc_report
+
+
+encode\_squash\_report
+-----------------------------------------------------
+
+.. autofunction:: encode_squash_report
 
 
 build\_snapshot\_plan\_payload

@@ -2,8 +2,8 @@
 # from the environment for the first two.
 PROJ_DIR           ?= ${CURDIR}
 SPHINXOPTS         ?=
-SPHINXBUILD        ?= $(shell which sphinx-build)
-SPHINXMULTIVERSION ?= $(shell which sphinx-multiversion)
+SPHINXBUILD        ?= $(shell [ -x ../venv/bin/sphinx-build ] && printf '%s' ../venv/bin/sphinx-build || which sphinx-build)
+SPHINXMULTIVERSION ?= $(shell [ -x ../venv/bin/sphinx-multiversion ] && printf '%s' ../venv/bin/sphinx-multiversion || which sphinx-multiversion)
 SOURCEDIR          ?= ${PROJ_DIR}/source
 BUILDDIR           ?= ${PROJ_DIR}/build
 

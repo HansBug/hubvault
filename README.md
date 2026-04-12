@@ -22,6 +22,31 @@ Install from PyPI:
 pip install hubvault
 ```
 
+Choose an extra only when you need the HTTP server or remote client:
+
+| Install target | Command | What it enables |
+| --- | --- | --- |
+| Base local repository | `pip install hubvault` | Local Python API, CLI, embedded repo format |
+| Embedded HTTP server + web UI | `pip install 'hubvault[api]'` | `hubvault serve`, `python -m hubvault.server`, FastAPI app factory |
+| Remote HTTP client | `pip install 'hubvault[remote]'` | `hubvault.remote.HubVaultRemoteApi` |
+| Everything | `pip install 'hubvault[full]'` | Local repo + server + remote client |
+
+The base install remains fully usable for local repositories. Optional features
+fail lazily: importing `hubvault` still works, and a server or remote feature
+raises `MissingOptionalDependencyError` only when you actually try to use it.
+
+```python
+from hubvault.optional import MissingOptionalDependencyError
+from hubvault.server import create_app
+
+try:
+    create_app(repo_path="demo-repo", token_rw=("dev-token",))
+except MissingOptionalDependencyError as err:
+    print(err)
+    # hubvault server app factory requires optional dependencies from
+    # 'hubvault[api]'. Install them with 'pip install hubvault[api]'. ...
+```
+
 Create a local repository, commit files, read them back, and materialize detached download views:
 
 ```python
@@ -71,6 +96,126 @@ hubvault -C demo-repo verify
 ```
 
 `hubvault` and `hv` point to the same CLI entry point. Current commands include `init`, `commit`, `branch`, `tag`, `merge`, `log`, `ls-tree`, `download`, `snapshot`, `verify`, `reset`, and `status`.
+
+## Serve the Repository
+
+Install the API extra when you want an HTTP endpoint or the bundled web UI:
+
+```bash
+pip install 'hubvault[api]'
+```
+
+Quick-start the embedded server from the CLI. The default mode is `frontend`,
+which serves both the JSON API and the bundled browser UI on port `9472`:
+
+```bash
+hubvault serve demo-repo \
+  --init \
+  --token-rw dev-token
+
+# browser UI: http://127.0.0.1:9472/
+```
+
+Switch to API-only mode when you want a smaller surface and the generated API
+docs at `/docs`:
+
+```bash
+hubvault serve demo-repo \
+  --mode api \
+  --init \
+  --token-ro read-token \
+  --token-rw write-token
+
+# openapi docs: http://127.0.0.1:9472/docs
+```
+
+The same runtime is also available as a module entry point:
+
+```bash
+python -m hubvault.server demo-repo \
+  --mode frontend \
+  --init \
+  --token-rw dev-token
+```
+
+For import-based startup, use the first-level `hubvault.server` module:
+
+```python
+from pathlib import Path
+
+from hubvault.server import SERVER_MODE_FRONTEND, ServerConfig, launch
+
+config = ServerConfig(
+    repo_path=Path("demo-repo"),
+    mode=SERVER_MODE_FRONTEND,
+    token_rw=("dev-token",),
+    init=True,
+)
+launch(config)
+```
+
+The ASGI factory is import-friendly as well. `uvicorn` can load it directly via
+the standard application-factory flow:
+
+```bash
+export HUBVAULT_REPO_PATH=./demo-repo
+export HUBVAULT_SERVE_MODE=frontend
+export HUBVAULT_TOKEN_RW=dev-token
+
+uvicorn --factory hubvault.server.asgi:create_app \
+  --host 127.0.0.1 \
+  --port 9472
+```
+
+If you deploy through Gunicorn, use Gunicorn's application-factory form
+together with an ASGI worker:
+
+```bash
+export HUBVAULT_REPO_PATH=./demo-repo
+export HUBVAULT_SERVE_MODE=frontend
+export HUBVAULT_TOKEN_RW=dev-token
+
+gunicorn \
+  --bind 127.0.0.1:9472 \
+  --workers 2 \
+  -k uvicorn.workers.UvicornWorker \
+  'hubvault.server.asgi:create_app()'
+```
+
+## Remote Client
+
+Install the remote extra when you want an HF-style client against a running
+server:
+
+```bash
+pip install 'hubvault[remote]'
+```
+
+Then point `HubVaultRemoteApi` at the server root URL:
+
+```python
+from hubvault.remote import HubVaultRemoteApi
+
+api = HubVaultRemoteApi("http://127.0.0.1:9472/api/v1", token="dev-token")
+
+repo = api.repo_info()
+print(repo.default_branch)
+
+api.upload_file(
+    path_or_fileobj=b"remote-weights-v1",
+    path_in_repo="artifacts/model.bin",
+    commit_message="upload model through remote api",
+    show_progress=True,
+)
+
+print(api.list_repo_tree(recursive=True))
+print(api.read_bytes("artifacts/model.bin"))
+```
+
+The browser UI accepts the same bearer tokens. For ad-hoc local usage, you can
+also open a direct tokenized link such as
+`http://127.0.0.1:9472/repo/overview?token=dev-token`, and the frontend will
+consume the token and immediately redirect to the normal route.
 
 ## What hubvault Is For
 
@@ -240,6 +385,20 @@ Current non-goals:
 - Contribution guide: [CONTRIBUTING.md](CONTRIBUTING.md)
 - Repository collaboration rules: [AGENTS.md](AGENTS.md)
 - Benchmark records: [build/benchmark/](build/benchmark/)
+
+## Build and Release Notes
+
+The packaged frontend is part of the same Python distribution and the same
+standalone executable. The maintained build flow is:
+
+1. Run `make webui_package` to build `webui/dist/` and sync it into `hubvault/server/static/webui/`.
+2. Run `make package` to produce sdist and wheel artifacts that already contain the synced static files.
+3. Run `make build` to produce the standalone executable with the same bundled frontend.
+
+`make package` and `make build` already depend on the frontend packaging step,
+so the normal release path does not require manual copying. The sync rule is
+still useful when you want to inspect or commit the generated static assets
+explicitly.
 
 ## Project Status
 

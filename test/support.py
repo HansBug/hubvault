@@ -88,6 +88,7 @@ def seed_phase78_repo(repo_dir: Path):
 
 
 def create_phase45_app(repo_dir: Path):
+    pytest.importorskip("fastapi")
     return create_app(
         ServerConfig(
             repo_path=repo_dir,

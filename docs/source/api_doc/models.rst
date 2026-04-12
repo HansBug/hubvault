@@ -41,6 +41,27 @@ GitCommitInfo
     :members: commit_id,authors,created_at,title,message,formatted_title,formatted_message
 
 
+CommitFileVersionInfo
+-----------------------------------------------------
+
+.. autoclass:: CommitFileVersionInfo
+    :members: path,size,oid,blob_id,sha256
+
+
+CommitChangeInfo
+-----------------------------------------------------
+
+.. autoclass:: CommitChangeInfo
+    :members: path,change_type,old_file,new_file,is_binary,unified_diff
+
+
+CommitDetailInfo
+-----------------------------------------------------
+
+.. autoclass:: CommitDetailInfo
+    :members: commit,parent_commit_ids,compare_parent_commit_id,changes
+
+
 GitRefInfo
 -----------------------------------------------------
 

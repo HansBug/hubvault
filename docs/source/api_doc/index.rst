@@ -9,13 +9,13 @@ hubvault
 .. toctree::
     :maxdepth: 3
 
-    optional
     api
     config/index
     entry/index
     errors
     models
     operations
+    optional
     remote/index
     repo/index
     server/index
@@ -25,4 +25,5 @@ hubvault
 -----------------------------------------------------
 
 .. autodata:: __all__
+
 

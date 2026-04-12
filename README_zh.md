@@ -22,6 +22,31 @@
 pip install hubvault
 ```
 
+只有在你需要 HTTP server 或 remote client 时，才额外安装对应 extras：
+
+| 安装目标 | 命令 | 启用能力 |
+| --- | --- | --- |
+| 本地仓库基础能力 | `pip install hubvault` | 本地 Python API、CLI、embedded repo |
+| 内建 HTTP server + web UI | `pip install 'hubvault[api]'` | `hubvault serve`、`python -m hubvault.server`、FastAPI app factory |
+| Remote HTTP client | `pip install 'hubvault[remote]'` | `hubvault.remote.HubVaultRemoteApi` |
+| 全量能力 | `pip install 'hubvault[full]'` | 本地仓库 + server + remote client |
+
+基础安装仍然可以完整使用本地仓库能力。可选功能采用 lazy failure：
+`import hubvault` 不会因为缺 extras 而直接失败，只有当你真的调用 server 或
+remote 能力时，才会抛出 `MissingOptionalDependencyError`。
+
+```python
+from hubvault.optional import MissingOptionalDependencyError
+from hubvault.server import create_app
+
+try:
+    create_app(repo_path="demo-repo", token_rw=("dev-token",))
+except MissingOptionalDependencyError as err:
+    print(err)
+    # hubvault server app factory requires optional dependencies from
+    # 'hubvault[api]'. Install them with 'pip install hubvault[api]'. ...
+```
+
 创建本地仓库、提交文件、读取文件，并拿到安全的 detached download view:
 
 ```python
@@ -71,6 +96,124 @@ hubvault -C demo-repo verify
 ```
 
 `hubvault` 和 `hv` 指向同一个 CLI 入口。当前命令面包括 `init`、`commit`、`branch`、`tag`、`merge`、`log`、`ls-tree`、`download`、`snapshot`、`verify`、`reset`、`status`。
+
+## 启动服务端
+
+当你需要 HTTP API 或内建 web UI 时，安装 API extra：
+
+```bash
+pip install 'hubvault[api]'
+```
+
+CLI 下可直接快速启动内建服务。默认模式是 `frontend`，会同时提供 JSON API 和
+浏览器界面，默认端口是 `9472`：
+
+```bash
+hubvault serve demo-repo \
+  --init \
+  --token-rw dev-token
+
+# 浏览器界面: http://127.0.0.1:9472/
+```
+
+如果你只想暴露 API，并保留 `/docs` 下的接口文档，可以切到 `api` 模式：
+
+```bash
+hubvault serve demo-repo \
+  --mode api \
+  --init \
+  --token-ro read-token \
+  --token-rw write-token
+
+# OpenAPI 文档: http://127.0.0.1:9472/docs
+```
+
+同一套运行时也支持模块方式启动：
+
+```bash
+python -m hubvault.server demo-repo \
+  --mode frontend \
+  --init \
+  --token-rw dev-token
+```
+
+如果你希望像普通 Python 模块一样导入启动，直接使用一级模块
+`hubvault.server`：
+
+```python
+from pathlib import Path
+
+from hubvault.server import SERVER_MODE_FRONTEND, ServerConfig, launch
+
+config = ServerConfig(
+    repo_path=Path("demo-repo"),
+    mode=SERVER_MODE_FRONTEND,
+    token_rw=("dev-token",),
+    init=True,
+)
+launch(config)
+```
+
+ASGI factory 也支持标准导入式部署。`uvicorn` 可以直接走 application
+factory 模式：
+
+```bash
+export HUBVAULT_REPO_PATH=./demo-repo
+export HUBVAULT_SERVE_MODE=frontend
+export HUBVAULT_TOKEN_RW=dev-token
+
+uvicorn --factory hubvault.server.asgi:create_app \
+  --host 127.0.0.1 \
+  --port 9472
+```
+
+如果你使用 Gunicorn，可以配合 ASGI worker 走 Gunicorn 的 application
+factory 语法：
+
+```bash
+export HUBVAULT_REPO_PATH=./demo-repo
+export HUBVAULT_SERVE_MODE=frontend
+export HUBVAULT_TOKEN_RW=dev-token
+
+gunicorn \
+  --bind 127.0.0.1:9472 \
+  --workers 2 \
+  -k uvicorn.workers.UvicornWorker \
+  'hubvault.server.asgi:create_app()'
+```
+
+## Remote Client
+
+如果你要从另一个 Python 进程访问运行中的服务端，安装 remote extra：
+
+```bash
+pip install 'hubvault[remote]'
+```
+
+然后把 `HubVaultRemoteApi` 指到服务端 URL：
+
+```python
+from hubvault.remote import HubVaultRemoteApi
+
+api = HubVaultRemoteApi("http://127.0.0.1:9472/api/v1", token="dev-token")
+
+repo = api.repo_info()
+print(repo.default_branch)
+
+api.upload_file(
+    path_or_fileobj=b"remote-weights-v1",
+    path_in_repo="artifacts/model.bin",
+    commit_message="upload model through remote api",
+    show_progress=True,
+)
+
+print(api.list_repo_tree(recursive=True))
+print(api.read_bytes("artifacts/model.bin"))
+```
+
+浏览器前端也使用同一套 bearer token。临时本地使用时，也可以直接打开类似
+`http://127.0.0.1:9472/repo/overview?token=dev-token` 这样的链接，前端会先
+消费 token，然后自动跳转到正常页面路径。
 
 ## 它适合什么
 
@@ -240,6 +383,18 @@ repo/
 - 贡献指南: [CONTRIBUTING.md](CONTRIBUTING.md)
 - 仓库协作规范: [AGENTS.md](AGENTS.md)
 - Benchmark 记录: [build/benchmark/](build/benchmark/)
+
+## 构建与发布说明
+
+前端静态资源是同一个 Python 包、同一个独立可执行文件的一部分。维护中的构建
+流程如下：
+
+1. 运行 `make webui_package`，构建 `webui/dist/` 并同步到 `hubvault/server/static/webui/`。
+2. 运行 `make package`，产出已经带有这些静态资源的 sdist 和 wheel。
+3. 运行 `make build`，产出带有同一套前端资源的独立可执行文件。
+
+`make package` 和 `make build` 已经依赖前端打包步骤，所以正常发布路径不需要
+手工复制文件；单独保留 sync 流程，是为了本地检查或显式提交静态资源时更方便。
 
 ## 项目状态
 

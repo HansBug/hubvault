@@ -1,7 +1,6 @@
 import io
 from pathlib import Path
 
-import fastapi
 import pytest
 
 from hubvault import CommitOperationAdd, CommitOperationCopy, CommitOperationDelete
@@ -255,6 +254,7 @@ class TestRemoteApi:
         assert seeded["api"].read_bytes("docs/tqdm-missing.txt") == b"progress without tqdm\n"
 
     def test_remote_create_commit_rejects_invalid_upload_plans_from_the_server(self, monkeypatch):
+        fastapi = pytest.importorskip("fastapi")
         app = fastapi.FastAPI()
 
         @app.post("/api/v1/write/commit-plan")

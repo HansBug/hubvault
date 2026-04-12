@@ -84,9 +84,12 @@ hubvault 也保留了自身的本地语义：
 1. :doc:`tutorials/installation/index_zh`
 2. :doc:`tutorials/quick_start/index_zh`
 3. :doc:`tutorials/workflow/index_zh`
-4. :doc:`tutorials/cli/index_zh`
-5. :doc:`tutorials/maintenance/index_zh`
-6. :doc:`tutorials/structure/index_zh`
+4. :doc:`tutorials/service/index_zh`
+5. :doc:`tutorials/remote/index_zh`
+6. :doc:`tutorials/webui/index_zh`
+7. :doc:`tutorials/cli/index_zh`
+8. :doc:`tutorials/maintenance/index_zh`
+9. :doc:`tutorials/structure/index_zh`
 
 文档导航
 --------
@@ -99,6 +102,9 @@ hubvault 也保留了自身的本地语义：
     tutorials/installation/index_zh
     tutorials/quick_start/index_zh
     tutorials/workflow/index_zh
+    tutorials/service/index_zh
+    tutorials/remote/index_zh
+    tutorials/webui/index_zh
     tutorials/cli/index_zh
     tutorials/maintenance/index_zh
     tutorials/structure/index_zh
@@ -109,6 +115,12 @@ hubvault 也保留了自身的本地语义：
   通过一条最短真实路径创建仓库、写 commit、读取文件、理解 detached 下载视图。
 * :doc:`tutorials/workflow/index_zh`
   理解 branch、tag、merge、提交历史以及 reflog 的公开用法。
+* :doc:`tutorials/service/index_zh`
+  启动内建 HTTP 服务端、使用可导入 server 模块，并部署 ASGI 应用。
+* :doc:`tutorials/remote/index_zh`
+  通过 :class:`hubvault.remote.HubVaultRemoteApi` 访问运行中的服务端。
+* :doc:`tutorials/webui/index_zh`
+  使用 bundled 浏览器前端、上传队列和静态资源打包流程。
 * :doc:`tutorials/cli/index_zh`
   用 git-like CLI 工作，但不误以为它具备 Git 的 mutable workspace。
 * :doc:`tutorials/maintenance/index_zh`

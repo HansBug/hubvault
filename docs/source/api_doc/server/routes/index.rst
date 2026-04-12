@@ -9,5 +9,11 @@ hubvault.server.routes
 .. toctree::
     :maxdepth: 3
 
+    content
+    history
+    maintenance
     meta
+    refs
+    repo
+    writes
 
