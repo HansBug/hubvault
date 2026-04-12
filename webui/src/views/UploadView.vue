@@ -152,11 +152,41 @@ function setUploadStatus(stage: UploadStage, title: string, message: string, pro
   }
 }
 
-function buildDefaultCommitMessage() {
-  return directoryPath.value
-    ? "Upload files to " + directoryPath.value + " with hubvault"
-    : "Upload files with hubvault";
+function shortenCommitMessagePath(value: string, maxLength = 32) {
+  const text = String(value || "");
+  if (text.length <= maxLength) {
+    return text;
+  }
+  const prefix = Math.max(12, Math.floor((maxLength - 3) / 2));
+  const suffix = Math.max(8, maxLength - prefix - 3);
+  return text.slice(0, prefix) + "..." + text.slice(-suffix);
 }
+
+const commitMessagePlaceholder = computed(function resolveCommitMessagePlaceholder() {
+  if (!queueEntries.value.length) {
+    return directoryPath.value
+      ? "Upload queued files to " + shortenCommitMessagePath(directoryPath.value, 40) + " with hubvault"
+      : "Upload queued files with hubvault";
+  }
+
+  const paths = queueEntries.value.map(function collectPath(item) {
+    return String(item.pathInRepo || "");
+  });
+  const visiblePaths = paths.slice(0, 2).map(function shortenVisiblePath(item) {
+    return shortenCommitMessagePath(item, 28);
+  });
+  const remainingCount = paths.length - visiblePaths.length;
+  const namedBatch = remainingCount > 0
+    ? visiblePaths.join(", ") + ", +" + String(remainingCount) + " more"
+    : visiblePaths.join(", ");
+  return "Upload "
+    + namedBatch
+    + " ("
+    + String(paths.length)
+    + " files, "
+    + formatBytes(queueBytes.value)
+    + ") with hubvault";
+});
 
 function buildUploadErrorMessage(uploadError) {
   const message = String((uploadError && uploadError.message) || "");
@@ -181,12 +211,6 @@ function clearUploadQueue() {
   resetUploadStatus();
 }
 
-function ensureCommitMessage() {
-  if (!String(commitMessage.value || "").trim()) {
-    commitMessage.value = buildDefaultCommitMessage();
-  }
-}
-
 function addQueueEntries(nextEntries) {
   const table = new Map(
     queueEntries.value.map(function pairItem(item) {
@@ -208,7 +232,6 @@ function addQueueEntries(nextEntries) {
   });
   lastPlanStatistics.value = null;
   resetUploadStatus();
-  ensureCommitMessage();
 }
 
 async function normalizeTargetDirectory() {
@@ -218,7 +241,6 @@ async function normalizeTargetDirectory() {
     const requestedPath = typeof route.query.path === "string" ? route.query.path.trim() : "";
     if (!requestedPath) {
       directoryPath.value = "";
-      ensureCommitMessage();
       return;
     }
 
@@ -234,7 +256,6 @@ async function normalizeTargetDirectory() {
     } else {
       directoryPath.value = requestedPath;
     }
-    ensureCommitMessage();
   } catch (loadError) {
     error.value = loadError.message || "Unable to prepare the upload workspace.";
   } finally {
@@ -393,7 +414,7 @@ async function submitUploadQueue() {
       }),
       updateManifestProgress
     );
-    const nextCommitMessage = String(commitMessage.value || "").trim() || buildDefaultCommitMessage();
+    const nextCommitMessage = String(commitMessage.value || "").trim() || commitMessagePlaceholder.value;
     const manifest = {
       revision: props.revision,
       commit_message: nextCommitMessage,
@@ -609,8 +630,9 @@ watch(
 
         <el-input
           v-model="commitMessage"
+          data-testid="upload-commit-message-input"
           :disabled="writing"
-          placeholder="Commit message for the queued upload batch"
+          :placeholder="commitMessagePlaceholder"
         />
 
         <div

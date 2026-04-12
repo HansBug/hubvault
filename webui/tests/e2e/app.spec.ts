@@ -33,6 +33,16 @@ test("readonly frontend supports token query entry plus standalone file and comm
     fullPage: true
   });
 
+  await page.getByRole("menuitem", { name: "Storage" }).click();
+  await expect(page.getByTestId("storage-view")).toBeVisible();
+  await expect(page.getByTestId("storage-status-title")).toHaveText("Storage analysis is on demand");
+  await page.getByRole("button", { name: "Load analysis" }).click();
+  await expect(page.getByTestId("storage-status-title")).toHaveText("Storage analysis ready");
+  await page.screenshot({
+    path: path.join(screenshotDir, "storage.png"),
+    fullPage: true
+  });
+
   await page.getByRole("menuitem", { name: "Files" }).click();
   await expect(page.getByTestId("files-view")).toBeVisible();
   await page.getByRole("button", { name: "src", exact: true }).click();
@@ -107,11 +117,18 @@ test("read-write frontend queues multiple uploads and commits them in one batch"
   await expect(page.getByText("notes.txt")).toBeVisible();
   await expect(page.getByText("second.txt")).toBeVisible();
 
-  await page.getByPlaceholder("Commit message for the queued upload batch").fill("upload from playwright");
+  const commitMessageInput = page.getByTestId("upload-commit-message-input");
+  await expect(commitMessageInput).toHaveAttribute(
+    "placeholder",
+    /Upload notes\.txt, second\.txt \(2 files, 24 B\) with hubvault/
+  );
   await page.getByRole("button", { name: "Commit Queued Uploads" }).click();
 
   await expect(page.getByTestId("files-view")).toBeVisible();
   await expect(page.getByTestId("upload-queue-panel")).toHaveCount(0);
   await page.getByRole("button", { name: "notes.txt", exact: true }).click();
   await expect(page.getByTestId("file-detail-view")).toContainText("rw upload");
+
+  await page.getByRole("menuitem", { name: "Commits" }).click();
+  await expect(page.getByText(/Upload notes\.txt, second\.txt/)).toBeVisible();
 });

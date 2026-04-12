@@ -5,6 +5,7 @@ const http = axios.create({
 });
 
 const WRITE_REQUEST_TIMEOUT = 0;
+const MAINTENANCE_REQUEST_TIMEOUT = 0;
 
 export interface UploadProgressEventPayload {
   loaded: number;
@@ -192,21 +193,24 @@ export function getCommitDetail(commitId, formatted) {
 export function getStorageOverview() {
   return request({
     method: "get",
-    url: "/api/v1/maintenance/storage-overview"
+    url: "/api/v1/maintenance/storage-overview",
+    timeout: MAINTENANCE_REQUEST_TIMEOUT
   });
 }
 
 export function runQuickVerify() {
   return request({
     method: "post",
-    url: "/api/v1/maintenance/quick-verify"
+    url: "/api/v1/maintenance/quick-verify",
+    timeout: MAINTENANCE_REQUEST_TIMEOUT
   });
 }
 
 export function runFullVerify() {
   return request({
     method: "post",
-    url: "/api/v1/maintenance/full-verify"
+    url: "/api/v1/maintenance/full-verify",
+    timeout: MAINTENANCE_REQUEST_TIMEOUT
   });
 }
 
@@ -320,7 +324,8 @@ export function runGc(payload) {
   return request({
     method: "post",
     url: "/api/v1/maintenance/gc",
-    data: payload || {}
+    data: payload || {},
+    timeout: MAINTENANCE_REQUEST_TIMEOUT
   });
 }
 
@@ -328,6 +333,7 @@ export function runSquashHistory(payload) {
   return request({
     method: "post",
     url: "/api/v1/maintenance/squash-history",
-    data: payload
+    data: payload,
+    timeout: MAINTENANCE_REQUEST_TIMEOUT
   });
 }

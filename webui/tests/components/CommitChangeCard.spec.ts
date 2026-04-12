@@ -20,6 +20,15 @@ vi.mock("@/components/ImageCompareViewer.vue", function mockImageCompareViewer()
   };
 });
 
+vi.mock("@/components/MediaCompareViewer.vue", function mockMediaCompareViewer() {
+  return {
+    default: {
+      props: ["kind", "oldMediaUrl", "newMediaUrl"],
+      template: "<div data-testid='media-compare-viewer-stub'>{{ kind }}|{{ oldMediaUrl }}|{{ newMediaUrl }}</div>"
+    }
+  };
+});
+
 import CommitChangeCard from "@/components/CommitChangeCard.vue";
 
 describe("CommitChangeCard", function suite() {
@@ -97,6 +106,47 @@ describe("CommitChangeCard", function suite() {
     );
     expect(wrapper.get("[data-testid='image-compare-viewer-stub']").text()).toContain(
       "/api/v1/content/blob/images/logo.png?revision=commit-2"
+    );
+    expect(wrapper.find("[data-testid='binary-metadata-panel']").exists()).toBe(false);
+  });
+
+  it("renders audio changes in the media comparison viewer without binary metadata", function testAudioChange() {
+    const wrapper = mount(CommitChangeCard, {
+      props: {
+        commitId: "commit-2",
+        compareParentCommitId: "commit-1",
+        change: {
+          path: "media/intro.wav",
+          change_type: "modified",
+          is_binary: true,
+          unified_diff: null,
+          old_file: {
+            path: "media/intro.wav",
+            size: 3200,
+            oid: "old-audio",
+            blob_id: "old-blob",
+            sha256: "old-audio-sha"
+          },
+          new_file: {
+            path: "media/intro.wav",
+            size: 4800,
+            oid: "new-audio",
+            blob_id: "new-blob",
+            sha256: "new-audio-sha"
+          }
+        }
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    expect(wrapper.get("[data-testid='media-compare-viewer-stub']").text()).toContain("audio");
+    expect(wrapper.get("[data-testid='media-compare-viewer-stub']").text()).toContain(
+      "/api/v1/content/blob/media/intro.wav?revision=commit-1"
+    );
+    expect(wrapper.get("[data-testid='media-compare-viewer-stub']").text()).toContain(
+      "/api/v1/content/blob/media/intro.wav?revision=commit-2"
     );
     expect(wrapper.find("[data-testid='binary-metadata-panel']").exists()).toBe(false);
   });

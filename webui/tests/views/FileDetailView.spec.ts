@@ -147,6 +147,36 @@ describe("FileDetailView", function suite() {
     });
   });
 
+  it("renders audio previews without fetching text bytes", async function testAudioDetail() {
+    fileDetailMocks.route.params.pathMatch = ["media", "intro.wav"];
+    fileDetailMocks.getPathsInfo.mockResolvedValue([
+      {
+        path: "media/intro.wav",
+        entry_type: "file",
+        size: 2048,
+        oid: "oid-3",
+        sha256: "sha-3",
+        blob_id: "blob-3",
+        etag: "etag-3",
+        last_commit: null
+      }
+    ]);
+
+    const wrapper = mount(FileDetailView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    expect(fileDetailMocks.getBlobBytes).not.toHaveBeenCalled();
+    expect(wrapper.get("audio").attributes("src")).toContain("/api/v1/content/blob/media/intro.wav?revision=release/v1");
+  });
+
   it("renders image previews without fetching text bytes", async function testImageDetail() {
     fileDetailMocks.route.params.pathMatch = ["images", "logo.png"];
     fileDetailMocks.getPathsInfo.mockResolvedValue([

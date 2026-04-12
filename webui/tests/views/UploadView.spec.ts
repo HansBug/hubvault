@@ -157,7 +157,7 @@ describe("UploadView", function suite() {
     });
   });
 
-  it("queues files across multiple additions and commits them from the dedicated upload page", async function testUploadQueue() {
+  it("uses an auto-generated placeholder commit message when the upload form stays blank", async function testUploadQueue() {
     const firstFile = new File(["hello"], "notes.txt", {
       type: "text/plain"
     });
@@ -215,14 +215,19 @@ describe("UploadView", function suite() {
     expect(wrapper.text()).toContain("docs/second.txt");
     expect(wrapper.text()).toContain("2 files queued");
 
-    await wrapper.get("input[placeholder='Commit message for the queued upload batch']").setValue("upload notes");
+    const autoMessage = "Upload docs/notes.txt, docs/second.txt (2 files, 11 B) with hubvault";
+    const commitInput = wrapper.get("[data-testid='upload-commit-message-input']");
+
+    expect((commitInput.element as HTMLInputElement).value).toBe("");
+    expect(commitInput.attributes("placeholder")).toBe(autoMessage);
+
     await findButtonByText(wrapper, "Commit Queued Uploads").trigger("click");
     await flushPromises();
     await flushPromises();
 
     expect(uploadViewMocks.planCommit).toHaveBeenCalledWith({
       revision: "release/v1",
-      commit_message: "upload notes",
+      commit_message: autoMessage,
       operations: [
         {
           type: "add",
@@ -244,7 +249,7 @@ describe("UploadView", function suite() {
       {
         revision: "release/v1",
         parent_commit: "base-1",
-        commit_message: "upload notes",
+        commit_message: autoMessage,
         operations: [
           {
             type: "add",

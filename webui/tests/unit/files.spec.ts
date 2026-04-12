@@ -3,10 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   buildBreadcrumbs,
   findReadmePath,
+  isAudioPath,
   isCodeLikePath,
   isImagePath,
   isMarkdownPath,
   isTextLikePath,
+  isVideoPath,
   naturalCompare,
   sortRepoEntries
 } from "@/utils/files";
@@ -20,6 +22,8 @@ describe("file helpers", function suite() {
   it("detects markdown and text-like paths", function testPathKinds() {
     expect(isMarkdownPath("README.md")).toBe(true);
     expect(isImagePath("images/logo.png")).toBe(true);
+    expect(isAudioPath("media/voice.wav")).toBe(true);
+    expect(isVideoPath("clips/demo.mp4")).toBe(true);
     expect(isTextLikePath("config.yaml")).toBe(true);
     expect(isCodeLikePath("src/app.py")).toBe(true);
     expect(isCodeLikePath("README.md")).toBe(false);

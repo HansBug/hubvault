@@ -10,10 +10,11 @@ import {
 } from "@element-plus/icons-vue";
 
 import { buildBlobUrl, buildDownloadUrl } from "@/api/client";
-import { isImagePath } from "@/utils/files";
+import { isAudioPath, isImagePath, isVideoPath } from "@/utils/files";
 import { formatBytes, shortOid } from "@/utils/format";
 import HtmlDiffViewer from "./HtmlDiffViewer.vue";
 import ImageCompareViewer from "./ImageCompareViewer.vue";
+import MediaCompareViewer from "./MediaCompareViewer.vue";
 
 const props = defineProps({
   change: {
@@ -30,12 +31,28 @@ const props = defineProps({
   }
 });
 
+const previewKind = computed(function resolvePreviewKind() {
+  if (isImagePath(props.change.path)) {
+    return "image";
+  }
+  if (isAudioPath(props.change.path)) {
+    return "audio";
+  }
+  if (isVideoPath(props.change.path)) {
+    return "video";
+  }
+  return "";
+});
+
 const isImageChange = computed(function resolveIsImageChange() {
-  return isImagePath(props.change.path);
+  return previewKind.value === "image";
+});
+const mediaKind = computed(function resolveMediaKind() {
+  return previewKind.value === "audio" || previewKind.value === "video" ? previewKind.value : "";
 });
 
 const showBinaryMetadata = computed(function resolveShowBinaryMetadata() {
-  return Boolean(props.change.is_binary && !isImageChange.value);
+  return Boolean(props.change.is_binary && !previewKind.value);
 });
 
 const changeTagType = computed(function resolveChangeTagType() {
@@ -62,14 +79,14 @@ const newDownloadUrl = computed(function resolveNewDownloadUrl() {
   return buildDownloadUrl(props.commitId, props.change.new_file.path);
 });
 
-const oldImageUrl = computed(function resolveOldImageUrl() {
+const oldBlobUrl = computed(function resolveOldBlobUrl() {
   if (!props.change.old_file || !props.compareParentCommitId) {
     return "";
   }
   return buildBlobUrl(props.compareParentCommitId, props.change.old_file.path);
 });
 
-const newImageUrl = computed(function resolveNewImageUrl() {
+const newBlobUrl = computed(function resolveNewBlobUrl() {
   if (!props.change.new_file || !props.commitId) {
     return "";
   }
@@ -85,7 +102,9 @@ const fileSummary = computed(function resolveFileSummary() {
   } else if (props.change.old_file) {
     parts.push(formatBytes(props.change.old_file.size));
   }
-  if (props.change.is_binary) {
+  if (previewKind.value) {
+    parts.push(previewKind.value);
+  } else if (props.change.is_binary) {
     parts.push("binary");
   } else {
     parts.push("text");
@@ -192,8 +211,16 @@ function versionRows(fileVersion) {
 
     <image-compare-viewer
       v-if="isImageChange"
-      :old-image-url="oldImageUrl"
-      :new-image-url="newImageUrl"
+      :old-image-url="oldBlobUrl"
+      :new-image-url="newBlobUrl"
+      old-label="Parent"
+      new-label="Commit"
+    />
+    <media-compare-viewer
+      v-else-if="mediaKind"
+      :kind="mediaKind"
+      :old-media-url="oldBlobUrl"
+      :new-media-url="newBlobUrl"
       old-label="Parent"
       new-label="Commit"
     />

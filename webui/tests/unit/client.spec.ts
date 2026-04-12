@@ -296,6 +296,21 @@ describe("api client helpers", function suite() {
       }
     });
     expect(axiosState.request).toHaveBeenCalledWith({
+      method: "get",
+      url: "/api/v1/maintenance/storage-overview",
+      timeout: 0
+    });
+    expect(axiosState.request).toHaveBeenCalledWith({
+      method: "post",
+      url: "/api/v1/maintenance/quick-verify",
+      timeout: 0
+    });
+    expect(axiosState.request).toHaveBeenCalledWith({
+      method: "post",
+      url: "/api/v1/maintenance/full-verify",
+      timeout: 0
+    });
+    expect(axiosState.request).toHaveBeenCalledWith({
       method: "post",
       url: "/api/v1/write/commit",
       data: {
@@ -332,19 +347,22 @@ describe("api client helpers", function suite() {
       url: "/api/v1/maintenance/gc",
       data: {
         dry_run: true
-      }
+      },
+      timeout: 0
     });
     expect(axiosState.request).toHaveBeenCalledWith({
       method: "post",
       url: "/api/v1/maintenance/gc",
-      data: {}
+      data: {},
+      timeout: 0
     });
     expect(axiosState.request).toHaveBeenCalledWith({
       method: "post",
       url: "/api/v1/maintenance/squash-history",
       data: {
         ref_name: "release/v1"
-      }
+      },
+      timeout: 0
     });
   });
 });

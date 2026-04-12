@@ -5,9 +5,10 @@ import { useRoute, useRouter } from "vue-router";
 
 import { buildBlobUrl, buildDownloadUrl, getBlobBytes, getPathsInfo } from "@/api/client";
 import CodeViewer from "@/components/CodeViewer.vue";
+import MediaPreviewCard from "@/components/MediaPreviewCard.vue";
 import PathBreadcrumb from "@/components/PathBreadcrumb.vue";
 import ReadmeViewer from "@/components/ReadmeViewer.vue";
-import { buildBreadcrumbs, decodeUtf8Bytes, isImagePath, isJsonPath, isMarkdownPath, isTextLikePath } from "@/utils/files";
+import { buildBreadcrumbs, decodeUtf8Bytes, isAudioPath, isImagePath, isJsonPath, isMarkdownPath, isTextLikePath, isVideoPath } from "@/utils/files";
 import { formatBytes, formatDateTime, shortOid } from "@/utils/format";
 
 const PREVIEW_LIMIT = 1024 * 1024;
@@ -93,7 +94,7 @@ const downloadUrl = computed(function resolveDownloadUrl() {
   return buildDownloadUrl(props.revision, pathInRepo.value);
 });
 
-const imageUrl = computed(function resolveImageUrl() {
+const blobUrl = computed(function resolveBlobUrl() {
   if (!pathInRepo.value) {
     return "";
   }
@@ -122,6 +123,14 @@ async function loadFileDetail() {
     markdownTab.value = "rendered";
     if (isImagePath(nextEntry.path)) {
       previewMode.value = "image";
+      return;
+    }
+    if (isAudioPath(nextEntry.path)) {
+      previewMode.value = "audio";
+      return;
+    }
+    if (isVideoPath(nextEntry.path)) {
+      previewMode.value = "video";
       return;
     }
     if (!isTextLikePath(nextEntry.path) || nextEntry.size > PREVIEW_LIMIT) {
@@ -308,10 +317,31 @@ watch(
           </div>
           <div class="file-image-preview">
             <img
-              :src="imageUrl"
+              :src="blobUrl"
               :alt="entry.path"
             >
           </div>
+        </el-card>
+
+        <el-card
+          v-else-if="previewMode === 'audio' || previewMode === 'video'"
+          class="surface"
+          body-style="padding: 22px;"
+        >
+          <div class="surface__header">
+            <div>
+              <h3 class="surface__title">{{ previewMode === 'video' ? 'Video Preview' : 'Audio Preview' }}</h3>
+              <p class="surface__subtitle">
+                The current media file is streamed directly from the repository blob route.
+              </p>
+            </div>
+          </div>
+          <media-preview-card
+            :kind="previewMode"
+            :src="blobUrl"
+            :label="entry.path"
+            empty-text="This media file cannot be rendered inline. Use the download button to inspect it locally."
+          />
         </el-card>
 
         <el-empty

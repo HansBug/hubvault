@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { formatBytes } from "@/utils/format";
 
-const props = defineProps({
+defineProps({
   overview: {
     type: Object,
     default: null
@@ -18,13 +18,21 @@ const props = defineProps({
     type: Boolean,
     default: false
   },
+  loadingQuickVerify: {
+    type: Boolean,
+    default: false
+  },
   loadingFullVerify: {
+    type: Boolean,
+    default: false
+  },
+  actionsDisabled: {
     type: Boolean,
     default: false
   }
 });
 
-const emit = defineEmits(["run-full-verify"]);
+const emit = defineEmits(["load-overview", "run-quick-verify", "run-full-verify"]);
 </script>
 
 <template>
@@ -33,25 +41,25 @@ const emit = defineEmits(["run-full-verify"]);
       <el-card class="surface" body-style="padding: 18px;">
         <div class="muted">Total size</div>
         <div style="margin-top: 10px; font-size: 26px; font-weight: 700;">
-          {{ overview ? formatBytes(overview.total_size) : "Pending" }}
+          {{ overview ? formatBytes(overview.total_size) : "On demand" }}
         </div>
       </el-card>
       <el-card class="surface" body-style="padding: 18px;">
         <div class="muted">Reachable</div>
         <div style="margin-top: 10px; font-size: 26px; font-weight: 700;">
-          {{ overview ? formatBytes(overview.reachable_size) : "Pending" }}
+          {{ overview ? formatBytes(overview.reachable_size) : "On demand" }}
         </div>
       </el-card>
       <el-card class="surface" body-style="padding: 18px;">
         <div class="muted">GC reclaimable</div>
         <div style="margin-top: 10px; font-size: 26px; font-weight: 700;">
-          {{ overview ? formatBytes(overview.reclaimable_gc_size) : "Pending" }}
+          {{ overview ? formatBytes(overview.reclaimable_gc_size) : "On demand" }}
         </div>
       </el-card>
       <el-card class="surface" body-style="padding: 18px;">
         <div class="muted">Cache reclaimable</div>
         <div style="margin-top: 10px; font-size: 26px; font-weight: 700;">
-          {{ overview ? formatBytes(overview.reclaimable_cache_size) : "Pending" }}
+          {{ overview ? formatBytes(overview.reclaimable_cache_size) : "On demand" }}
         </div>
       </el-card>
     </div>
@@ -63,11 +71,24 @@ const emit = defineEmits(["run-full-verify"]);
             <h3 class="surface__title">Storage Sections</h3>
             <p class="surface__subtitle">Per-section footprint and safe reclamation guidance.</p>
           </div>
+          <el-button
+            type="primary"
+            plain
+            :loading="loadingOverview"
+            :disabled="actionsDisabled"
+            @click="emit('load-overview')"
+          >
+            {{ overview ? "Refresh analysis" : "Load analysis" }}
+          </el-button>
         </div>
         <el-skeleton v-if="loadingOverview" :rows="6" animated />
+        <el-empty
+          v-else-if="!overview"
+          description="Load the storage analysis only when you need the heavier repository footprint report."
+        />
         <el-table
           v-else
-          :data="overview?.sections || []"
+          :data="overview.sections || []"
           empty-text="No storage section data available."
         >
           <el-table-column prop="name" label="Section" min-width="160" />
@@ -89,24 +110,39 @@ const emit = defineEmits(["run-full-verify"]);
               <h3 class="surface__title">Quick Verify</h3>
               <p class="surface__subtitle">Fast structural health signal.</p>
             </div>
+            <el-button
+              plain
+              :loading="loadingQuickVerify"
+              :disabled="actionsDisabled"
+              @click="emit('run-quick-verify')"
+            >
+              {{ quickVerify ? "Run again" : "Run now" }}
+            </el-button>
           </div>
-          <el-tag :type="quickVerify?.ok ? 'success' : 'danger'" effect="plain">
-            {{ quickVerify?.ok ? "Healthy" : "Issues found" }}
-          </el-tag>
-          <div class="kv-list" style="margin-top: 14px;">
-            <div class="kv-row">
-              <span>Checked refs</span>
-              <strong>{{ quickVerify?.checked_refs?.length || 0 }}</strong>
+          <el-skeleton v-if="loadingQuickVerify" :rows="4" animated />
+          <template v-else-if="quickVerify">
+            <el-tag :type="quickVerify.ok ? 'success' : 'danger'" effect="plain">
+              {{ quickVerify.ok ? "Healthy" : "Issues found" }}
+            </el-tag>
+            <div class="kv-list" style="margin-top: 14px;">
+              <div class="kv-row">
+                <span>Checked refs</span>
+                <strong>{{ quickVerify.checked_refs?.length || 0 }}</strong>
+              </div>
+              <div class="kv-row">
+                <span>Warnings</span>
+                <strong>{{ quickVerify.warnings?.length || 0 }}</strong>
+              </div>
+              <div class="kv-row">
+                <span>Errors</span>
+                <strong>{{ quickVerify.errors?.length || 0 }}</strong>
+              </div>
             </div>
-            <div class="kv-row">
-              <span>Warnings</span>
-              <strong>{{ quickVerify?.warnings?.length || 0 }}</strong>
-            </div>
-            <div class="kv-row">
-              <span>Errors</span>
-              <strong>{{ quickVerify?.errors?.length || 0 }}</strong>
-            </div>
-          </div>
+          </template>
+          <el-empty
+            v-else
+            description="Run the lightweight verification pass only when you need a current health signal."
+          />
         </el-card>
 
         <el-card class="surface" body-style="padding: 18px;">
@@ -119,12 +155,14 @@ const emit = defineEmits(["run-full-verify"]);
               :loading="loadingFullVerify"
               type="primary"
               plain
+              :disabled="actionsDisabled"
               @click="emit('run-full-verify')"
             >
-              Run now
+              {{ fullVerify ? "Run again" : "Run now" }}
             </el-button>
           </div>
-          <template v-if="fullVerify">
+          <el-skeleton v-if="loadingFullVerify" :rows="4" animated />
+          <template v-else-if="fullVerify">
             <el-tag :type="fullVerify.ok ? 'success' : 'danger'" effect="plain">
               {{ fullVerify.ok ? "Healthy" : "Issues found" }}
             </el-tag>
@@ -153,7 +191,11 @@ const emit = defineEmits(["run-full-verify"]);
             </div>
           </div>
           <el-empty
-            v-if="!overview || !(overview.recommendations || []).length"
+            v-if="!overview"
+            description="Load storage analysis to see operator guidance."
+          />
+          <el-empty
+            v-else-if="!(overview.recommendations || []).length"
             description="No storage recommendations at the moment."
           />
           <ul v-else style="margin: 0; padding-left: 18px; line-height: 1.8;">

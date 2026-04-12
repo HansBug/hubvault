@@ -53,12 +53,12 @@ function resetSessionState() {
   };
 }
 
-function findButton(wrapper, label: string) {
-  const button = wrapper.findAll("button").find(function findByText(item) {
+function findButton(wrapper, label: string, index = 0) {
+  const buttons = wrapper.findAll("button").filter(function findByText(item) {
     return item.text().trim() === label;
   });
-  expect(button).toBeTruthy();
-  return button!;
+  expect(buttons[index]).toBeTruthy();
+  return buttons[index]!;
 }
 
 describe("StorageView", function suite() {
@@ -100,7 +100,7 @@ describe("StorageView", function suite() {
     vi.spyOn(ElMessageBox, "prompt").mockResolvedValue({ value: "Squash release/v1" } as never);
   });
 
-  it("loads diagnostics and executes maintenance actions", async function testMaintenanceFlows() {
+  it("keeps storage analysis on demand and executes maintenance actions explicitly", async function testMaintenanceFlows() {
     const wrapper = mount(StorageView, {
       props: {
         revision: "release/v1"
@@ -112,11 +112,24 @@ describe("StorageView", function suite() {
 
     await flushPromises();
 
-    expect(storageViewMocks.getStorageOverview).toHaveBeenCalledTimes(1);
-    expect(storageViewMocks.runQuickVerify).toHaveBeenCalledTimes(1);
-    expect(wrapper.text()).toContain("Run gc().");
+    expect(storageViewMocks.getStorageOverview).not.toHaveBeenCalled();
+    expect(storageViewMocks.runQuickVerify).not.toHaveBeenCalled();
+    expect(wrapper.get("[data-testid='storage-status-title']").text()).toBe("Storage analysis is on demand");
 
-    await findButton(wrapper, "Run now").trigger("click");
+    await findButton(wrapper, "Load analysis").trigger("click");
+    await flushPromises();
+
+    expect(storageViewMocks.getStorageOverview).toHaveBeenCalledTimes(1);
+    expect(wrapper.text()).toContain("Run gc().");
+    expect(wrapper.get("[data-testid='storage-status-title']").text()).toBe("Storage analysis ready");
+
+    await findButton(wrapper, "Run now", 0).trigger("click");
+    await flushPromises();
+
+    expect(storageViewMocks.runQuickVerify).toHaveBeenCalledTimes(1);
+    expect(wrapper.text()).toContain("Healthy");
+
+    await findButton(wrapper, "Run now", 0).trigger("click");
     await flushPromises();
 
     expect(storageViewMocks.runFullVerify).toHaveBeenCalledTimes(1);
@@ -129,6 +142,7 @@ describe("StorageView", function suite() {
       prune_cache: true
     });
     expect(storageViewMocks.bootstrapSession).toHaveBeenCalledWith("release/v1", { force: true });
+    expect(storageViewMocks.getStorageOverview).toHaveBeenCalledTimes(2);
     expect(wrapper.text()).toContain("Latest GC Result");
 
     await findButton(wrapper, "Squash Current Branch").trigger("click");
@@ -140,6 +154,7 @@ describe("StorageView", function suite() {
       run_gc: false,
       prune_cache: false
     });
+    expect(storageViewMocks.getStorageOverview).toHaveBeenCalledTimes(3);
     expect(wrapper.text()).toContain("Latest Squash Result");
   });
 });

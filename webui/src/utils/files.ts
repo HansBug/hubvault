@@ -2,6 +2,8 @@ import natsort from "natsort";
 
 const README_CANDIDATES = ["README.md", "README.markdown", "README.rst", "README.txt"];
 const IMAGE_EXTENSIONS = [".avif", ".gif", ".jpeg", ".jpg", ".png", ".svg", ".webp"];
+const AUDIO_EXTENSIONS = [".aac", ".flac", ".m4a", ".mp3", ".oga", ".ogg", ".opus", ".wav"];
+const VIDEO_EXTENSIONS = [".avi", ".m4v", ".mkv", ".mov", ".mp4", ".ogv", ".webm"];
 const TEXT_EXTENSIONS = [
   ".cfg",
   ".css",
@@ -23,6 +25,16 @@ const TEXT_EXTENSIONS = [
 ];
 
 const NATURAL_SORTER = natsort();
+
+function hasKnownExtension(path, extensions) {
+  const text = String(path || "").toLowerCase();
+  for (let index = 0; index < extensions.length; index += 1) {
+    if (text.endsWith(extensions[index])) {
+      return true;
+    }
+  }
+  return false;
+}
 
 function entryName(entry) {
   const path = String((entry && entry.path) || "");
@@ -49,13 +61,15 @@ export function isJsonPath(path) {
 }
 
 export function isImagePath(path) {
-  const text = String(path || "").toLowerCase();
-  for (let index = 0; index < IMAGE_EXTENSIONS.length; index += 1) {
-    if (text.endsWith(IMAGE_EXTENSIONS[index])) {
-      return true;
-    }
-  }
-  return false;
+  return hasKnownExtension(path, IMAGE_EXTENSIONS);
+}
+
+export function isAudioPath(path) {
+  return hasKnownExtension(path, AUDIO_EXTENSIONS);
+}
+
+export function isVideoPath(path) {
+  return hasKnownExtension(path, VIDEO_EXTENSIONS);
 }
 
 export function isTextLikePath(path) {

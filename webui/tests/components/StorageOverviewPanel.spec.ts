@@ -4,8 +4,16 @@ import { describe, expect, it } from "vitest";
 
 import StorageOverviewPanel from "@/components/StorageOverviewPanel.vue";
 
+function findButton(wrapper, label: string) {
+  const button = wrapper.findAll("button").find(function findByLabel(item) {
+    return item.text().trim() === label;
+  });
+  expect(button).toBeTruthy();
+  return button!;
+}
+
 describe("StorageOverviewPanel", function suite() {
-  it("renders summary data and emits full verify requests", async function testStoragePanel() {
+  it("renders on-demand controls and emits storage actions", async function testStoragePanel() {
     const wrapper = mount(StorageOverviewPanel, {
       props: {
         overview: {
@@ -36,9 +44,13 @@ describe("StorageOverviewPanel", function suite() {
       }
     });
 
-    await wrapper.get("button").trigger("click");
+    await findButton(wrapper, "Refresh analysis").trigger("click");
+    await findButton(wrapper, "Run again").trigger("click");
+    await findButton(wrapper, "Run now").trigger("click");
 
     expect(wrapper.text()).toContain("Run gc().");
+    expect(wrapper.emitted("load-overview")).toHaveLength(1);
+    expect(wrapper.emitted("run-quick-verify")).toHaveLength(1);
     expect(wrapper.emitted("run-full-verify")).toHaveLength(1);
   });
 });
