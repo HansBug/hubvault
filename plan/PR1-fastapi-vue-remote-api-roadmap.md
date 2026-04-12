@@ -1405,8 +1405,12 @@ Phase 6 前端建议拆成以下复用组件：
 * [ ] commit detail 顶部左侧 badge 进一步压低高度，右侧统计卡改成单行 label/value 左右对齐而不是上下两行。
 * [ ] commit 列表中的 title 与文件列表 `last commit` 列支持直接跳转到 commit diff 页面。
 * [ ] 文件列表排序改为目录优先、文件在后，且同组内按自然排序（natsort）展示路径/文件名。
+* [ ] overview 页面右侧的 `Repository Snapshot` 与 `Recent Commits` 卡片重构为内容自适应高度，不再随着左侧 README 很长而被整体拉长。
+* [ ] README 渲染中的 Markdown code block 修复可读性问题，避免黑底黑字；对可识别语言启用语法高亮，并统一使用前端内置等宽字体。
 * [ ] storage 页面默认首屏只加载能快速返回的轻量信息，不再在进入页面时自动触发庞大 repo 上容易卡住或超时的重分析。
 * [ ] storage 页面首屏需要直接快速展示 `total size` 这类低成本指标，其它较重分析项继续留到显式点击 analysis 后再加载。
+* [ ] storage 页面中默认不提前展示那三项重分析指标；只有点击 `Load analysis` 后，才在 `Storage Sections` 区域内连同分析结果一起展示。
+* [ ] storage 页面首屏轻量指标区域增加带 icon 的 `refresh` 按钮，允许用户手动刷新这些实时低成本数据。
 * [ ] storage 页面中的重分析动作改成显式按钮触发，并在运行期间持续展示当前阶段、动态状态文案与 loading 指示，避免用户误判页面卡死。
 * [ ] 前端上传改成“文件页提供 upload 按钮，进入独立上传页后可多次追加到待提交队列，再统一 commit”的交互，并增加实时进度条。
 * [ ] upload 页 commit message 输入框默认保持空值，但提供基于当前队列内容自动生成的 placeholder；在用户未手填时，提交时自动采用该 placeholder 作为 commit message。
@@ -1441,8 +1445,12 @@ Phase 6 前端建议拆成以下复用组件：
 * [ ] commit detail 左侧 badge 已压低高度，右侧统计卡改为单行 label/value 左右对齐。
 * [ ] commit 列表中的 title 可直接进入 commit diff 页面。
 * [ ] 文件列表排序遵循“目录优先，同组内自然排序”。
+* [ ] overview 页面右侧 `Repository Snapshot` 与 `Recent Commits` 卡片高度只由自身内容决定，不会被超长 README 拉伸。
+* [ ] README 中的 Markdown code block 具备清晰可读的主题样式、可识别语言的高亮，以及统一的仓库自带等宽字体。
 * [ ] storage 页面默认首屏能快速返回，不会在进入页面时自动触发重分析而长时间卡住或超时。
 * [ ] storage 页面一进入即可快速看到 `total size` 等低成本指标，其它较重分析项继续按需点击后再加载。
+* [ ] storage 页面默认不会提前渲染那三项重分析指标，只有用户点击 `Load analysis` 后才在 `Storage Sections` 区域展示。
+* [ ] storage 页面首屏轻量指标支持带 icon 的手动刷新入口，并且刷新后仍保持实时数据语义。
 * [ ] storage 页面中的重分析动作仅在用户主动点击后执行，且全过程持续显示动态状态与 loading 提示。
 * [ ] 上传队列位于独立上传页，文件页只保留 upload 入口按钮。
 * [ ] upload 页 commit message 默认留空，但 placeholder 会根据当前待上传内容自动生成，并在用户未手填时作为最终提交 message。

@@ -2,6 +2,10 @@
 import { formatBytes } from "@/utils/format";
 
 defineProps({
+  summary: {
+    type: Object,
+    default: null
+  },
   overview: {
     type: Object,
     default: null
@@ -13,6 +17,10 @@ defineProps({
   fullVerify: {
     type: Object,
     default: null
+  },
+  loadingSummary: {
+    type: Boolean,
+    default: false
   },
   loadingOverview: {
     type: Boolean,
@@ -33,6 +41,10 @@ defineProps({
 });
 
 const emit = defineEmits(["load-overview", "run-quick-verify", "run-full-verify"]);
+
+function formatCount(value) {
+  return Number(value || 0).toLocaleString();
+}
 </script>
 
 <template>
@@ -41,25 +53,37 @@ const emit = defineEmits(["load-overview", "run-quick-verify", "run-full-verify"
       <el-card class="surface" body-style="padding: 18px;">
         <div class="muted">Total size</div>
         <div style="margin-top: 10px; font-size: 26px; font-weight: 700;">
-          {{ overview ? formatBytes(overview.total_size) : "On demand" }}
+          {{ summary ? formatBytes(summary.total_size) : (loadingSummary ? "Loading..." : "Unavailable") }}
+        </div>
+      </el-card>
+      <el-card class="surface" body-style="padding: 18px;">
+        <div class="muted">Files on disk</div>
+        <div style="margin-top: 10px; font-size: 26px; font-weight: 700;">
+          {{ summary ? formatCount(summary.total_file_count) : (loadingSummary ? "Loading..." : "Unavailable") }}
+        </div>
+      </el-card>
+      <el-card class="surface" body-style="padding: 18px;">
+        <div class="muted">Metadata store</div>
+        <div style="margin-top: 10px; font-size: 26px; font-weight: 700;">
+          {{ summary ? formatBytes(summary.metadata_size) : (loadingSummary ? "Loading..." : "Unavailable") }}
         </div>
       </el-card>
       <el-card class="surface" body-style="padding: 18px;">
         <div class="muted">Reachable</div>
         <div style="margin-top: 10px; font-size: 26px; font-weight: 700;">
-          {{ overview ? formatBytes(overview.reachable_size) : "On demand" }}
+          {{ overview ? formatBytes(overview.reachable_size) : "Load analysis" }}
         </div>
       </el-card>
       <el-card class="surface" body-style="padding: 18px;">
         <div class="muted">GC reclaimable</div>
         <div style="margin-top: 10px; font-size: 26px; font-weight: 700;">
-          {{ overview ? formatBytes(overview.reclaimable_gc_size) : "On demand" }}
+          {{ overview ? formatBytes(overview.reclaimable_gc_size) : "Load analysis" }}
         </div>
       </el-card>
       <el-card class="surface" body-style="padding: 18px;">
         <div class="muted">Cache reclaimable</div>
         <div style="margin-top: 10px; font-size: 26px; font-weight: 700;">
-          {{ overview ? formatBytes(overview.reclaimable_cache_size) : "On demand" }}
+          {{ overview ? formatBytes(overview.reclaimable_cache_size) : "Load analysis" }}
         </div>
       </el-card>
     </div>

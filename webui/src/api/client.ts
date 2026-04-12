@@ -190,6 +190,14 @@ export function getCommitDetail(commitId, formatted) {
   });
 }
 
+export function getStorageSummary() {
+  return request({
+    method: "get",
+    url: "/api/v1/maintenance/storage-summary",
+    timeout: MAINTENANCE_REQUEST_TIMEOUT
+  });
+}
+
 export function getStorageOverview() {
   return request({
     method: "get",

@@ -37,6 +37,44 @@ def _storage_overview_payload(overview):
     }
 
 
+def _path_metrics(path):
+    if not path.exists():
+        return 0, 0
+    if path.is_symlink() or path.is_file():
+        return path.stat().st_size, 1
+
+    total_size = 0
+    file_count = 0
+    for current in path.rglob("*"):
+        if current.is_symlink() or current.is_file():
+            total_size += current.stat().st_size
+            file_count += 1
+    return total_size, file_count
+
+
+def _storage_summary_payload(repo_dir, api):
+    refs = api.list_repo_refs()
+    metadata_size = (
+        _path_metrics(repo_dir / "FORMAT")[0]
+        + _path_metrics(repo_dir / "metadata.sqlite3")[0]
+        + _path_metrics(repo_dir / "locks")[0]
+    )
+    metadata_file_count = (
+        _path_metrics(repo_dir / "FORMAT")[1]
+        + _path_metrics(repo_dir / "metadata.sqlite3")[1]
+        + _path_metrics(repo_dir / "locks")[1]
+    )
+    total_size, total_file_count = _path_metrics(repo_dir)
+    return {
+        "total_size": total_size,
+        "total_file_count": total_file_count,
+        "metadata_size": metadata_size,
+        "metadata_file_count": metadata_file_count,
+        "branch_count": len(refs.branches),
+        "tag_count": len(refs.tags),
+    }
+
+
 @pytest.mark.unittest
 class TestServerMaintenanceRoutes:
     def test_ro_token_can_read_verify_reports_and_storage_overview(self, tmp_path):
@@ -47,6 +85,7 @@ class TestServerMaintenanceRoutes:
 
         quick_response = client.post("/api/v1/maintenance/quick-verify", headers=ro_headers())
         full_response = client.post("/api/v1/maintenance/full-verify", headers=ro_headers())
+        summary_response = client.get("/api/v1/maintenance/storage-summary", headers=ro_headers())
         overview_response = client.get("/api/v1/maintenance/storage-overview", headers=ro_headers())
 
         assert quick_response.status_code == 200
@@ -54,6 +93,9 @@ class TestServerMaintenanceRoutes:
 
         assert full_response.status_code == 200
         assert full_response.json() == _verify_report_payload(seeded["api"].full_verify())
+
+        assert summary_response.status_code == 200
+        assert summary_response.json() == _storage_summary_payload(repo_dir, seeded["api"])
 
         assert overview_response.status_code == 200
         assert overview_response.json() == _storage_overview_payload(seeded["api"].get_storage_overview())

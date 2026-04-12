@@ -30,6 +30,7 @@ from hubvault.server.serde import (
     encode_repo_entry,
     encode_squash_report,
     encode_storage_overview,
+    encode_storage_summary,
     encode_verify_report,
 )
 
@@ -100,6 +101,23 @@ class TestServerSerde:
             "checked_refs": ["refs/heads/main"],
             "warnings": ["stale view"],
             "errors": ["missing blob"],
+        }
+        assert encode_storage_summary(
+            {
+                "total_size": 100,
+                "total_file_count": 7,
+                "metadata_size": 12,
+                "metadata_file_count": 3,
+                "branch_count": 1,
+                "tag_count": 0,
+            }
+        ) == {
+            "total_size": 100,
+            "total_file_count": 7,
+            "metadata_size": 12,
+            "metadata_file_count": 3,
+            "branch_count": 1,
+            "tag_count": 0,
         }
         assert encode_storage_overview(overview) == {
             "total_size": 100,

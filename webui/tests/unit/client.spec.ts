@@ -161,6 +161,7 @@ describe("api client helpers", function suite() {
     await apiClient.getBlobBytes("release/v1", "docs/config.json");
     await apiClient.getCommits("release/v1", true);
     await apiClient.getCommitDetail("commit-1", true);
+    await apiClient.getStorageSummary();
     await apiClient.getStorageOverview();
     await apiClient.runQuickVerify();
     await apiClient.runFullVerify();
@@ -294,6 +295,11 @@ describe("api client helpers", function suite() {
       params: {
         formatted: true
       }
+    });
+    expect(axiosState.request).toHaveBeenCalledWith({
+      method: "get",
+      url: "/api/v1/maintenance/storage-summary",
+      timeout: 0
     });
     expect(axiosState.request).toHaveBeenCalledWith({
       method: "get",

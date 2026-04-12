@@ -3,14 +3,19 @@ import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { CircleCheck, Loading, WarningFilled } from "@element-plus/icons-vue";
 
-import { getStorageOverview, runFullVerify, runGc, runQuickVerify, runSquashHistory } from "@/api/client";
+import { getStorageOverview, getStorageSummary, runFullVerify, runGc, runQuickVerify, runSquashHistory } from "@/api/client";
 import StorageOverviewPanel from "@/components/StorageOverviewPanel.vue";
 import { bootstrapSession, useSessionStore } from "@/stores/session";
 
-type StorageOperation = "" | "overview" | "quick-verify" | "full-verify" | "gc-preview" | "gc-run" | "squash";
+type StorageOperation = "" | "summary" | "overview" | "quick-verify" | "full-verify" | "gc-preview" | "gc-run" | "squash";
 type StorageStatusTone = "info" | "success" | "warning";
 
 const STORAGE_OPERATION_HINTS: Record<string, string[]> = {
+  summary: [
+    "Measuring repository footprint.",
+    "Reading lightweight metadata.",
+    "Preparing quick storage cards."
+  ],
   overview: [
     "Scanning repository sections.",
     "Summarizing reclaimable storage.",
@@ -61,6 +66,7 @@ const statusBaseMessage = ref(
 const statusElapsedSeconds = ref(0);
 const statusTick = ref(0);
 const error = ref("");
+const summary = ref<any>(null);
 const overview = ref<any>(null);
 const quickVerify = ref<any>(null);
 const fullVerify = ref<any>(null);
@@ -82,6 +88,9 @@ const currentBranch = computed(function resolveCurrentBranch() {
 const isBusy = computed(function resolveBusyState() {
   return Boolean(activeOperation.value);
 });
+const loadingSummary = computed(function resolveLoadingSummary() {
+  return activeOperation.value === "summary";
+});
 const loadingOverview = computed(function resolveLoadingOverview() {
   return activeOperation.value === "overview";
 });
@@ -98,6 +107,9 @@ const loadingSquash = computed(function resolveLoadingSquash() {
   return activeOperation.value === "squash";
 });
 const statusPhaseLabel = computed(function resolveStatusPhaseLabel() {
+  if (activeOperation.value === "summary") {
+    return "Loading summary";
+  }
   if (activeOperation.value === "overview") {
     return "Loading analysis";
   }
@@ -196,6 +208,7 @@ function finishStatus(title: string, message: string, tone: StorageStatusTone = 
 }
 
 function resetReportsForRevision() {
+  summary.value = null;
   overview.value = null;
   quickVerify.value = null;
   fullVerify.value = null;
@@ -228,13 +241,30 @@ async function runStorageTask<T>(
   }
 }
 
+async function handleLoadSummary() {
+  const result = await runStorageTask(
+    "summary",
+    "Loading quick storage summary",
+    "Measuring the current repository footprint without running the heavier storage analysis.",
+    "Quick storage summary ready",
+    "Loaded immediate storage metrics from the live repository state.",
+    function fetchStorageSummary() {
+      return getStorageSummary();
+    },
+    "Unable to load the quick storage summary."
+  );
+  if (result) {
+    summary.value = result;
+  }
+}
+
 async function handleLoadOverview() {
   const result = await runStorageTask(
     "overview",
     "Loading storage analysis",
     "Reading repository storage metadata and reclaimable section sizes.",
     "Storage analysis ready",
-    "Loaded the current repository storage summary.",
+    "Loaded the current repository storage analysis.",
     function fetchStorageOverview() {
       return getStorageOverview();
     },
@@ -277,6 +307,11 @@ async function handleRunFullVerify() {
   if (result) {
     fullVerify.value = result;
   }
+}
+
+async function refreshSummary(message: string) {
+  updateStatus("Refreshing quick storage summary", message);
+  summary.value = await getStorageSummary();
 }
 
 async function refreshOverviewIfLoaded(message: string) {
@@ -331,6 +366,7 @@ async function handleRunGc(dryRun: boolean) {
         "Reloading refs and repository metadata after the GC operation."
       );
       await bootstrapSession(props.revision, { force: true });
+      await refreshSummary("Refreshing the quick storage summary after the GC operation.");
       clearVerificationResults();
       await refreshOverviewIfLoaded("Refreshing the previously requested storage overview after GC.");
       return report;
@@ -385,6 +421,7 @@ async function handleRunSquash() {
         "Reloading refs and repository metadata after the history rewrite."
       );
       await bootstrapSession(props.revision, { force: true });
+      await refreshSummary("Refreshing the quick storage summary after the history rewrite.");
       clearVerificationResults();
       await refreshOverviewIfLoaded("Refreshing the previously requested storage overview after the squash operation.");
       return report;
@@ -403,6 +440,7 @@ watch(
   },
   function resetStorageView() {
     resetReportsForRevision();
+    void handleLoadSummary();
   },
   {
     immediate: true
@@ -472,14 +510,17 @@ onBeforeUnmount(function cleanupStorageView() {
           <span class="path-pill path-pill--compact">{{ statusPhaseLabel }}</span>
           <span v-if="isBusy" class="path-pill path-pill--compact">{{ formatElapsed(statusElapsedSeconds) }} elapsed</span>
           <span v-else-if="overview" class="path-pill path-pill--compact">Overview loaded</span>
+          <span v-else-if="summary" class="path-pill path-pill--compact">Quick summary ready</span>
           <span v-else class="path-pill path-pill--compact">No heavy analysis yet</span>
         </div>
       </div>
 
       <storage-overview-panel
+        :summary="summary"
         :overview="overview"
         :quick-verify="quickVerify"
         :full-verify="fullVerify"
+        :loading-summary="loadingSummary"
         :loading-overview="loadingOverview"
         :loading-quick-verify="loadingQuickVerify"
         :loading-full-verify="loadingFullVerify"

@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const storageViewMocks = vi.hoisted(function buildStorageViewMocks() {
   return {
+    getStorageSummary: vi.fn(),
     getStorageOverview: vi.fn(),
     runFullVerify: vi.fn(),
     runGc: vi.fn(),
@@ -21,6 +22,7 @@ const sessionState = reactive({
 
 vi.mock("@/api/client", function mockClientModule() {
   return {
+    getStorageSummary: storageViewMocks.getStorageSummary,
     getStorageOverview: storageViewMocks.getStorageOverview,
     runFullVerify: storageViewMocks.runFullVerify,
     runGc: storageViewMocks.runGc,
@@ -65,6 +67,14 @@ describe("StorageView", function suite() {
   beforeEach(function resetMocks() {
     vi.clearAllMocks();
     resetSessionState();
+    storageViewMocks.getStorageSummary.mockResolvedValue({
+      total_size: 8192,
+      total_file_count: 18,
+      metadata_size: 1024,
+      metadata_file_count: 4,
+      branch_count: 2,
+      tag_count: 0
+    });
     storageViewMocks.getStorageOverview.mockResolvedValue({
       total_size: 4096,
       reachable_size: 3072,
@@ -100,7 +110,7 @@ describe("StorageView", function suite() {
     vi.spyOn(ElMessageBox, "prompt").mockResolvedValue({ value: "Squash release/v1" } as never);
   });
 
-  it("keeps storage analysis on demand and executes maintenance actions explicitly", async function testMaintenanceFlows() {
+  it("loads the quick storage summary immediately and executes maintenance actions explicitly", async function testMaintenanceFlows() {
     const wrapper = mount(StorageView, {
       props: {
         revision: "release/v1"
@@ -112,9 +122,11 @@ describe("StorageView", function suite() {
 
     await flushPromises();
 
+    expect(storageViewMocks.getStorageSummary).toHaveBeenCalledTimes(1);
     expect(storageViewMocks.getStorageOverview).not.toHaveBeenCalled();
     expect(storageViewMocks.runQuickVerify).not.toHaveBeenCalled();
-    expect(wrapper.get("[data-testid='storage-status-title']").text()).toBe("Storage analysis is on demand");
+    expect(wrapper.get("[data-testid='storage-status-title']").text()).toBe("Quick storage summary ready");
+    expect(wrapper.text()).toContain("8.0 KB");
 
     await findButton(wrapper, "Load analysis").trigger("click");
     await flushPromises();
@@ -142,6 +154,7 @@ describe("StorageView", function suite() {
       prune_cache: true
     });
     expect(storageViewMocks.bootstrapSession).toHaveBeenCalledWith("release/v1", { force: true });
+    expect(storageViewMocks.getStorageSummary).toHaveBeenCalledTimes(2);
     expect(storageViewMocks.getStorageOverview).toHaveBeenCalledTimes(2);
     expect(wrapper.text()).toContain("Latest GC Result");
 
@@ -154,6 +167,7 @@ describe("StorageView", function suite() {
       run_gc: false,
       prune_cache: false
     });
+    expect(storageViewMocks.getStorageSummary).toHaveBeenCalledTimes(3);
     expect(storageViewMocks.getStorageOverview).toHaveBeenCalledTimes(3);
     expect(wrapper.text()).toContain("Latest Squash Result");
   });

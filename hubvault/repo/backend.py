@@ -4197,6 +4197,38 @@ class RepositoryBackend(object):
         with self._read_locked():
             return self._storage_overview_unlocked()["overview"]
 
+    def get_storage_summary(self) -> Dict[str, int]:
+        """
+        Return a lightweight real-time storage summary.
+
+        Unlike :meth:`get_storage_overview`, this method avoids graph walks and
+        reclaimability analysis so callers can render a few immediate storage
+        metrics even for larger repositories. The result is computed directly
+        from the current repository files and metadata without relying on any
+        external cache or sidecar service.
+
+        :return: Summary mapping with the current total size, on-disk file
+            count, metadata footprint, and visible ref counts
+        :rtype: Dict[str, int]
+        :raises RepositoryNotFoundError: Raised when the configured root is not
+            a valid repository.
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     backend = RepositoryBackend(Path(tmpdir) / "repo")
+            ...     _ = backend.create_repo()
+            ...     summary = backend.get_storage_summary()
+            ...     sorted(summary)
+            ['branch_count', 'metadata_file_count', 'metadata_size', 'tag_count', 'total_file_count', 'total_size']
+        """
+
+        self._ensure_repo()
+        self._rollback_interrupted_ref_updates_if_needed()
+        with self._read_locked():
+            return self._storage_summary_unlocked()
+
     def gc(self, dry_run: bool = False, prune_cache: bool = True) -> GcReport:
         """
         Reclaim unreachable objects and compact live chunk storage.
@@ -4493,6 +4525,57 @@ class RepositoryBackend(object):
             errors=errors,
         )
 
+    def _metadata_storage_metrics_unlocked(self) -> Dict[str, object]:
+        """Build metadata-section size details while a repo lock is already held."""
+
+        if self._metadata_store.exists():
+            return {
+                "size": (
+                    _path_metrics(self._format_path)[0]
+                    + _path_metrics(self._metadata_db_path)[0]
+                    + _path_metrics(self._repo_path / "locks")[0]
+                ),
+                "path": "FORMAT + metadata.sqlite3 + locks/",
+                "file_count": (
+                    _path_metrics(self._format_path)[1]
+                    + _path_metrics(self._metadata_db_path)[1]
+                    + _path_metrics(self._repo_path / "locks")[1]
+                ),
+                "notes": "Core repository metadata now lives in repo-local SQLite plus the shared repo lock.",
+            }
+        return {
+            "size": (
+                _path_metrics(self._format_path)[0]
+                + _path_metrics(self._repo_config_path)[0]
+                + _path_metrics(self._repo_path / "refs")[0]
+                + _path_metrics(self._repo_path / "logs" / "refs")[0]
+                + _path_metrics(self._repo_path / "locks")[0]
+            ),
+            "path": "FORMAT + repo.json + refs/ + logs/refs/ + locks/",
+            "file_count": (
+                _path_metrics(self._format_path)[1]
+                + _path_metrics(self._repo_config_path)[1]
+                + _path_metrics(self._repo_path / "refs")[1]
+                + _path_metrics(self._repo_path / "logs" / "refs")[1]
+                + _path_metrics(self._repo_path / "locks")[1]
+            ),
+            "notes": "Core repository metadata and lock files required for normal operation.",
+        }
+
+    def _storage_summary_unlocked(self) -> Dict[str, int]:
+        """Build low-cost storage-summary data while a repo lock is already held."""
+
+        metadata = self._metadata_storage_metrics_unlocked()
+        total_size, total_file_count = _path_metrics(self._repo_path)
+        return {
+            "total_size": int(total_size),
+            "total_file_count": int(total_file_count),
+            "metadata_size": int(metadata["size"]),
+            "metadata_file_count": int(metadata["file_count"]),
+            "branch_count": len(self._list_branch_names()),
+            "tag_count": len(self._list_tag_names()),
+        }
+
     def _storage_overview_unlocked(self) -> Dict[str, object]:
         """Build storage-analysis data while a repo lock is already held."""
 
@@ -4538,36 +4621,11 @@ class RepositoryBackend(object):
         live_chunk_bytes = int(live_chunk_plan["pack_size"]) + int(live_chunk_plan["index_total_size"])
         tip_chunk_bytes = int(tip_chunk_plan["pack_size"]) + int(tip_chunk_plan["index_total_size"])
 
-        if self._metadata_store.exists():
-            metadata_size = (
-                _path_metrics(self._format_path)[0]
-                + _path_metrics(self._metadata_db_path)[0]
-                + _path_metrics(self._repo_path / "locks")[0]
-            )
-            metadata_path = "FORMAT + metadata.sqlite3 + locks/"
-            metadata_file_count = (
-                _path_metrics(self._format_path)[1]
-                + _path_metrics(self._metadata_db_path)[1]
-                + _path_metrics(self._repo_path / "locks")[1]
-            )
-            metadata_notes = "Core repository metadata now lives in repo-local SQLite plus the shared repo lock."
-        else:
-            metadata_size = (
-                _path_metrics(self._format_path)[0]
-                + _path_metrics(self._repo_config_path)[0]
-                + _path_metrics(self._repo_path / "refs")[0]
-                + _path_metrics(self._repo_path / "logs" / "refs")[0]
-                + _path_metrics(self._repo_path / "locks")[0]
-            )
-            metadata_path = "FORMAT + repo.json + refs/ + logs/refs/ + locks/"
-            metadata_file_count = (
-                _path_metrics(self._format_path)[1]
-                + _path_metrics(self._repo_config_path)[1]
-                + _path_metrics(self._repo_path / "refs")[1]
-                + _path_metrics(self._repo_path / "logs" / "refs")[1]
-                + _path_metrics(self._repo_path / "locks")[1]
-            )
-            metadata_notes = "Core repository metadata and lock files required for normal operation."
+        metadata = self._metadata_storage_metrics_unlocked()
+        metadata_size = int(metadata["size"])
+        metadata_path = str(metadata["path"])
+        metadata_file_count = int(metadata["file_count"])
+        metadata_notes = str(metadata["notes"])
         actual_pack_bytes, actual_pack_files = _path_metrics(self._repo_path / "chunks" / "packs")
         actual_index_bytes, actual_index_files = _path_metrics(self._repo_path / "chunks" / "index")
         cache_size, cache_files = _path_metrics(self._repo_path / "cache")

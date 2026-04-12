@@ -14,7 +14,13 @@ The module contains:
 from ..auth import build_read_auth_dependency, build_write_auth_dependency
 from ..deps import build_repo_api_getter
 from ..schemas import normalize_gc_request, normalize_squash_history_request
-from ..serde import encode_gc_report, encode_squash_report, encode_storage_overview, encode_verify_report
+from ..serde import (
+    encode_gc_report,
+    encode_squash_report,
+    encode_storage_overview,
+    encode_storage_summary,
+    encode_verify_report,
+)
 
 
 def create_maintenance_router(*, api=None, api_factory=None, authorizer):
@@ -79,6 +85,24 @@ def create_maintenance_router(*, api=None, api_factory=None, authorizer):
 
         del auth
         return encode_verify_report(get_api().full_verify())
+
+    @router.get("/storage-summary")
+    def get_storage_summary(auth=Depends(require_read)):
+        """
+        Return the lightweight real-time storage summary.
+
+        This endpoint intentionally avoids the heavier reachability and
+        reclamation analysis used by ``/storage-overview`` so the UI can show a
+        few immediate metrics even for larger repositories.
+
+        :param auth: Resolved caller authorization context
+        :type auth: hubvault.server.auth.AuthContext
+        :return: JSON-compatible storage summary payload
+        :rtype: dict
+        """
+
+        del auth
+        return encode_storage_summary(get_api()._backend.get_storage_summary())
 
     @router.get("/storage-overview")
     def get_storage_overview(auth=Depends(require_read)):

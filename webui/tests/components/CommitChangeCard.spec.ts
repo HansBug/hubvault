@@ -151,6 +151,35 @@ describe("CommitChangeCard", function suite() {
     expect(wrapper.find("[data-testid='binary-metadata-panel']").exists()).toBe(false);
   });
 
+  it("passes single-sided media previews through without binary metadata", function testAddedAudioChange() {
+    const wrapper = mount(CommitChangeCard, {
+      props: {
+        commitId: "commit-2",
+        compareParentCommitId: "commit-1",
+        change: {
+          path: "media/intro.wav",
+          change_type: "added",
+          is_binary: true,
+          unified_diff: null,
+          old_file: null,
+          new_file: {
+            path: "media/intro.wav",
+            size: 4800,
+            oid: "new-audio",
+            blob_id: "new-blob",
+            sha256: "new-audio-sha"
+          }
+        }
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    expect(wrapper.get("[data-testid='media-compare-viewer-stub']").text()).toContain("audio||/api/v1/content/blob/media/intro.wav?revision=commit-2");
+    expect(wrapper.find("[data-testid='binary-metadata-panel']").exists()).toBe(false);
+  });
+
   it("shows compact metadata only for opaque binary changes", function testBinaryMetadataChange() {
     const wrapper = mount(CommitChangeCard, {
       props: {

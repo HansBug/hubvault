@@ -18,6 +18,7 @@ The module contains:
 * :func:`encode_commit_info` - Serialize write-commit metadata
 * :func:`encode_merge_result` - Serialize structured merge results
 * :func:`encode_verify_report` - Serialize repository verification reports
+* :func:`encode_storage_summary` - Serialize lightweight storage summary
 * :func:`encode_storage_overview` - Serialize repository storage analysis
 * :func:`encode_gc_report` - Serialize storage reclamation reports
 * :func:`encode_squash_report` - Serialize history-squash reports
@@ -25,7 +26,7 @@ The module contains:
 """
 
 from datetime import datetime
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Mapping, Optional
 
 from ..models import (
     BlobLfsInfo,
@@ -457,6 +458,26 @@ def encode_storage_section_info(value: StorageSectionInfo) -> dict:
         "reclaimable_size": value.reclaimable_size,
         "reclaim_strategy": value.reclaim_strategy,
         "notes": value.notes,
+    }
+
+
+def encode_storage_summary(value: Mapping[str, object]) -> dict:
+    """
+    Serialize one lightweight storage-summary payload.
+
+    :param value: Lightweight storage summary mapping
+    :type value: Mapping[str, object]
+    :return: JSON-compatible storage summary payload
+    :rtype: dict
+    """
+
+    return {
+        "total_size": int(value["total_size"]),
+        "total_file_count": int(value["total_file_count"]),
+        "metadata_size": int(value["metadata_size"]),
+        "metadata_file_count": int(value["metadata_file_count"]),
+        "branch_count": int(value["branch_count"]),
+        "tag_count": int(value["tag_count"]),
     }
 
 

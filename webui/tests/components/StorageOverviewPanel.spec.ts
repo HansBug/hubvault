@@ -13,9 +13,17 @@ function findButton(wrapper, label: string) {
 }
 
 describe("StorageOverviewPanel", function suite() {
-  it("renders on-demand controls and emits storage actions", async function testStoragePanel() {
+  it("renders lightweight summary cards and emits storage actions", async function testStoragePanel() {
     const wrapper = mount(StorageOverviewPanel, {
       props: {
+        summary: {
+          total_size: 4096,
+          total_file_count: 12,
+          metadata_size: 512,
+          metadata_file_count: 3,
+          branch_count: 2,
+          tag_count: 1
+        },
         overview: {
           total_size: 4096,
           reachable_size: 2048,
@@ -48,6 +56,9 @@ describe("StorageOverviewPanel", function suite() {
     await findButton(wrapper, "Run again").trigger("click");
     await findButton(wrapper, "Run now").trigger("click");
 
+    expect(wrapper.text()).toContain("4.0 KB");
+    expect(wrapper.text()).toContain("12");
+    expect(wrapper.text()).toContain("512 B");
     expect(wrapper.text()).toContain("Run gc().");
     expect(wrapper.emitted("load-overview")).toHaveLength(1);
     expect(wrapper.emitted("run-quick-verify")).toHaveLength(1);
