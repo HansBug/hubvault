@@ -48,6 +48,31 @@ artifacts。对于离线环境、运维预算敏感场景、或者已经遇到�
 
     python -m pip install hubvault
 
+只有当你需要 HTTP 相关功能时，才安装对应 extras：
+
+.. list-table::
+    :header-rows: 1
+
+    * - 安装目标
+      - 命令
+      - 主要能力
+    * - 本地仓库基础能力
+      - ``pip install hubvault``
+      - 本地 API、CLI、embedded repo 运行时
+    * - 内建服务端 + web UI
+      - ``pip install 'hubvault[api]'``
+      - ``hubvault serve`` 与 :mod:`hubvault.server`
+    * - Remote client
+      - ``pip install 'hubvault[remote]'``
+      - :class:`hubvault.remote.HubVaultRemoteApi`
+    * - 全量能力
+      - ``pip install 'hubvault[full]'``
+      - 本地 + server + remote 全部能力
+
+基础安装对本地仓库依然完全有效。可选集成采用 delayed import，因此基础环境里
+``import hubvault`` 不会失败；只有在你真正调用 server 或 remote 能力时，才会
+看到缺依赖错误。
+
 从开发分支安装
 --------------
 
@@ -78,6 +103,19 @@ artifacts。对于离线环境、运维预算敏感场景、或者已经遇到�
 
 如果这一步失败，先修 Python 环境，不要急着排查 CLI。最常见的问题是安装到
 一个解释器里，却用另一个解释器运行。
+
+你也可以显式验证 lazy optional-dependency 行为：
+
+.. code-block:: python
+
+    from hubvault.optional import MissingOptionalDependencyError
+    from hubvault.server import create_app
+
+    try:
+        create_app(repo_path="demo-repo", token_rw=("dev-token",))
+    except MissingOptionalDependencyError as err:
+        print(err)
+        # ... requires optional dependencies from 'hubvault[api]' ...
 
 验证 CLI
 --------

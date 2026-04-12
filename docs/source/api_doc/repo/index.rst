@@ -11,6 +11,7 @@ hubvault.repo
 
     backend
     constants
+    sqlite
 
 \_\_all\_\_
 -----------------------------------------------------

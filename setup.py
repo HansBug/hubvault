@@ -48,6 +48,13 @@ setup(
     python_requires=">=3.7",
     install_requires=requirements,
     extras_require=group_requirements,
+    include_package_data=True,
+    package_data={
+        '%s.server' % _MODULE_NAME: [
+            'server/static/webui/*',
+            'server/static/webui/**/*',
+        ],
+    },
     classifiers=[
         'Development Status :: 3 - Alpha',
         'Environment :: Console',

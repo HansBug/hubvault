@@ -16,6 +16,9 @@ The package contains:
 * :class:`MergeConflict` - Structured merge-conflict model
 * :class:`MergeResult` - Merge result model
 * :class:`GitCommitInfo` - HF-style commit listing model
+* :class:`CommitFileVersionInfo` - File metadata for one side of a commit diff
+* :class:`CommitChangeInfo` - File-level commit diff metadata
+* :class:`CommitDetailInfo` - Commit metadata with file-level changes
 * :class:`GitRefInfo` - HF-style git reference model
 * :class:`GitRefs` - HF-style git reference collection model
 * :class:`ReflogEntry` - Local reflog entry model
@@ -54,7 +57,10 @@ from .errors import (
 from .models import (
     BlobLfsInfo,
     BlobSecurityInfo,
+    CommitChangeInfo,
+    CommitDetailInfo,
     CommitInfo,
+    CommitFileVersionInfo,
     GitCommitInfo,
     GitRefInfo,
     GitRefs,
@@ -76,7 +82,10 @@ from .operations import CommitOperationAdd, CommitOperationCopy, CommitOperation
 __all__ = [
     "BlobLfsInfo",
     "BlobSecurityInfo",
+    "CommitChangeInfo",
+    "CommitDetailInfo",
     "CommitInfo",
+    "CommitFileVersionInfo",
     "CommitOperationAdd",
     "CommitOperationCopy",
     "CommitOperationDelete",

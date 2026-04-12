@@ -66,10 +66,22 @@ FAILPOINT\_EXIT\_CODE
 .. autodata:: FAILPOINT_EXIT_CODE
 
 
+RECENT\_CHUNK\_CACHE\_MAX\_BYTES
+-----------------------------------------------------
+
+.. autodata:: RECENT_CHUNK_CACHE_MAX_BYTES
+
+
+RECENT\_OBJECT\_PAYLOAD\_CACHE\_MAX\_ENTRIES
+-----------------------------------------------------
+
+.. autodata:: RECENT_OBJECT_PAYLOAD_CACHE_MAX_ENTRIES
+
+
 RepositoryBackend
 -----------------------------------------------------
 
 .. autoclass:: RepositoryBackend
-    :members: __init__,create_repo,repo_info,create_commit,merge,get_paths_info,list_repo_tree,list_repo_files,list_repo_commits,list_repo_refs,create_branch,delete_branch,create_tag,delete_tag,list_repo_reflog,open_file,read_bytes,read_range,hf_hub_download,snapshot_download,upload_file,upload_folder,upload_large_folder,delete_file,delete_folder,reset_ref,quick_verify,full_verify,get_storage_overview,gc,squash_history
+    :members: __init__,create_repo,repo_info,create_commit,merge,get_paths_info,list_repo_tree,list_repo_files,list_repo_commits,get_commit_detail,list_repo_refs,create_branch,delete_branch,create_tag,delete_tag,list_repo_reflog,open_file,read_bytes,read_range,hf_hub_download,snapshot_download,upload_file,upload_folder,upload_large_folder,delete_file,delete_folder,reset_ref,quick_verify,full_verify,get_storage_overview,get_storage_summary,gc,squash_history
 
 

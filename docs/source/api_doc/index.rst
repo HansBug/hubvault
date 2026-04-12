@@ -15,7 +15,10 @@ hubvault
     errors
     models
     operations
+    optional
+    remote/index
     repo/index
+    server/index
     storage/index
 
 \_\_all\_\_

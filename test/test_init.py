@@ -8,7 +8,10 @@ class TestPackageInit:
         expected = [
             "BlobLfsInfo",
             "BlobSecurityInfo",
+            "CommitChangeInfo",
+            "CommitDetailInfo",
             "CommitInfo",
+            "CommitFileVersionInfo",
             "CommitOperationAdd",
             "CommitOperationCopy",
             "CommitOperationDelete",

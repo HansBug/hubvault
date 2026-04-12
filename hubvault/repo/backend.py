@@ -10,6 +10,7 @@ The module contains:
 * :class:`RepositoryBackend` - Internal repository service used by the public API
 """
 
+import difflib
 import io
 import json
 import mmap
@@ -43,11 +44,15 @@ from ..errors import (
 )
 from ..models import (
     BlobLfsInfo,
+    CommitChangeInfo,
+    CommitDetailInfo,
+    CommitFileVersionInfo,
     CommitInfo,
     GcReport,
     GitCommitInfo,
     GitRefInfo,
     GitRefs,
+    LastCommitInfo,
     MergeConflict,
     MergeResult,
     ReflogEntry,
@@ -1979,19 +1984,29 @@ class RepositoryBackend(object):
         self._ensure_repo()
         self._rollback_interrupted_ref_updates_if_needed()
         with self._read_locked():
-            snapshot = self._snapshot_for_revision(revision)
+            head_commit_id = self._resolve_revision(revision)
+            snapshot = self._snapshot_for_commit(head_commit_id)
             requested_paths = [paths] if isinstance(paths, str) else list(paths)
             infos = []
+            resolved_paths = []
             for raw_path in requested_paths:
                 normalized_path = _normalize_repo_path(raw_path)
                 if normalized_path in snapshot:
                     infos.append(self._repo_file_info(normalized_path, snapshot[normalized_path]))
+                    resolved_paths.append(normalized_path)
                     continue
 
                 prefix = normalized_path + "/"
                 if any(path.startswith(prefix) for path in snapshot):
                     infos.append(self._repo_folder_info(revision, normalized_path))
-            return infos
+                    resolved_paths.append(normalized_path)
+
+            last_commit_by_path = self._last_commit_info_by_path_unlocked(
+                head_commit_id,
+                resolved_paths,
+                head_snapshot=snapshot,
+            )
+            return [self._entry_with_last_commit(item, last_commit_by_path.get(item.path)) for item in infos]
 
     def list_repo_tree(
         self,
@@ -2056,7 +2071,13 @@ class RepositoryBackend(object):
                 prefix = _normalize_repo_path(path_in_repo)
                 tree_id = self._tree_id_for_directory(root_tree_id, prefix)
 
-            return self._list_tree_entries(tree_id, prefix=prefix, recursive=recursive)
+            entries = self._list_tree_entries(tree_id, prefix=prefix, recursive=recursive)
+            last_commit_by_path = self._last_commit_info_by_path_unlocked(
+                head_commit_id,
+                [item.path for item in entries],
+                head_snapshot=self._snapshot_for_commit(head_commit_id),
+            )
+            return [self._entry_with_last_commit(item, last_commit_by_path.get(item.path)) for item in entries]
 
     def list_repo_files(self, revision: str = DEFAULT_BRANCH) -> List[str]:
         """
@@ -2152,6 +2173,45 @@ class RepositoryBackend(object):
                 self._git_commit_info(commit_id, formatted=formatted)
                 for commit_id in self._reachable_commit_order_unlocked(head_commit_id)
             ]
+
+    def get_commit_detail(
+        self,
+        commit_id: str,
+        *,
+        formatted: bool = False,
+        diff_context_lines: int = 3,
+        diff_max_text_size: int = 256 * 1024,
+    ) -> CommitDetailInfo:
+        """
+        Return one commit together with its first-parent file changes.
+
+        :param commit_id: Public commit ID or revision resolving to a commit
+        :type commit_id: str
+        :param formatted: Whether HTML-formatted title/message fields should be
+            populated
+        :type formatted: bool, optional
+        :param diff_context_lines: Context line count used for text diffs
+        :type diff_context_lines: int, optional
+        :param diff_max_text_size: Maximum size in bytes for inline text diffs
+        :type diff_max_text_size: int, optional
+        :return: Commit metadata with file-level changes
+        :rtype: CommitDetailInfo
+        :raises RepositoryNotFoundError: Raised when the configured root is not
+            a valid repository.
+        :raises RevisionNotFoundError: Raised when ``commit_id`` cannot be
+            resolved.
+        """
+
+        self._ensure_repo()
+        self._rollback_interrupted_ref_updates_if_needed()
+        with self._read_locked():
+            resolved_commit_id = self._resolve_revision(commit_id)
+            return self._commit_detail_info(
+                resolved_commit_id,
+                formatted=formatted,
+                diff_context_lines=diff_context_lines,
+                diff_max_text_size=diff_max_text_size,
+            )
 
     def list_repo_refs(self, include_pull_requests: bool = False) -> GitRefs:
         """
@@ -4137,6 +4197,38 @@ class RepositoryBackend(object):
         with self._read_locked():
             return self._storage_overview_unlocked()["overview"]
 
+    def get_storage_summary(self) -> Dict[str, int]:
+        """
+        Return a lightweight real-time storage summary.
+
+        Unlike :meth:`get_storage_overview`, this method avoids graph walks and
+        reclaimability analysis so callers can render a few immediate storage
+        metrics even for larger repositories. The result is computed directly
+        from the current repository files and metadata without relying on any
+        external cache or sidecar service.
+
+        :return: Summary mapping with the current total size, on-disk file
+            count, metadata footprint, and visible ref counts
+        :rtype: Dict[str, int]
+        :raises RepositoryNotFoundError: Raised when the configured root is not
+            a valid repository.
+
+        Example::
+
+            >>> import tempfile
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     backend = RepositoryBackend(Path(tmpdir) / "repo")
+            ...     _ = backend.create_repo()
+            ...     summary = backend.get_storage_summary()
+            ...     sorted(summary)
+            ['branch_count', 'metadata_file_count', 'metadata_size', 'tag_count', 'total_file_count', 'total_size']
+        """
+
+        self._ensure_repo()
+        self._rollback_interrupted_ref_updates_if_needed()
+        with self._read_locked():
+            return self._storage_summary_unlocked()
+
     def gc(self, dry_run: bool = False, prune_cache: bool = True) -> GcReport:
         """
         Reclaim unreachable objects and compact live chunk storage.
@@ -4433,6 +4525,57 @@ class RepositoryBackend(object):
             errors=errors,
         )
 
+    def _metadata_storage_metrics_unlocked(self) -> Dict[str, object]:
+        """Build metadata-section size details while a repo lock is already held."""
+
+        if self._metadata_store.exists():
+            return {
+                "size": (
+                    _path_metrics(self._format_path)[0]
+                    + _path_metrics(self._metadata_db_path)[0]
+                    + _path_metrics(self._repo_path / "locks")[0]
+                ),
+                "path": "FORMAT + metadata.sqlite3 + locks/",
+                "file_count": (
+                    _path_metrics(self._format_path)[1]
+                    + _path_metrics(self._metadata_db_path)[1]
+                    + _path_metrics(self._repo_path / "locks")[1]
+                ),
+                "notes": "Core repository metadata now lives in repo-local SQLite plus the shared repo lock.",
+            }
+        return {
+            "size": (
+                _path_metrics(self._format_path)[0]
+                + _path_metrics(self._repo_config_path)[0]
+                + _path_metrics(self._repo_path / "refs")[0]
+                + _path_metrics(self._repo_path / "logs" / "refs")[0]
+                + _path_metrics(self._repo_path / "locks")[0]
+            ),
+            "path": "FORMAT + repo.json + refs/ + logs/refs/ + locks/",
+            "file_count": (
+                _path_metrics(self._format_path)[1]
+                + _path_metrics(self._repo_config_path)[1]
+                + _path_metrics(self._repo_path / "refs")[1]
+                + _path_metrics(self._repo_path / "logs" / "refs")[1]
+                + _path_metrics(self._repo_path / "locks")[1]
+            ),
+            "notes": "Core repository metadata and lock files required for normal operation.",
+        }
+
+    def _storage_summary_unlocked(self) -> Dict[str, int]:
+        """Build low-cost storage-summary data while a repo lock is already held."""
+
+        metadata = self._metadata_storage_metrics_unlocked()
+        total_size, total_file_count = _path_metrics(self._repo_path)
+        return {
+            "total_size": int(total_size),
+            "total_file_count": int(total_file_count),
+            "metadata_size": int(metadata["size"]),
+            "metadata_file_count": int(metadata["file_count"]),
+            "branch_count": len(self._list_branch_names()),
+            "tag_count": len(self._list_tag_names()),
+        }
+
     def _storage_overview_unlocked(self) -> Dict[str, object]:
         """Build storage-analysis data while a repo lock is already held."""
 
@@ -4478,36 +4621,11 @@ class RepositoryBackend(object):
         live_chunk_bytes = int(live_chunk_plan["pack_size"]) + int(live_chunk_plan["index_total_size"])
         tip_chunk_bytes = int(tip_chunk_plan["pack_size"]) + int(tip_chunk_plan["index_total_size"])
 
-        if self._metadata_store.exists():
-            metadata_size = (
-                _path_metrics(self._format_path)[0]
-                + _path_metrics(self._metadata_db_path)[0]
-                + _path_metrics(self._repo_path / "locks")[0]
-            )
-            metadata_path = "FORMAT + metadata.sqlite3 + locks/"
-            metadata_file_count = (
-                _path_metrics(self._format_path)[1]
-                + _path_metrics(self._metadata_db_path)[1]
-                + _path_metrics(self._repo_path / "locks")[1]
-            )
-            metadata_notes = "Core repository metadata now lives in repo-local SQLite plus the shared repo lock."
-        else:
-            metadata_size = (
-                _path_metrics(self._format_path)[0]
-                + _path_metrics(self._repo_config_path)[0]
-                + _path_metrics(self._repo_path / "refs")[0]
-                + _path_metrics(self._repo_path / "logs" / "refs")[0]
-                + _path_metrics(self._repo_path / "locks")[0]
-            )
-            metadata_path = "FORMAT + repo.json + refs/ + logs/refs/ + locks/"
-            metadata_file_count = (
-                _path_metrics(self._format_path)[1]
-                + _path_metrics(self._repo_config_path)[1]
-                + _path_metrics(self._repo_path / "refs")[1]
-                + _path_metrics(self._repo_path / "logs" / "refs")[1]
-                + _path_metrics(self._repo_path / "locks")[1]
-            )
-            metadata_notes = "Core repository metadata and lock files required for normal operation."
+        metadata = self._metadata_storage_metrics_unlocked()
+        metadata_size = int(metadata["size"])
+        metadata_path = str(metadata["path"])
+        metadata_file_count = int(metadata["file_count"])
+        metadata_notes = str(metadata["notes"])
         actual_pack_bytes, actual_pack_files = _path_metrics(self._repo_path / "chunks" / "packs")
         actual_index_bytes, actual_index_files = _path_metrics(self._repo_path / "chunks" / "index")
         cache_size, cache_files = _path_metrics(self._repo_path / "cache")
@@ -6527,6 +6645,190 @@ class RepositoryBackend(object):
                 raise IntegrityError("unknown tree entry type")
         return snapshot
 
+    @staticmethod
+    def _path_state_from_snapshot(snapshot: Dict[str, str], normalized_path: str):
+        """
+        Resolve the logical file or subtree state for one visible repo path.
+
+        The returned value is only used for equality comparison while locating
+        the newest reachable commit that introduced the currently visible path
+        state. Files are identified by file object ID. Directories are
+        identified by a stable tuple of descendant relative paths and file
+        object IDs so any subtree change also changes the directory state.
+
+        :param snapshot: Flat snapshot mapping for one commit
+        :type snapshot: Dict[str, str]
+        :param normalized_path: Normalized repo-relative path
+        :type normalized_path: str
+        :return: Comparable logical state token, or ``None`` when the path is absent
+        :rtype: Optional[Tuple[str, object]]
+        """
+
+        file_object_id = snapshot.get(normalized_path)
+        if file_object_id is not None:
+            return "file", file_object_id
+
+        prefix = normalized_path + "/"
+        descendants = []
+        for path, object_id in snapshot.items():
+            if path.startswith(prefix):
+                descendants.append((path[len(prefix) :], object_id))
+        if not descendants:
+            return None
+        return "tree", tuple(sorted(descendants))
+
+    def _last_commit_info_for_commit(self, commit_id: str) -> LastCommitInfo:
+        """
+        Build path-listing last-commit metadata for one commit.
+
+        :param commit_id: Internal commit object identifier
+        :type commit_id: str
+        :return: Public last-commit metadata
+        :rtype: LastCommitInfo
+        """
+
+        commit_payload = self._read_object_payload("commits", commit_id)
+        raw_message = str(commit_payload.get("message", ""))
+        title = str(commit_payload.get("title", ""))
+        if not title:
+            title, _ = self._split_commit_message(raw_message)
+        return LastCommitInfo(
+            oid=self._public_commit_oid(commit_id),
+            title=title,
+            date=_parse_utc_timestamp(str(commit_payload["created_at"])),
+        )
+
+    def _last_commit_info_by_path_unlocked(
+        self,
+        head_commit_id: Optional[str],
+        paths: Sequence[str],
+        head_snapshot: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, LastCommitInfo]:
+        """
+        Resolve the newest reachable commit that introduced each visible path state.
+
+        :param head_commit_id: Commit object selected by the caller revision
+        :type head_commit_id: Optional[str]
+        :param paths: Visible repo-relative paths to inspect
+        :type paths: Sequence[str]
+        :param head_snapshot: Optional precomputed head snapshot
+        :type head_snapshot: Optional[Dict[str, str]]
+        :return: Mapping of repo-relative path to last-commit metadata
+        :rtype: Dict[str, LastCommitInfo]
+        """
+
+        if head_commit_id is None:
+            return {}
+
+        normalized_paths = []
+        seen_paths = set()
+        for path in paths:
+            normalized_path = _normalize_repo_path(path)
+            if normalized_path in seen_paths:
+                continue
+            seen_paths.add(normalized_path)
+            normalized_paths.append(normalized_path)
+
+        current_snapshot = dict(head_snapshot or self._snapshot_for_commit(head_commit_id))
+        target_states = {
+            path: self._path_state_from_snapshot(current_snapshot, path)
+            for path in normalized_paths
+        }
+        unresolved = {
+            path
+            for path in normalized_paths
+            if target_states.get(path) is not None
+        }
+        if not unresolved:
+            return {}
+
+        snapshot_cache = {
+            None: {},
+            head_commit_id: current_snapshot,
+        }
+        commit_cache = {}
+
+        def _snapshot_for(commit_id: Optional[str]) -> Dict[str, str]:
+            cached_snapshot = snapshot_cache.get(commit_id)
+            if cached_snapshot is not None:
+                return cached_snapshot
+            snapshot = self._snapshot_for_commit(commit_id)
+            snapshot_cache[commit_id] = snapshot
+            return snapshot
+
+        def _commit_payload_for(commit_id: str) -> dict:
+            cached_payload = commit_cache.get(commit_id)
+            if cached_payload is not None:
+                return cached_payload
+            payload = self._read_object_payload("commits", commit_id)
+            commit_cache[commit_id] = payload
+            return payload
+
+        resolved = {}
+        pending = [head_commit_id]
+        visited = set()
+        while pending and unresolved:
+            commit_id = pending.pop(0)
+            if commit_id is None or commit_id in visited:
+                continue
+            visited.add(commit_id)
+
+            commit_payload = _commit_payload_for(commit_id)
+            parent_ids = [str(parent_id) for parent_id in commit_payload.get("parents", [])]
+            commit_snapshot = _snapshot_for(commit_id)
+
+            for path in list(unresolved):
+                target_state = target_states[path]
+                if self._path_state_from_snapshot(commit_snapshot, path) != target_state:
+                    continue
+                if not parent_ids:
+                    resolved[path] = self._last_commit_info_for_commit(commit_id)
+                    unresolved.remove(path)
+                    continue
+                if all(self._path_state_from_snapshot(_snapshot_for(parent_id), path) != target_state for parent_id in parent_ids):
+                    resolved[path] = self._last_commit_info_for_commit(commit_id)
+                    unresolved.remove(path)
+
+            pending.extend(parent_ids)
+
+        return resolved
+
+    @staticmethod
+    def _entry_with_last_commit(
+        entry: Union[RepoFile, RepoFolder],
+        last_commit: Optional[LastCommitInfo],
+    ) -> Union[RepoFile, RepoFolder]:
+        """
+        Return one repo entry with normalized last-commit metadata attached.
+
+        :param entry: Existing repo entry
+        :type entry: Union[RepoFile, RepoFolder]
+        :param last_commit: Last-commit metadata to attach
+        :type last_commit: Optional[LastCommitInfo]
+        :return: Repo entry carrying ``last_commit``
+        :rtype: Union[RepoFile, RepoFolder]
+        """
+
+        if isinstance(entry, RepoFile):
+            return RepoFile(
+                path=entry.path,
+                size=entry.size,
+                blob_id=entry.blob_id,
+                lfs=entry.lfs,
+                last_commit=last_commit,
+                security=entry.security,
+                oid=entry.oid,
+                sha256=entry.sha256,
+                etag=entry.etag,
+            )
+        if isinstance(entry, RepoFolder):
+            return RepoFolder(
+                path=entry.path,
+                tree_id=entry.tree_id,
+                last_commit=last_commit,
+            )
+        raise TypeError("Unsupported repository entry model: %r." % (type(entry).__name__,))
+
     def _compose_commit_text(self, commit_message: str, commit_description: str) -> str:
         """
         Compose the stored commit text from title and description parts.
@@ -7395,6 +7697,258 @@ class RepositoryBackend(object):
             commit_message=title,
             commit_description=description,
             oid=self._public_commit_oid(commit_id),
+        )
+
+    @staticmethod
+    def _decode_diff_text(data: bytes) -> Optional[str]:
+        """
+        Decode one payload as UTF-8 text for diff rendering.
+
+        :param data: Raw file payload bytes
+        :type data: bytes
+        :return: Decoded text or ``None`` when the payload should be treated as
+            binary
+        :rtype: Optional[str]
+        """
+
+        if b"\x00" in data:
+            return None
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+
+    def _commit_file_version_info(self, path: str, file_object_id: str) -> CommitFileVersionInfo:
+        """
+        Build one commit-diff file-side model from a file object.
+
+        :param path: Repo-relative file path
+        :type path: str
+        :param file_object_id: File object identifier
+        :type file_object_id: str
+        :return: File version metadata for commit diffs
+        :rtype: CommitFileVersionInfo
+        """
+
+        repo_file = self._repo_file_info(path, file_object_id)
+        return CommitFileVersionInfo(
+            path=repo_file.path,
+            size=repo_file.size,
+            oid=repo_file.oid,
+            blob_id=repo_file.blob_id,
+            sha256=repo_file.sha256,
+        )
+
+    @staticmethod
+    def _git_diff_header(
+        path: str,
+        change_type: str,
+        old_file: Optional[CommitFileVersionInfo],
+        new_file: Optional[CommitFileVersionInfo],
+    ) -> List[str]:
+        """
+        Build the git-style header lines for one unified diff payload.
+
+        :param path: Repo-relative file path
+        :type path: str
+        :param change_type: Change type label
+        :type change_type: str
+        :param old_file: Previous file metadata, if any
+        :type old_file: Optional[CommitFileVersionInfo]
+        :param new_file: New file metadata, if any
+        :type new_file: Optional[CommitFileVersionInfo]
+        :return: Diff header lines
+        :rtype: List[str]
+        """
+
+        old_label = old_file.path if old_file is not None else path
+        new_label = new_file.path if new_file is not None else path
+        headers = [
+            "diff --git a/%s b/%s" % (old_label, new_label),
+        ]
+        if old_file is not None and new_file is not None:
+            headers.append(
+                "index %s..%s 100644" % (old_file.oid[:12], new_file.oid[:12])
+            )
+        elif change_type == "added":
+            headers.append("new file mode 100644")
+        elif change_type == "deleted":
+            headers.append("deleted file mode 100644")
+        return headers
+
+    def _unified_diff_for_change(
+        self,
+        path: str,
+        change_type: str,
+        old_file: Optional[CommitFileVersionInfo],
+        new_file: Optional[CommitFileVersionInfo],
+        old_text: str,
+        new_text: str,
+        context_lines: int,
+    ) -> str:
+        """
+        Build one Git-style unified diff string for a text change.
+
+        :param path: Repo-relative file path
+        :type path: str
+        :param change_type: Change type label
+        :type change_type: str
+        :param old_file: Previous file metadata, if any
+        :type old_file: Optional[CommitFileVersionInfo]
+        :param new_file: New file metadata, if any
+        :type new_file: Optional[CommitFileVersionInfo]
+        :param old_text: Previous decoded text payload
+        :type old_text: str
+        :param new_text: New decoded text payload
+        :type new_text: str
+        :param context_lines: Context line count used by the diff
+        :type context_lines: int
+        :return: Git-style unified diff string
+        :rtype: str
+        """
+
+        fromfile = "a/%s" % ((old_file.path if old_file is not None else path),) if old_file is not None else "/dev/null"
+        tofile = "b/%s" % ((new_file.path if new_file is not None else path),) if new_file is not None else "/dev/null"
+        diff_lines = list(
+            difflib.unified_diff(
+                old_text.splitlines(),
+                new_text.splitlines(),
+                fromfile=fromfile,
+                tofile=tofile,
+                n=context_lines,
+                lineterm="",
+            )
+        )
+        return "\n".join(self._git_diff_header(path, change_type, old_file, new_file) + diff_lines) + "\n"
+
+    def _commit_change_info(
+        self,
+        path: str,
+        old_file_object_id: Optional[str],
+        new_file_object_id: Optional[str],
+        *,
+        diff_context_lines: int,
+        diff_max_text_size: int,
+    ) -> CommitChangeInfo:
+        """
+        Build one file-level change entry for a commit detail payload.
+
+        :param path: Repo-relative file path
+        :type path: str
+        :param old_file_object_id: Previous file object ID, if any
+        :type old_file_object_id: Optional[str]
+        :param new_file_object_id: New file object ID, if any
+        :type new_file_object_id: Optional[str]
+        :param diff_context_lines: Context line count used for text diffs
+        :type diff_context_lines: int
+        :param diff_max_text_size: Maximum byte size allowed for inline text
+            diffs
+        :type diff_max_text_size: int
+        :return: File-level change metadata
+        :rtype: CommitChangeInfo
+        """
+
+        if old_file_object_id is None:
+            change_type = "added"
+        elif new_file_object_id is None:
+            change_type = "deleted"
+        else:
+            change_type = "modified"
+
+        old_file = (
+            None if old_file_object_id is None else self._commit_file_version_info(path, old_file_object_id)
+        )
+        new_file = (
+            None if new_file_object_id is None else self._commit_file_version_info(path, new_file_object_id)
+        )
+
+        unified_diff = None
+        is_binary = True
+        old_text = None
+        new_text = None
+        if old_file_object_id is None or (old_file is not None and old_file.size <= diff_max_text_size):
+            if old_file_object_id is None:
+                old_text = ""
+            else:
+                old_text = self._decode_diff_text(self._read_file_bytes_by_object_id(old_file_object_id))
+        if new_file_object_id is None or (new_file is not None and new_file.size <= diff_max_text_size):
+            if new_file_object_id is None:
+                new_text = ""
+            else:
+                new_text = self._decode_diff_text(self._read_file_bytes_by_object_id(new_file_object_id))
+
+        if old_text is not None and new_text is not None:
+            is_binary = False
+            unified_diff = self._unified_diff_for_change(
+                path,
+                change_type,
+                old_file,
+                new_file,
+                old_text,
+                new_text,
+                diff_context_lines,
+            )
+
+        return CommitChangeInfo(
+            path=path,
+            change_type=change_type,
+            old_file=old_file,
+            new_file=new_file,
+            is_binary=is_binary,
+            unified_diff=unified_diff,
+        )
+
+    def _commit_detail_info(
+        self,
+        commit_id: str,
+        *,
+        formatted: bool = False,
+        diff_context_lines: int = 3,
+        diff_max_text_size: int = 256 * 1024,
+    ) -> CommitDetailInfo:
+        """
+        Build one commit-detail model from an existing commit.
+
+        :param commit_id: Commit object identifier
+        :type commit_id: str
+        :param formatted: Whether HTML-formatted title/message fields should be
+            populated
+        :type formatted: bool, optional
+        :param diff_context_lines: Context line count used for text diffs
+        :type diff_context_lines: int, optional
+        :param diff_max_text_size: Maximum size in bytes for inline text diffs
+        :type diff_max_text_size: int, optional
+        :return: Commit metadata with file-level changes
+        :rtype: CommitDetailInfo
+        """
+
+        commit_payload = self._read_object_payload("commits", commit_id)
+        parent_ids = [str(parent_id) for parent_id in commit_payload.get("parents", [])]
+        compare_parent_id = parent_ids[0] if parent_ids else None
+        current_snapshot = self._snapshot_for_commit(commit_id)
+        parent_snapshot = self._snapshot_for_commit(compare_parent_id)
+
+        changes = []
+        for path in sorted(set(parent_snapshot) | set(current_snapshot)):
+            old_file_object_id = parent_snapshot.get(path)
+            new_file_object_id = current_snapshot.get(path)
+            if old_file_object_id == new_file_object_id:
+                continue
+            changes.append(
+                self._commit_change_info(
+                    path,
+                    old_file_object_id,
+                    new_file_object_id,
+                    diff_context_lines=diff_context_lines,
+                    diff_max_text_size=diff_max_text_size,
+                )
+            )
+
+        return CommitDetailInfo(
+            commit=self._git_commit_info(commit_id, formatted=formatted),
+            parent_commit_ids=[self._public_commit_oid(parent_id) for parent_id in parent_ids],
+            compare_parent_commit_id=self._public_commit_oid(compare_parent_id) if compare_parent_id is not None else None,
+            changes=changes,
         )
 
     def _git_commit_info(self, commit_id: str, formatted: bool = False) -> GitCommitInfo:
