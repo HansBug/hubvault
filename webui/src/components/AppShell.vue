@@ -55,7 +55,7 @@ const headLabel = computed(function buildHeadLabel() {
 });
 
 const activeMenu = computed(function resolveActiveMenu() {
-  if (route.name === "file-detail") {
+  if (route.name === "file-detail" || route.name === "upload") {
     return "files";
   }
   if (route.name === "commit-detail") {

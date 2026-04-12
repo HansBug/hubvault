@@ -24,14 +24,16 @@ const ElTableColumnStub = {
   ].join("")
 };
 
-function findButtons(wrapper, text: string) {
-  return wrapper.findAll("button").filter(function findMatch(item) {
-    return item.text().indexOf(text) >= 0 || item.attributes("aria-label") === text;
+function findButtonByLabelOrText(wrapper, value: string) {
+  const button = wrapper.findAll("button").find(function findMatch(item) {
+    return item.text().indexOf(value) >= 0 || item.attributes("aria-label") === value;
   });
+  expect(button).toBeTruthy();
+  return button!;
 }
 
 describe("FileTable", function suite() {
-  it("renders entries and emits open and delete events with download links", async function testFileTable() {
+  it("renders entries, commit links, and action buttons with download links", async function testFileTable() {
     const wrapper = mount(FileTable, {
       props: {
         revision: "release/v1",
@@ -42,6 +44,7 @@ describe("FileTable", function suite() {
             entry_type: "folder",
             size: 0,
             last_commit: {
+              oid: "commit-docs",
               title: "update docs",
               date: "2026-04-12T00:00:00Z"
             }
@@ -51,6 +54,7 @@ describe("FileTable", function suite() {
             entry_type: "file",
             size: 1024,
             last_commit: {
+              oid: "commit-readme",
               title: "add readme",
               date: "2026-04-12T00:00:00Z"
             }
@@ -61,6 +65,9 @@ describe("FileTable", function suite() {
         stubs: {
           ElIcon: {
             template: "<span class=\"el-icon\"><slot /></span>"
+          },
+          ElTooltip: {
+            template: "<span class=\"el-tooltip-stub\"><slot /></span>"
           },
           ElTable: ElTableStub,
           ElTableColumn: ElTableColumnStub,
@@ -73,14 +80,16 @@ describe("FileTable", function suite() {
       }
     });
 
-    await findButtons(wrapper, "docs")[0].trigger("click");
-    await findButtons(wrapper, "readme.md")[0].trigger("click");
-    await findButtons(wrapper, "Delete docs")[0].trigger("click");
-    await findButtons(wrapper, "Delete docs/readme.md")[0].trigger("click");
+    await findButtonByLabelOrText(wrapper, "docs").trigger("click");
+    await findButtonByLabelOrText(wrapper, "readme.md").trigger("click");
+    await findButtonByLabelOrText(wrapper, "update docs").trigger("click");
+    await findButtonByLabelOrText(wrapper, "Open folder docs").trigger("click");
+    await findButtonByLabelOrText(wrapper, "Delete docs/readme.md").trigger("click");
 
     expect(wrapper.emitted("open-folder")).toContainEqual(["docs"]);
     expect(wrapper.emitted("open-file")).toContainEqual(["docs/readme.md"]);
-    expect(wrapper.emitted("delete-entry")).toHaveLength(2);
+    expect(wrapper.emitted("open-commit")).toContainEqual(["commit-docs"]);
+    expect(wrapper.emitted("delete-entry")).toHaveLength(1);
     expect(wrapper.text()).toContain("update docs");
     expect(wrapper.text()).toContain("add readme");
     expect(wrapper.html()).toContain("Download docs/readme.md");

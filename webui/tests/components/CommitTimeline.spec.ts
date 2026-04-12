@@ -20,8 +20,16 @@ vi.mock("vue-router", function mockVueRouter() {
 
 import CommitTimeline from "@/components/CommitTimeline.vue";
 
+function findButtonByText(wrapper, value: string) {
+  const button = wrapper.findAll("button").find(function findMatch(item) {
+    return item.text().indexOf(value) >= 0;
+  });
+  expect(button).toBeTruthy();
+  return button!;
+}
+
 describe("CommitTimeline", function suite() {
-  it("renders loading, empty, populated states, and opens commit details", async function testCommitTimelineStates() {
+  it("renders loading, empty, populated states, and opens commit details from the title", async function testCommitTimelineStates() {
     const wrapper = mount(CommitTimeline, {
       props: {
         revision: "release/v1",
@@ -56,11 +64,7 @@ describe("CommitTimeline", function suite() {
     expect(wrapper.text()).toContain("details");
     expect(wrapper.html()).toContain("1234567890");
 
-    const button = wrapper.findAll("button").find(function findMatch(item) {
-      return item.text().indexOf("View Diff") >= 0;
-    });
-    expect(button).toBeTruthy();
-    await button!.trigger("click");
+    await findButtonByText(wrapper, "ship commit timeline").trigger("click");
 
     expect(commitTimelineMocks.push).toHaveBeenCalledWith({
       name: "commit-detail",

@@ -62,7 +62,7 @@ watch(
     <el-skeleton v-if="loading" :rows="10" animated />
     <pre v-else class="code-viewer__pre line-numbers"><code
       ref="codeElement"
-      :class="'language-' + resolvedLanguage"
+      :class="['code-viewer__code', 'language-' + resolvedLanguage]"
     >{{ content }}</code></pre>
   </div>
 </template>

@@ -46,7 +46,7 @@ test("readonly frontend supports token query entry plus standalone file and comm
   });
 
   await page.getByRole("button", { name: "Back to Directory" }).click();
-  await page.getByRole("button", { name: "Repository Root" }).click();
+  await page.getByRole("button", { name: "Repository root" }).click();
   await page.getByRole("button", { name: "images", exact: true }).click();
   await page.getByRole("button", { name: "logo.svg", exact: true }).click();
   await expectImageLoaded(page.getByTestId("file-detail-view").locator("img"));
@@ -57,7 +57,7 @@ test("readonly frontend supports token query entry plus standalone file and comm
 
   await page.getByRole("menuitem", { name: "Commits" }).click();
   await expect(page.getByTestId("commits-view")).toBeVisible();
-  await page.getByRole("button", { name: "View Diff" }).first().click();
+  await page.getByRole("button", { name: /update guide model and ui assets/i }).first().click();
   await expect(page.getByTestId("commit-detail-view")).toBeVisible();
   await expect(page.getByTestId("html-diff-viewer").first()).toBeVisible();
   await expect(page.getByTestId("image-compare-viewer")).toBeVisible();
@@ -89,6 +89,8 @@ test("read-write frontend queues multiple uploads and commits them in one batch"
   await page.goto("/repo/files?revision=release%2Fv1&token=rw-token");
 
   await expect(page.getByTestId("files-view")).toBeVisible();
+  await page.getByTestId("files-upload-button").click();
+  await expect(page.getByTestId("upload-view")).toBeVisible();
   await expect(page.getByTestId("upload-queue-panel")).toBeVisible();
 
   await page.getByTestId("upload-file-input").setInputFiles({
@@ -108,10 +110,8 @@ test("read-write frontend queues multiple uploads and commits them in one batch"
   await page.getByPlaceholder("Commit message for the queued upload batch").fill("upload from playwright");
   await page.getByRole("button", { name: "Commit Queued Uploads" }).click();
 
-  await expect(page.getByText("notes.txt")).toBeVisible();
-  await expect(page.getByText("second.txt")).toBeVisible();
-  await expect(page.getByText("0 files queued")).toBeVisible();
-
+  await expect(page.getByTestId("files-view")).toBeVisible();
+  await expect(page.getByTestId("upload-queue-panel")).toHaveCount(0);
   await page.getByRole("button", { name: "notes.txt", exact: true }).click();
   await expect(page.getByTestId("file-detail-view")).toContainText("rw upload");
 });

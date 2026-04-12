@@ -45,7 +45,7 @@ describe("router", function suite() {
         return item.name;
       })
     ).toEqual(
-      expect.arrayContaining(["login", "overview", "files", "file-detail", "commits", "commit-detail", "refs", "storage"])
+      expect.arrayContaining(["login", "overview", "files", "upload", "file-detail", "commits", "commit-detail", "refs", "storage"])
     );
   });
 

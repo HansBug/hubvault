@@ -61,6 +61,14 @@ vi.mock("@/components/ReadmeViewer.vue", function mockReadmeViewer() {
 
 import FileDetailView from "@/views/FileDetailView.vue";
 
+function findButtonByLabelOrText(wrapper, value: string) {
+  const button = wrapper.findAll("button").find(function findMatch(item) {
+    return item.text().indexOf(value) >= 0 || item.attributes("aria-label") === value;
+  });
+  expect(button).toBeTruthy();
+  return button!;
+}
+
 describe("FileDetailView", function suite() {
   beforeEach(function resetFileDetailMocks() {
     vi.clearAllMocks();
@@ -75,6 +83,7 @@ describe("FileDetailView", function suite() {
         blob_id: "blob-1",
         etag: "etag-1",
         last_commit: {
+          oid: "commit-guide",
           title: "update guide",
           date: "2026-04-12T00:00:00Z"
         }
@@ -99,18 +108,41 @@ describe("FileDetailView", function suite() {
     expect(fileDetailMocks.getPathsInfo).toHaveBeenCalledWith("release/v1", ["docs/guide.md"]);
     expect(fileDetailMocks.getBlobBytes).toHaveBeenCalledWith("release/v1", "docs/guide.md");
     expect(wrapper.get("[data-testid='readme-viewer-stub']").text()).toContain("docs/guide.md|# Guide");
+    expect(wrapper.text()).toContain("<home>");
 
-    const backButton = wrapper.findAll("button").find(function findMatch(item) {
-      return item.text().indexOf("Back to Directory") >= 0;
-    });
-    expect(backButton).toBeTruthy();
-    await backButton!.trigger("click");
+    await findButtonByLabelOrText(wrapper, "Back to Directory").trigger("click");
 
     expect(fileDetailMocks.push).toHaveBeenCalledWith({
       name: "files",
       query: {
         revision: "release/v1",
         path: "docs"
+      }
+    });
+  });
+
+  it("opens the last commit directly from the file metadata card", async function testOpenLastCommit() {
+    const wrapper = mount(FileDetailView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+    await flushPromises();
+
+    await findButtonByLabelOrText(wrapper, "update guide").trigger("click");
+
+    expect(fileDetailMocks.push).toHaveBeenCalledWith({
+      name: "commit-detail",
+      params: {
+        commitId: "commit-guide"
+      },
+      query: {
+        revision: "release/v1"
       }
     });
   });

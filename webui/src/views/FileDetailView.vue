@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { Back, Download, FolderOpened, Picture, View } from "@element-plus/icons-vue";
+import { Back, Download, Picture, View } from "@element-plus/icons-vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { buildBlobUrl, buildDownloadUrl, getBlobBytes, getPathsInfo } from "@/api/client";
 import CodeViewer from "@/components/CodeViewer.vue";
+import PathBreadcrumb from "@/components/PathBreadcrumb.vue";
 import ReadmeViewer from "@/components/ReadmeViewer.vue";
-import { decodeUtf8Bytes, isImagePath, isJsonPath, isMarkdownPath, isTextLikePath } from "@/utils/files";
+import { buildBreadcrumbs, decodeUtf8Bytes, isImagePath, isJsonPath, isMarkdownPath, isTextLikePath } from "@/utils/files";
 import { formatBytes, formatDateTime, shortOid } from "@/utils/format";
 
 const PREVIEW_LIMIT = 1024 * 1024;
@@ -40,6 +41,49 @@ const directoryPath = computed(function resolveDirectoryPath() {
   const parts = pathInRepo.value.split("/");
   parts.pop();
   return parts.join("/");
+});
+
+const breadcrumbItems = computed(function resolveBreadcrumbItems() {
+  const segments = buildBreadcrumbs(pathInRepo.value);
+  const items: any[] = [
+    {
+      home: true,
+      label: "<home>",
+      current: !segments.length,
+      ariaLabel: "Repository root",
+      to: {
+        name: "files",
+        query: {
+          revision: props.revision
+        }
+      }
+    }
+  ];
+  segments.forEach(function pushBreadcrumb(item, index) {
+    const isCurrent = index === segments.length - 1;
+    items.push({
+      label: item.label,
+      current: isCurrent,
+      to: isCurrent
+        ? {
+            name: "file-detail",
+            params: {
+              pathMatch: item.path.split("/")
+            },
+            query: {
+              revision: props.revision
+            }
+          }
+        : {
+            name: "files",
+            query: {
+              revision: props.revision,
+              path: item.path
+            }
+          }
+    });
+  });
+  return items;
 });
 
 const downloadUrl = computed(function resolveDownloadUrl() {
@@ -116,6 +160,21 @@ function backToDirectory() {
   });
 }
 
+function openLastCommit() {
+  if (!entry.value || !entry.value.last_commit || !entry.value.last_commit.oid) {
+    return;
+  }
+  router.push({
+    name: "commit-detail",
+    params: {
+      commitId: entry.value.last_commit.oid
+    },
+    query: {
+      revision: props.revision
+    }
+  });
+}
+
 watch(
   function watchFileInputs() {
     return [props.revision, pathInRepo.value].join(":");
@@ -165,19 +224,17 @@ watch(
         </div>
       </div>
 
+      <path-breadcrumb :items="breadcrumbItems" />
+
       <el-skeleton v-if="loading" :rows="10" animated />
       <div v-else-if="entry" class="stack">
         <div class="detail-hero">
           <div class="stack">
             <h3 class="detail-hero__title mono">{{ entry.path }}</h3>
-            <div class="app-shell__meta">
-              <span class="path-pill">
-                <el-icon><FolderOpened /></el-icon>
-                {{ directoryPath || "Repository root" }}
-              </span>
-              <span class="path-pill">{{ formatBytes(entry.size) }}</span>
-              <span class="path-pill">oid: <span class="mono">{{ shortOid(entry.oid) }}</span></span>
-              <span class="path-pill">sha256: <span class="mono">{{ shortOid(entry.sha256) }}</span></span>
+            <div class="app-shell__meta detail-meta-pills">
+              <span class="path-pill path-pill--compact">{{ formatBytes(entry.size) }}</span>
+              <span class="path-pill path-pill--compact">oid: <span class="mono">{{ shortOid(entry.oid) }}</span></span>
+              <span class="path-pill path-pill--compact">sha256: <span class="mono">{{ shortOid(entry.sha256) }}</span></span>
             </div>
           </div>
 
@@ -186,7 +243,16 @@ watch(
               <div class="kv-list">
                 <div class="kv-row">
                   <span>Last commit</span>
-                  <strong>{{ entry.last_commit?.title || "Unknown" }}</strong>
+                  <el-button
+                    v-if="entry.last_commit?.oid"
+                    link
+                    type="primary"
+                    class="detail-commit-link"
+                    @click="openLastCommit"
+                  >
+                    {{ entry.last_commit.title || shortOid(entry.last_commit.oid) }}
+                  </el-button>
+                  <strong v-else>{{ entry.last_commit?.title || "Unknown" }}</strong>
                 </div>
                 <div class="kv-row">
                   <span>Updated</span>

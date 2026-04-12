@@ -4,7 +4,7 @@ import {
   Document,
   Download,
   FolderOpened,
-  Right
+  View
 } from "@element-plus/icons-vue";
 
 import { buildDownloadUrl } from "@/api/client";
@@ -27,7 +27,7 @@ const props = defineProps({
   }
 });
 
-const emit = defineEmits(["open-folder", "open-file", "delete-entry"]);
+const emit = defineEmits(["open-folder", "open-file", "open-commit", "delete-entry"]);
 
 function displayName(path) {
   const parts = String(path || "").split("/");
@@ -36,6 +36,16 @@ function displayName(path) {
 
 function downloadUrl(path) {
   return buildDownloadUrl(props.revision, path);
+}
+
+function openEntry(row) {
+  emit(row.entry_type === "folder" ? "open-folder" : "open-file", row.path);
+}
+
+function openCommit(row) {
+  if (row && row.last_commit && row.last_commit.oid) {
+    emit("open-commit", row.last_commit.oid);
+  }
 }
 </script>
 
@@ -51,7 +61,7 @@ function downloadUrl(path) {
         <el-button
           link
           type="primary"
-          @click="$emit(row.entry_type === 'folder' ? 'open-folder' : 'open-file', row.path)"
+          @click="openEntry(row)"
         >
           <span class="table-path">
             <el-icon class="table-path__icon">
@@ -65,7 +75,16 @@ function downloadUrl(path) {
     </el-table-column>
     <el-table-column label="Last Commit" min-width="240">
       <template #default="{ row }">
-        <div>{{ row.last_commit?.title || "Unknown" }}</div>
+        <el-button
+          v-if="row.last_commit?.oid"
+          link
+          type="primary"
+          class="table-commit-link"
+          @click="openCommit(row)"
+        >
+          {{ row.last_commit.title || "Unknown" }}
+        </el-button>
+        <div v-else>Unknown</div>
       </template>
     </el-table-column>
     <el-table-column label="Updated" width="160">
@@ -78,34 +97,38 @@ function downloadUrl(path) {
         <span>{{ row.entry_type === "file" ? formatBytes(row.size) : "-" }}</span>
       </template>
     </el-table-column>
-    <el-table-column label="Actions" width="168" align="right">
+    <el-table-column label="Actions" width="190" align="right">
       <template #default="{ row }">
         <div class="table-actions">
-          <el-button
-            :icon="Right"
-            circle
-            plain
-            :aria-label="row.entry_type === 'folder' ? 'Open folder ' + row.path : 'Open file ' + row.path"
-            @click="$emit(row.entry_type === 'folder' ? 'open-folder' : 'open-file', row.path)"
-          />
-          <el-button
-            v-if="row.entry_type === 'file'"
-            :icon="Download"
-            circle
-            plain
-            tag="a"
-            :href="downloadUrl(row.path)"
-            :aria-label="'Download ' + row.path"
-          />
-          <el-button
-            v-if="canWrite"
-            :icon="Delete"
-            circle
-            plain
-            type="danger"
-            :aria-label="'Delete ' + row.path"
-            @click="$emit('delete-entry', row)"
-          />
+          <el-tooltip :content="row.entry_type === 'folder' ? 'Open folder' : 'Open file'" placement="top">
+            <el-button
+              :icon="View"
+              circle
+              plain
+              :aria-label="row.entry_type === 'folder' ? 'Open folder ' + row.path : 'Open file ' + row.path"
+              @click="openEntry(row)"
+            />
+          </el-tooltip>
+          <el-tooltip v-if="row.entry_type === 'file'" content="Download file" placement="top">
+            <el-button
+              :icon="Download"
+              circle
+              plain
+              tag="a"
+              :href="downloadUrl(row.path)"
+              :aria-label="'Download ' + row.path"
+            />
+          </el-tooltip>
+          <el-tooltip v-if="canWrite" content="Delete entry" placement="top">
+            <el-button
+              :icon="Delete"
+              circle
+              plain
+              type="danger"
+              :aria-label="'Delete ' + row.path"
+              @click="$emit('delete-entry', row)"
+            />
+          </el-tooltip>
         </div>
       </template>
     </el-table-column>

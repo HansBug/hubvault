@@ -5,6 +5,7 @@ import CommitDetailView from "./views/CommitDetailView.vue";
 import CommitsView from "./views/CommitsView.vue";
 import FileDetailView from "./views/FileDetailView.vue";
 import FilesView from "./views/FilesView.vue";
+import UploadView from "./views/UploadView.vue";
 import LoginView from "./views/LoginView.vue";
 import OverviewView from "./views/OverviewView.vue";
 import RefsView from "./views/RefsView.vue";
@@ -45,6 +46,11 @@ const router = createRouter({
           path: "files",
           name: "files",
           component: FilesView
+        },
+        {
+          path: "upload",
+          name: "upload",
+          component: UploadView
         },
         {
           path: "blob/:pathMatch(.*)*",
