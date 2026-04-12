@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { RefreshRight } from "@element-plus/icons-vue";
+
 import { formatBytes } from "@/utils/format";
 
 defineProps({
@@ -40,7 +42,7 @@ defineProps({
   }
 });
 
-const emit = defineEmits(["load-overview", "run-quick-verify", "run-full-verify"]);
+const emit = defineEmits(["refresh-summary", "load-overview", "run-quick-verify", "run-full-verify"]);
 
 function formatCount(value) {
   return Number(value || 0).toLocaleString();
@@ -49,7 +51,23 @@ function formatCount(value) {
 
 <template>
   <div class="repo-grid">
-    <div class="metric-grid">
+    <div class="surface__header storage-summary-header">
+      <div>
+        <h3 class="surface__title">Quick Storage Metrics</h3>
+        <p class="surface__subtitle">Real-time low-cost repository footprint without the heavier storage analysis.</p>
+      </div>
+      <el-button
+        plain
+        :icon="RefreshRight"
+        :loading="loadingSummary"
+        :disabled="actionsDisabled"
+        @click="emit('refresh-summary')"
+      >
+        Refresh
+      </el-button>
+    </div>
+
+    <div class="metric-grid metric-grid--summary">
       <el-card class="surface" body-style="padding: 18px;">
         <div class="muted">Total size</div>
         <div style="margin-top: 10px; font-size: 26px; font-weight: 700;">
@@ -66,24 +84,6 @@ function formatCount(value) {
         <div class="muted">Metadata store</div>
         <div style="margin-top: 10px; font-size: 26px; font-weight: 700;">
           {{ summary ? formatBytes(summary.metadata_size) : (loadingSummary ? "Loading..." : "Unavailable") }}
-        </div>
-      </el-card>
-      <el-card class="surface" body-style="padding: 18px;">
-        <div class="muted">Reachable</div>
-        <div style="margin-top: 10px; font-size: 26px; font-weight: 700;">
-          {{ overview ? formatBytes(overview.reachable_size) : "Load analysis" }}
-        </div>
-      </el-card>
-      <el-card class="surface" body-style="padding: 18px;">
-        <div class="muted">GC reclaimable</div>
-        <div style="margin-top: 10px; font-size: 26px; font-weight: 700;">
-          {{ overview ? formatBytes(overview.reclaimable_gc_size) : "Load analysis" }}
-        </div>
-      </el-card>
-      <el-card class="surface" body-style="padding: 18px;">
-        <div class="muted">Cache reclaimable</div>
-        <div style="margin-top: 10px; font-size: 26px; font-weight: 700;">
-          {{ overview ? formatBytes(overview.reclaimable_cache_size) : "Load analysis" }}
         </div>
       </el-card>
     </div>
@@ -110,21 +110,36 @@ function formatCount(value) {
           v-else-if="!overview"
           description="Load the storage analysis only when you need the heavier repository footprint report."
         />
-        <el-table
-          v-else
-          :data="overview.sections || []"
-          empty-text="No storage section data available."
-        >
-          <el-table-column prop="name" label="Section" min-width="160" />
-          <el-table-column prop="path" label="Path" min-width="140" />
-          <el-table-column label="Total" width="120">
-            <template #default="{ row }">{{ formatBytes(row.total_size) }}</template>
-          </el-table-column>
-          <el-table-column label="Reclaimable" width="130">
-            <template #default="{ row }">{{ formatBytes(row.reclaimable_size) }}</template>
-          </el-table-column>
-          <el-table-column prop="reclaim_strategy" label="Strategy" width="140" />
-        </el-table>
+        <template v-else>
+          <div class="storage-analysis-strip" data-testid="storage-analysis-strip">
+            <div class="storage-analysis-strip__item">
+              <span class="muted">Reachable</span>
+              <strong>{{ formatBytes(overview.reachable_size) }}</strong>
+            </div>
+            <div class="storage-analysis-strip__item">
+              <span class="muted">GC reclaimable</span>
+              <strong>{{ formatBytes(overview.reclaimable_gc_size) }}</strong>
+            </div>
+            <div class="storage-analysis-strip__item">
+              <span class="muted">Cache reclaimable</span>
+              <strong>{{ formatBytes(overview.reclaimable_cache_size) }}</strong>
+            </div>
+          </div>
+          <el-table
+            :data="overview.sections || []"
+            empty-text="No storage section data available."
+          >
+            <el-table-column prop="name" label="Section" min-width="160" />
+            <el-table-column prop="path" label="Path" min-width="140" />
+            <el-table-column label="Total" width="120">
+              <template #default="{ row }">{{ formatBytes(row.total_size) }}</template>
+            </el-table-column>
+            <el-table-column label="Reclaimable" width="130">
+              <template #default="{ row }">{{ formatBytes(row.reclaimable_size) }}</template>
+            </el-table-column>
+            <el-table-column prop="reclaim_strategy" label="Strategy" width="140" />
+          </el-table>
+        </template>
       </el-card>
 
       <div class="stack">

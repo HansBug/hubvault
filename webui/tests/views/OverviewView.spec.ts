@@ -40,7 +40,7 @@ vi.mock("@/components/ReadmeViewer.vue", function mockReadmeViewer() {
   return {
     default: {
       props: ["path", "content", "loading"],
-      template: "<div data-testid=\"readme-viewer\">{{ path }}|{{ loading ? 'loading' : content }}</div>"
+      template: `<div data-testid="readme-viewer">{{ path }}|{{ loading ? 'loading' : content }}</div>`
     }
   };
 });
@@ -49,7 +49,7 @@ vi.mock("@/components/RepoSummaryCards.vue", function mockSummaryCards() {
   return {
     default: {
       props: ["filesCount", "commitsCount"],
-      template: "<div data-testid=\"repo-summary\">{{ filesCount }}|{{ commitsCount }}</div>"
+      template: `<div data-testid="repo-summary">{{ filesCount }}|{{ commitsCount }}</div>`
     }
   };
 });
@@ -59,17 +59,17 @@ import OverviewView from "@/views/OverviewView.vue";
 const overviewStubs = {
   ElAlert: {
     props: ["title"],
-    template: "<div class=\"el-alert\">{{ title }}</div>"
+    template: `<div class="el-alert">{{ title }}</div>`
   },
   ElCard: {
-    template: "<div class=\"el-card\"><slot /></div>"
+    template: `<div class="el-card"><slot /></div>`
   },
   ElSkeleton: {
-    template: "<div class=\"el-skeleton\"></div>"
+    template: `<div class="el-skeleton"></div>`
   },
   ElEmpty: {
     props: ["description"],
-    template: "<div class=\"el-empty\">{{ description }}</div>"
+    template: `<div class="el-empty">{{ description }}</div>`
   }
 };
 
@@ -92,7 +92,7 @@ describe("OverviewView", function suite() {
     };
   });
 
-  it("loads summary data and README content", async function testOverviewSuccess() {
+  it("loads summary data and keeps overview side cards isolated from README content", async function testOverviewSuccess() {
     overviewMocks.getRepoFiles.mockResolvedValueOnce(["README.md", "docs/guide.md"]);
     overviewMocks.getCommits.mockResolvedValueOnce([
       {
@@ -119,8 +119,10 @@ describe("OverviewView", function suite() {
 
     expect(wrapper.get("[data-testid='repo-summary']").text()).toBe("2|1");
     expect(wrapper.get("[data-testid='readme-viewer']").text()).toContain("README.md|# README");
-    expect(wrapper.text()).toContain("/tmp/repo");
-    expect(wrapper.text()).toContain("first");
+    expect(wrapper.get("[data-testid='overview-snapshot-card']").text()).toContain("/tmp/repo");
+    expect(wrapper.get("[data-testid='overview-commits-card']").text()).toContain("first");
+    expect(wrapper.get(".overview-content-grid").classes()).toContain("overview-content-grid");
+    expect(wrapper.get(".overview-sidebar").classes()).toContain("overview-sidebar");
   });
 
   it("shows a route-level error when loading fails", async function testOverviewFailure() {

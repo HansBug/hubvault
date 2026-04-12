@@ -140,6 +140,22 @@ code,
   gap: 16px;
 }
 
+.overview-content-grid {
+  align-items: start;
+}
+
+.overview-readme-card {
+  min-width: 0;
+}
+
+.overview-sidebar {
+  align-self: start;
+}
+
+.overview-sidebar__card {
+  height: auto;
+}
+
 .surface {
   border: 1px solid var(--el-border-color-lighter);
   border-radius: 16px;
@@ -256,23 +272,42 @@ code,
   margin-top: 0;
 }
 
-.markdown-body pre {
+.markdown-body pre,
+.markdown-body pre[class*="language-"] {
+  margin: 1.1em 0;
   overflow: auto;
-  padding: 16px;
+  padding: 16px 18px;
   border-radius: 14px;
-  background: #0f172a;
-  color: #e2e8f0;
+  border: 1px solid var(--el-border-color-lighter);
+  background: #f6fbfc;
+  color: #15343d;
+  text-shadow: none;
 }
 
-.markdown-body code {
+.markdown-body code,
+.markdown-body pre code,
+.markdown-body pre[class*="language-"] code {
+  font-family: var(--font-mono);
+}
+
+.markdown-body :not(pre) > code {
   padding: 0.2em 0.45em;
   border-radius: 8px;
   background: #eef6fa;
+  color: #184451;
 }
 
-.markdown-body pre code {
-  background: transparent;
+.markdown-body pre code,
+.markdown-body pre[class*="language-"] code {
+  display: block;
   padding: 0;
+  background: transparent;
+  color: inherit;
+  white-space: pre;
+  font-size: 13px;
+  line-height: 1.65;
+  tab-size: 4;
+  text-shadow: none;
 }
 
 .table-path {
@@ -692,6 +727,35 @@ code,
   line-height: 1.4;
 }
 
+.storage-summary-header {
+  margin-bottom: 0;
+}
+
+.metric-grid--summary {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.storage-analysis-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.storage-analysis-strip__item {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--el-border-color-lighter);
+  background: #f7fbfc;
+}
+
+.storage-analysis-strip__item strong {
+  font-size: 20px;
+  font-weight: 700;
+}
+
 .storage-status,
 .upload-status {
   display: grid;
@@ -779,7 +843,8 @@ code,
   .metric-grid,
   .detail-hero,
   .commit-change-card__meta,
-  .media-compare-viewer__grid {
+  .media-compare-viewer__grid,
+  .storage-analysis-strip {
     grid-template-columns: 1fr;
   }
 

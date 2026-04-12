@@ -4,6 +4,7 @@ import DOMPurify from "dompurify";
 import MarkdownIt from "markdown-it";
 
 import { isMarkdownPath } from "@/utils/files";
+import { highlightCode, resolveCodeLanguage } from "@/utils/syntax";
 
 const props = defineProps({
   path: {
@@ -32,7 +33,13 @@ const markdown = new MarkdownIt({
   html: false,
   linkify: true,
   typographer: true,
-  breaks: true
+  breaks: true,
+  highlight(code, language) {
+    const resolvedLanguage = resolveCodeLanguage(language);
+    const highlighted = highlightCode(code, resolvedLanguage);
+    const className = "language-" + resolvedLanguage;
+    return '<pre class="' + className + '"><code class="' + className + '">' + highlighted + '</code></pre>';
+  }
 });
 
 const renderedHtml = computed(function buildRenderedHtml() {
@@ -57,6 +64,7 @@ const renderedHtml = computed(function buildRenderedHtml() {
   <article
     v-else-if="isMarkdownPath(path)"
     class="markdown-body"
+    data-testid="readme-viewer-markdown"
     v-html="renderedHtml"
   />
   <pre v-else class="preview-panel__text">{{ content }}</pre>

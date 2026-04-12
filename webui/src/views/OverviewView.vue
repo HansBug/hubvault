@@ -80,8 +80,8 @@ watch(
       :title="error"
     />
 
-    <div class="content-grid">
-      <el-card class="surface" body-style="padding: 22px;" data-testid="overview-readme-card">
+    <div class="content-grid overview-content-grid">
+      <el-card class="surface overview-readme-card" body-style="padding: 22px;" data-testid="overview-readme-card">
         <div class="surface__header">
           <div>
             <h2 class="surface__title">README</h2>
@@ -100,8 +100,8 @@ watch(
         />
       </el-card>
 
-      <div class="stack">
-        <el-card class="surface" body-style="padding: 18px;">
+      <div class="stack overview-sidebar">
+        <el-card class="surface overview-sidebar__card" body-style="padding: 18px;" data-testid="overview-snapshot-card">
           <div class="surface__header">
             <div>
               <h3 class="surface__title">Repository Snapshot</h3>
@@ -128,7 +128,7 @@ watch(
           </div>
         </el-card>
 
-        <el-card class="surface" body-style="padding: 18px;">
+        <el-card class="surface overview-sidebar__card" body-style="padding: 18px;" data-testid="overview-commits-card">
           <div class="surface__header">
             <div>
               <h3 class="surface__title">Recent Commits</h3>

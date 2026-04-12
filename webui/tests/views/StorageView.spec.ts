@@ -127,12 +127,19 @@ describe("StorageView", function suite() {
     expect(storageViewMocks.runQuickVerify).not.toHaveBeenCalled();
     expect(wrapper.get("[data-testid='storage-status-title']").text()).toBe("Quick storage summary ready");
     expect(wrapper.text()).toContain("8.0 KB");
+    expect(wrapper.text()).not.toContain("Reachable");
+
+    await findButton(wrapper, "Refresh").trigger("click");
+    await flushPromises();
+
+    expect(storageViewMocks.getStorageSummary).toHaveBeenCalledTimes(2);
 
     await findButton(wrapper, "Load analysis").trigger("click");
     await flushPromises();
 
     expect(storageViewMocks.getStorageOverview).toHaveBeenCalledTimes(1);
     expect(wrapper.text()).toContain("Run gc().");
+    expect(wrapper.text()).toContain("Reachable");
     expect(wrapper.get("[data-testid='storage-status-title']").text()).toBe("Storage analysis ready");
 
     await findButton(wrapper, "Run now", 0).trigger("click");
@@ -154,7 +161,7 @@ describe("StorageView", function suite() {
       prune_cache: true
     });
     expect(storageViewMocks.bootstrapSession).toHaveBeenCalledWith("release/v1", { force: true });
-    expect(storageViewMocks.getStorageSummary).toHaveBeenCalledTimes(2);
+    expect(storageViewMocks.getStorageSummary).toHaveBeenCalledTimes(3);
     expect(storageViewMocks.getStorageOverview).toHaveBeenCalledTimes(2);
     expect(wrapper.text()).toContain("Latest GC Result");
 
@@ -167,7 +174,7 @@ describe("StorageView", function suite() {
       run_gc: false,
       prune_cache: false
     });
-    expect(storageViewMocks.getStorageSummary).toHaveBeenCalledTimes(3);
+    expect(storageViewMocks.getStorageSummary).toHaveBeenCalledTimes(4);
     expect(storageViewMocks.getStorageOverview).toHaveBeenCalledTimes(3);
     expect(wrapper.text()).toContain("Latest Squash Result");
   });

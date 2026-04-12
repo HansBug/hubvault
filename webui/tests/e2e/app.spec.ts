@@ -19,6 +19,12 @@ async function expectImageLoaded(locator) {
   expect(metrics.naturalHeight).toBeGreaterThan(100);
 }
 
+async function getHeight(locator) {
+  const box = await locator.boundingBox();
+  expect(box).toBeTruthy();
+  return box!.height;
+}
+
 test("readonly frontend supports token query entry plus standalone file and commit pages", async ({ page }) => {
   fs.mkdirSync(screenshotDir, { recursive: true });
 
@@ -27,7 +33,27 @@ test("readonly frontend supports token query entry plus standalone file and comm
   await expect(page.getByTestId("app-shell")).toBeVisible();
   await expect(page.getByTestId("overview-view")).toBeVisible();
   await expect(page.getByTestId("overview-readme-card")).toContainText("Phase 9 frontend smoke tests");
+  await expect(page.getByTestId("overview-readme-card").locator(".token.keyword").first()).toBeVisible();
   await expect(page).not.toHaveURL(/token=/);
+
+  const codeBlockStyles = await page.getByTestId("overview-readme-card").locator("pre code").first().evaluate(function inspectCode(node) {
+    const codeStyle = window.getComputedStyle(node);
+    const preStyle = window.getComputedStyle(node.parentElement!);
+    return {
+      fontFamily: codeStyle.fontFamily,
+      color: codeStyle.color,
+      backgroundColor: preStyle.backgroundColor
+    };
+  });
+  expect(codeBlockStyles.fontFamily.toLowerCase()).toContain("plex mono");
+  expect(codeBlockStyles.color).not.toBe(codeBlockStyles.backgroundColor);
+
+  const readmeHeight = await getHeight(page.getByTestId("overview-readme-card"));
+  const snapshotHeight = await getHeight(page.getByTestId("overview-snapshot-card"));
+  const commitsHeight = await getHeight(page.getByTestId("overview-commits-card"));
+  expect(readmeHeight).toBeGreaterThan(snapshotHeight);
+  expect(readmeHeight).toBeGreaterThan(commitsHeight);
+
   await page.screenshot({
     path: path.join(screenshotDir, "overview.png"),
     fullPage: true
@@ -35,9 +61,19 @@ test("readonly frontend supports token query entry plus standalone file and comm
 
   await page.getByRole("menuitem", { name: "Storage" }).click();
   await expect(page.getByTestId("storage-view")).toBeVisible();
-  await expect(page.getByTestId("storage-status-title")).toHaveText("Storage analysis is on demand");
+  await expect(page.getByTestId("storage-status-title")).toHaveText("Quick storage summary ready");
+  await expect(page.getByRole("button", { name: "Refresh" })).toBeVisible();
+  await expect(page.getByTestId("storage-analysis-strip")).toHaveCount(0);
+  await page.screenshot({
+    path: path.join(screenshotDir, "storage-initial.png"),
+    fullPage: true
+  });
+
+  await page.getByRole("button", { name: "Refresh" }).click();
+  await expect(page.getByTestId("storage-status-title")).toHaveText("Quick storage summary ready");
   await page.getByRole("button", { name: "Load analysis" }).click();
   await expect(page.getByTestId("storage-status-title")).toHaveText("Storage analysis ready");
+  await expect(page.getByTestId("storage-analysis-strip")).toBeVisible();
   await page.screenshot({
     path: path.join(screenshotDir, "storage.png"),
     fullPage: true

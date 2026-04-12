@@ -13,7 +13,35 @@ function findButton(wrapper, label: string) {
 }
 
 describe("StorageOverviewPanel", function suite() {
-  it("renders lightweight summary cards and emits storage actions", async function testStoragePanel() {
+  it("renders lightweight summary cards and keeps heavy metrics hidden until analysis is loaded", async function testSummaryPanel() {
+    const wrapper = mount(StorageOverviewPanel, {
+      props: {
+        summary: {
+          total_size: 4096,
+          total_file_count: 12,
+          metadata_size: 512,
+          metadata_file_count: 3,
+          branch_count: 2,
+          tag_count: 1
+        }
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await findButton(wrapper, "Refresh").trigger("click");
+    await findButton(wrapper, "Load analysis").trigger("click");
+
+    expect(wrapper.text()).toContain("4.0 KB");
+    expect(wrapper.text()).toContain("12");
+    expect(wrapper.text()).toContain("512 B");
+    expect(wrapper.text()).not.toContain("Reachable");
+    expect(wrapper.emitted("refresh-summary")).toHaveLength(1);
+    expect(wrapper.emitted("load-overview")).toHaveLength(1);
+  });
+
+  it("shows the analysis strip only after overview data is available", async function testAnalysisPanel() {
     const wrapper = mount(StorageOverviewPanel, {
       props: {
         summary: {
@@ -56,9 +84,8 @@ describe("StorageOverviewPanel", function suite() {
     await findButton(wrapper, "Run again").trigger("click");
     await findButton(wrapper, "Run now").trigger("click");
 
-    expect(wrapper.text()).toContain("4.0 KB");
-    expect(wrapper.text()).toContain("12");
-    expect(wrapper.text()).toContain("512 B");
+    expect(wrapper.get("[data-testid='storage-analysis-strip']").text()).toContain("Reachable");
+    expect(wrapper.get("[data-testid='storage-analysis-strip']").text()).toContain("2.0 KB");
     expect(wrapper.text()).toContain("Run gc().");
     expect(wrapper.emitted("load-overview")).toHaveLength(1);
     expect(wrapper.emitted("run-quick-verify")).toHaveLength(1);

@@ -5,18 +5,29 @@ import { describe, expect, it } from "vitest";
 import ReadmeViewer from "@/components/ReadmeViewer.vue";
 
 describe("ReadmeViewer", function suite() {
-  it("renders sanitized markdown", function testMarkdownRender() {
+  it("renders sanitized markdown with highlighted fenced code blocks", function testMarkdownRender() {
     const wrapper = mount(ReadmeViewer, {
       props: {
         path: "README.md",
-        content: "# Demo\n\n<script>alert(1)</script>\n\nVisible text"
+        content: `# Demo
+
+\`\`\`python
+def demo():
+    return 1
+\`\`\`
+
+<script>alert(1)</script>
+
+Visible text`
       },
       global: {
         plugins: [ElementPlus]
       }
     });
 
-    expect(wrapper.html()).toContain("Visible text");
+    expect(wrapper.get("[data-testid='readme-viewer-markdown']").text()).toContain("Visible text");
     expect(wrapper.html()).not.toContain("<script>");
+    expect(wrapper.html()).toContain("language-python");
+    expect(wrapper.html()).toContain("token keyword");
   });
 });

@@ -525,6 +525,7 @@ onBeforeUnmount(function cleanupStorageView() {
         :loading-quick-verify="loadingQuickVerify"
         :loading-full-verify="loadingFullVerify"
         :actions-disabled="isBusy"
+        @refresh-summary="handleLoadSummary"
         @load-overview="handleLoadOverview"
         @run-quick-verify="handleRunQuickVerify"
         @run-full-verify="handleRunFullVerify"
