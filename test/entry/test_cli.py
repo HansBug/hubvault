@@ -16,5 +16,4 @@ class TestEntryCliModule:
         result = runner.invoke(cli, ["--help"])
 
         assert result.exit_code == 0
-        assert __DESCRIPTION__ in result.output
-
+        assert " ".join(__DESCRIPTION__.split()) in " ".join(result.output.split())

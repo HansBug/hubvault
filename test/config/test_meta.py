@@ -10,6 +10,8 @@ class TestConfigMeta:
 
     def test_other_metadata(self):
         assert __VERSION__
-        assert 'local ML artifacts' in __DESCRIPTION__
+        assert 'ML artifacts' in __DESCRIPTION__
+        assert 'remote client' in __DESCRIPTION__
+        assert 'web UI' in __DESCRIPTION__
         assert 'HansBug' in __AUTHOR__
         assert '@' in __AUTHOR_EMAIL__

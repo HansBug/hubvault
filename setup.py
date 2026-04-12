@@ -1,3 +1,17 @@
+"""Setuptools build entry point for the :mod:`hubvault` distribution.
+
+The package now ships more than the original local repository runtime. The
+base install provides the embedded repository API and CLI, while extras extend
+the same portable distribution with:
+
+* ``hubvault[api]`` - embedded FastAPI service and packaged browser UI
+* ``hubvault[remote]`` - Python remote client for that service
+* ``hubvault[full]`` - all public surfaces together
+
+The static frontend assets are included inside ``hubvault.server.static.webui``
+so wheels, sdists, and standalone executable builds all expose the same UI.
+"""
+
 from pathlib import Path
 import re
 
@@ -13,6 +27,7 @@ with (here / _MODULE_NAME / 'config' / 'meta.py').open('r', encoding='utf-8') as
 
 
 def _load_req(file: str):
+    """Load one requirements file into a plain dependency list."""
     with (here / file).open('r', encoding='utf-8') as f:
         return [line.strip() for line in f.readlines() if line.strip()]
 
@@ -41,7 +56,10 @@ setup(
     author=meta['__AUTHOR__'],
     author_email=meta['__AUTHOR_EMAIL__'],
     license='GPL-3.0-only',
-    keywords='artifact storage, versioned storage, local repository, ml artifacts, huggingface hub, object store',
+    keywords=(
+        'artifact storage, versioned repository, embedded repository, ml artifacts, '
+        'huggingface hub, fastapi, remote client, web ui, model hub'
+    ),
     url='https://github.com/hansbug/hubvault',
 
     # environment
@@ -58,6 +76,8 @@ setup(
     classifiers=[
         'Development Status :: 3 - Alpha',
         'Environment :: Console',
+        'Environment :: Web Environment',
+        'Framework :: FastAPI',
 
         # Intended Audience
         'Intended Audience :: End Users/Desktop',
@@ -88,6 +108,8 @@ setup(
 
         # Technical Topics
         'Topic :: Database',
+        'Topic :: Internet :: WWW/HTTP',
+        'Topic :: Internet :: WWW/HTTP :: Dynamic Content',
         'Topic :: System :: Archiving',
         'Topic :: Software Development :: Libraries',
         'Topic :: Software Development :: Libraries :: Python Modules',
