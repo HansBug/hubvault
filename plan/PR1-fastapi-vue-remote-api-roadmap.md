@@ -1400,8 +1400,13 @@ Phase 6 前端建议拆成以下复用组件：
 * [ ] 修复代码预览中行号与正文行高不同步的问题，并为代码框引入随前端一起发布的等宽字体资源。
 * [ ] 压低文件详情页路径 / size / oid / sha256 等 badge 的高度，改成更紧凑的信息展示。
 * [ ] 增加 commit 详情 API 与页面，支持文本 diff、图片对比和 binary 元信息比较。
+* [ ] commit 页面中，文本与图片等可直接展示的文件不再重复展示 before/after size、oid、sha256 元信息；这类元信息卡仅保留给不可在线预览的格式不明 binary。
+* [ ] commit 页面中 unknown binary 的 before/after 元信息卡改为内容驱动高度，压缩掉大块空白区域。
+* [ ] commit detail 顶部左侧 badge 进一步压低高度，右侧统计卡改成单行 label/value 左右对齐而不是上下两行。
 * [ ] commit 列表中的 title 与文件列表 `last commit` 列支持直接跳转到 commit diff 页面。
+* [ ] 文件列表排序改为目录优先、文件在后，且同组内按自然排序（natsort）展示路径/文件名。
 * [ ] 前端上传改成“文件页提供 upload 按钮，进入独立上传页后可多次追加到待提交队列，再统一 commit”的交互，并增加实时进度条。
+* [ ] 复现并修复约 100 个文件 / 100 MB 路径上传时长时间无状态、完成后误报失败的问题；上传全过程需展示明确阶段状态、旋转图标与最终正确结果。
 * [ ] `HubVaultRemoteApi` 增加可静默的上传进度反馈能力。
 * [ ] 增加前后端对应单元测试、前端 e2e 回归，并维持旧浏览器构建兼容线。
 
@@ -1423,9 +1428,14 @@ Phase 6 前端建议拆成以下复用组件：
 * [ ] 路径树页与文件详情页都能对文件执行下载。
 * [ ] 文件列表中的 icon-only 操作具备清晰 tooltip，`last commit` 列可跳转 commit diff 页面。
 * [ ] commit 页面可查看文本 diff、图片 diff 与 binary 元信息对比。
+* [ ] 可直接展示的文本/图片 commit 变更不再重复渲染 before/after size、oid、sha256 元信息卡。
+* [ ] 不可在线预览的 binary commit 变更使用紧凑的 before/after 元信息卡，不再出现大块空白高度。
+* [ ] commit detail 左侧 badge 已压低高度，右侧统计卡改为单行 label/value 左右对齐。
 * [ ] commit 列表中的 title 可直接进入 commit diff 页面。
+* [ ] 文件列表排序遵循“目录优先，同组内自然排序”。
 * [ ] 上传队列位于独立上传页，文件页只保留 upload 入口按钮。
 * [ ] 文件详情页的信息 badge 已收紧高度，不再出现过高的胶囊块。
+* [ ] 大批量上传全过程持续显示当前阶段状态与进度，不再在成功上传后误报失败。
 * [ ] 前端上传支持多次追加队列并展示实时进度，Python remote 上传也支持可控进度反馈。
 * [ ] `cd webui && npm run test:coverage`、`cd webui && npm run test:e2e` 与相关 Python unittest 通过。
 
