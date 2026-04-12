@@ -101,7 +101,39 @@ describe("UploadView", function suite() {
         entry_type: "folder"
       }
     ]);
-    uploadViewMocks.buildExactUploadManifest.mockImplementation(async function buildManifest(entries) {
+    uploadViewMocks.bootstrapSession.mockResolvedValue({
+      repoRevision: "release/v1"
+    });
+    uploadViewMocks.buildExactUploadManifest.mockImplementation(async function buildManifest(entries, onProgress) {
+      const totalBytes = entries.reduce(function accumulate(total, item) {
+        return total + Number(item.file.size || 0);
+      }, 0);
+      if (typeof onProgress === "function" && entries.length) {
+        onProgress({
+          phase: "reading",
+          currentPathInRepo: entries[0].pathInRepo,
+          completedEntries: 0,
+          totalEntries: entries.length,
+          processedBytes: 0,
+          totalBytes: totalBytes
+        });
+        onProgress({
+          phase: "hashing",
+          currentPathInRepo: entries[0].pathInRepo,
+          completedEntries: 0,
+          totalEntries: entries.length,
+          processedBytes: Number(entries[0].file.size || 0),
+          totalBytes: totalBytes
+        });
+        onProgress({
+          phase: "completed",
+          currentPathInRepo: entries[entries.length - 1].pathInRepo,
+          completedEntries: entries.length,
+          totalEntries: entries.length,
+          processedBytes: totalBytes,
+          totalBytes: totalBytes
+        });
+      }
       return {
         operations: entries.map(function mapEntry(item) {
           return {
@@ -306,5 +338,58 @@ describe("UploadView", function suite() {
     await flushPromises();
 
     expect(wrapper.text()).toContain("Repository changed during upload planning. Refresh the page and retry the upload.");
+    expect(wrapper.get("[data-testid='upload-status-title']").text()).toBe("Upload interrupted");
+  });
+
+  it("keeps a successful upload as warning-only when the refresh step fails", async function testRefreshFailureWarning() {
+    const file = new File(["hello"], "notes.txt", {
+      type: "text/plain"
+    });
+    uploadViewMocks.planCommit.mockResolvedValue({
+      base_head: "base-1",
+      statistics: {
+        planned_upload_bytes: 5,
+        copy_file_count: 0,
+        chunk_fast_upload_file_count: 0
+      },
+      operations: [
+        {
+          index: 0,
+          type: "add",
+          strategy: "upload-full",
+          field_name: "upload_file_0"
+        }
+      ]
+    });
+    uploadViewMocks.applyCommit.mockResolvedValue({
+      oid: "upload-commit"
+    });
+    uploadViewMocks.bootstrapSession.mockRejectedValue(new Error("refresh temporarily unavailable"));
+
+    const wrapper = mount(UploadView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    const input = wrapper.get("[data-testid='upload-file-input']");
+    const inputElement = input.element as HTMLInputElement;
+    setInputFiles(inputElement, [file]);
+    await input.trigger("change");
+    await flushPromises();
+
+    await findButtonByText(wrapper, "Commit Queued Uploads").trigger("click");
+    await flushPromises();
+    await flushPromises();
+
+    expect(wrapper.get("[data-testid='upload-status-panel']").text()).toContain("Upload committed");
+    expect(wrapper.get("[data-testid='upload-warning-alert']").text()).toContain("refresh temporarily unavailable");
+    expect(wrapper.text()).toContain("No files are queued yet.");
+    expect(uploadViewMocks.push).not.toHaveBeenCalled();
   });
 });

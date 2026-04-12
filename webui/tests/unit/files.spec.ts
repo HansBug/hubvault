@@ -6,7 +6,9 @@ import {
   isCodeLikePath,
   isImagePath,
   isMarkdownPath,
-  isTextLikePath
+  isTextLikePath,
+  naturalCompare,
+  sortRepoEntries
 } from "@/utils/files";
 
 describe("file helpers", function suite() {
@@ -28,6 +30,27 @@ describe("file helpers", function suite() {
     expect(buildBreadcrumbs("models/core")).toEqual([
       { label: "models", path: "models" },
       { label: "core", path: "models/core" }
+    ]);
+  });
+
+  it("sorts repository entries like natsort with directories first", function testNaturalSorting() {
+    expect(naturalCompare("001alpha.sgi", "01alpha.sgi")).toBeLessThan(0);
+    expect(naturalCompare("file2.txt", "file10.txt")).toBeLessThan(0);
+
+    const sorted = sortRepoEntries([
+      { path: "docs/file10.txt", entry_type: "file" },
+      { path: "docs/section10", entry_type: "folder" },
+      { path: "docs/file2.txt", entry_type: "file" },
+      { path: "docs/section2", entry_type: "folder" }
+    ]);
+
+    expect(sorted.map(function collectPath(item) {
+      return item.path;
+    })).toEqual([
+      "docs/section2",
+      "docs/section10",
+      "docs/file2.txt",
+      "docs/file10.txt"
     ]);
   });
 });

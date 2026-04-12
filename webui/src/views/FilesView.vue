@@ -8,7 +8,7 @@ import { deleteRepoFile, deleteRepoFolder, getPathsInfo, getRepoTree } from "@/a
 import FileTable from "@/components/FileTable.vue";
 import PathBreadcrumb from "@/components/PathBreadcrumb.vue";
 import { bootstrapSession, useSessionStore } from "@/stores/session";
-import { buildBreadcrumbs } from "@/utils/files";
+import { buildBreadcrumbs, sortRepoEntries } from "@/utils/files";
 
 const props = defineProps({
   revision: {
@@ -63,6 +63,10 @@ const breadcrumbItems = computed(function resolveBreadcrumbItems() {
 
 const canWrite = computed(function resolveCanWrite() {
   return Boolean(state.auth && state.auth.can_write);
+});
+
+const sortedEntries = computed(function resolveSortedEntries() {
+  return sortRepoEntries(entries.value);
 });
 
 async function loadFiles() {
@@ -224,7 +228,7 @@ watch(
       <el-skeleton v-if="loading" :rows="8" animated />
       <file-table
         v-else
-        :entries="entries"
+        :entries="sortedEntries"
         :revision="props.revision"
         :can-write="canWrite"
         @open-folder="updateRoutePath"

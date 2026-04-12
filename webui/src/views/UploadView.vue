@@ -5,17 +5,21 @@ import {
   CircleCheck,
   Delete,
   FolderAdd,
+  Loading,
   Upload,
-  UploadFilled
+  UploadFilled,
+  WarningFilled
 } from "@element-plus/icons-vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { applyCommit, getPathsInfo, planCommit } from "@/api/client";
 import PathBreadcrumb from "@/components/PathBreadcrumb.vue";
 import { bootstrapSession, useSessionStore } from "@/stores/session";
-import { buildBreadcrumbs } from "@/utils/files";
+import { buildBreadcrumbs, naturalCompare } from "@/utils/files";
 import { formatBytes } from "@/utils/format";
 import { basename, buildExactUploadManifest, joinRepoPath } from "@/utils/uploads";
+
+type UploadStage = "idle" | "preparing" | "planning" | "uploading" | "finalizing" | "refreshing" | "completed";
 
 const props = defineProps({
   revision: {
@@ -31,12 +35,18 @@ const { state } = useSessionStore();
 const loading = ref(false);
 const writing = ref(false);
 const error = ref("");
+const warning = ref("");
 const directoryPath = ref("");
 const uploadFileInput = ref<HTMLInputElement | null>(null);
 const uploadFolderInput = ref<HTMLInputElement | null>(null);
 const queueEntries = ref<any[]>([]);
 const commitMessage = ref("");
 const uploadProgress = ref(0);
+const uploadStage = ref<UploadStage>("idle");
+const uploadStatusTitle = ref("");
+const uploadStatusMessage = ref("");
+const uploadProcessedBytes = ref(0);
+const uploadTotalBytes = ref(0);
 const lastPlanStatistics = ref<any>(null);
 
 let uploadQueueId = 0;
@@ -86,9 +96,59 @@ const queueBytes = computed(function resolveQueueBytes() {
   }, 0);
 });
 
+const uploadStageLabel = computed(function resolveUploadStageLabel() {
+  if (uploadStage.value === "preparing") {
+    return "Preparing";
+  }
+  if (uploadStage.value === "planning") {
+    return "Planning";
+  }
+  if (uploadStage.value === "uploading") {
+    return "Uploading";
+  }
+  if (uploadStage.value === "finalizing") {
+    return "Finalizing";
+  }
+  if (uploadStage.value === "refreshing") {
+    return "Refreshing";
+  }
+  if (uploadStage.value === "completed") {
+    return "Committed";
+  }
+  return "Idle";
+});
+
+const showUploadStatusPanel = computed(function resolveShowUploadStatusPanel() {
+  return uploadStage.value !== "idle";
+});
+
+function normalizeProgress(value: number) {
+  return Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
+}
+
 function resetInput(element) {
   if (element) {
     element.value = "";
+  }
+}
+
+function resetUploadStatus() {
+  error.value = "";
+  warning.value = "";
+  uploadProgress.value = 0;
+  uploadStage.value = "idle";
+  uploadStatusTitle.value = "";
+  uploadStatusMessage.value = "";
+  uploadProcessedBytes.value = 0;
+  uploadTotalBytes.value = 0;
+}
+
+function setUploadStatus(stage: UploadStage, title: string, message: string, progress?: number) {
+  uploadStage.value = stage;
+  uploadStatusTitle.value = title;
+  uploadStatusMessage.value = message;
+  if (typeof progress === "number") {
+    uploadProgress.value = normalizeProgress(progress);
   }
 }
 
@@ -110,11 +170,15 @@ function buildUploadErrorMessage(uploadError) {
   return message || "Unable to upload files into the repository.";
 }
 
-function clearUploadQueue() {
+function clearQueuedEntries() {
   queueEntries.value = [];
   lastPlanStatistics.value = null;
-  uploadProgress.value = 0;
   commitMessage.value = "";
+}
+
+function clearUploadQueue() {
+  clearQueuedEntries();
+  resetUploadStatus();
 }
 
 function ensureCommitMessage() {
@@ -140,10 +204,10 @@ function addQueueEntries(nextEntries) {
   });
 
   queueEntries.value = Array.from(table.values()).sort(function sortQueueEntries(left, right) {
-    return left.pathInRepo.localeCompare(right.pathInRepo);
+    return naturalCompare(left.pathInRepo, right.pathInRepo);
   });
   lastPlanStatistics.value = null;
-  uploadProgress.value = 0;
+  resetUploadStatus();
   ensureCommitMessage();
 }
 
@@ -178,8 +242,8 @@ async function normalizeTargetDirectory() {
   }
 }
 
-function backToFiles() {
-  router.push({
+async function backToFiles() {
+  await router.push({
     name: "files",
     query: {
       revision: props.revision,
@@ -233,20 +297,92 @@ function removeQueueEntry(id) {
     return item.id !== id;
   });
   lastPlanStatistics.value = null;
-  uploadProgress.value = 0;
+  resetUploadStatus();
   if (!queueEntries.value.length) {
     commitMessage.value = "";
   }
 }
 
+function updateManifestProgress(payload) {
+  uploadProcessedBytes.value = Number(payload.processedBytes || 0);
+  uploadTotalBytes.value = Number(payload.totalBytes || 0);
+  const currentIndex = payload.totalEntries
+    ? Math.min(payload.totalEntries, Math.max(payload.completedEntries + (payload.phase === "completed" ? 0 : 1), 1))
+    : 0;
+  const progress = uploadTotalBytes.value > 0
+    ? (uploadProcessedBytes.value / uploadTotalBytes.value) * 35
+    : (payload.totalEntries ? (payload.completedEntries / payload.totalEntries) * 35 : 5);
+  const currentPath = payload.currentPathInRepo || "upload queue";
+
+  if (payload.phase === "reading") {
+    setUploadStatus(
+      "preparing",
+      "Reading queued files",
+      "File " + currentIndex + " of " + payload.totalEntries + ": " + currentPath,
+      progress || 5
+    );
+    return;
+  }
+  if (payload.phase === "hashing") {
+    setUploadStatus(
+      "preparing",
+      "Hashing queued files",
+      "Computing SHA-256 for " + currentPath + ".",
+      Math.max(progress, 18)
+    );
+    return;
+  }
+  setUploadStatus(
+    "preparing",
+    "Prepared local manifest",
+    "Processed " + payload.completedEntries + " of " + payload.totalEntries + " files.",
+    Math.max(progress, 35)
+  );
+}
+
+function updateUploadTransferProgress(progressEvent) {
+  const total = Number(progressEvent.total || uploadTotalBytes.value || 0);
+  const loaded = Number(progressEvent.loaded || 0);
+  uploadProcessedBytes.value = loaded;
+  uploadTotalBytes.value = total;
+
+  if (total > 0 && loaded < total) {
+    setUploadStatus(
+      "uploading",
+      "Uploading file payloads",
+      "Uploaded " + formatBytes(loaded) + " of " + formatBytes(total) + ".",
+      45 + (loaded / total) * 45
+    );
+    return;
+  }
+  if (total > 0) {
+    setUploadStatus(
+      "finalizing",
+      "Finalizing commit",
+      "Payload upload finished. Waiting for the server to publish the commit.",
+      94
+    );
+  }
+}
+
 async function submitUploadQueue() {
-  if (!queueEntries.value.length) {
+  if (!queueEntries.value.length || writing.value) {
     return;
   }
 
   writing.value = true;
   error.value = "";
-  uploadProgress.value = 0;
+  warning.value = "";
+  lastPlanStatistics.value = null;
+  uploadProcessedBytes.value = 0;
+  uploadTotalBytes.value = queueBytes.value;
+  setUploadStatus(
+    "preparing",
+    "Preparing upload manifest",
+    "Reading queued files and computing checksums.",
+    1
+  );
+
   try {
     const manifestPayload = await buildExactUploadManifest(
       queueEntries.value.map(function mapUploadEntry(item) {
@@ -254,7 +390,8 @@ async function submitUploadQueue() {
           pathInRepo: item.pathInRepo,
           file: item.file
         };
-      })
+      }),
+      updateManifestProgress
     );
     const nextCommitMessage = String(commitMessage.value || "").trim() || buildDefaultCommitMessage();
     const manifest = {
@@ -262,6 +399,15 @@ async function submitUploadQueue() {
       commit_message: nextCommitMessage,
       operations: manifestPayload.operations
     };
+
+    uploadProcessedBytes.value = 0;
+    uploadTotalBytes.value = 0;
+    setUploadStatus(
+      "planning",
+      "Planning upload strategy",
+      "Checking repository reuse and determining which payload bytes are still required.",
+      40
+    );
     const plan = await planCommit(manifest);
     lastPlanStatistics.value = plan.statistics || null;
 
@@ -280,6 +426,26 @@ async function submitUploadQueue() {
       return accumulator;
     }, []);
 
+    uploadProcessedBytes.value = 0;
+    uploadTotalBytes.value = Number((plan.statistics && plan.statistics.planned_upload_bytes) || 0);
+    if (uploads.length) {
+      setUploadStatus(
+        "uploading",
+        "Uploading file payloads",
+        uploadTotalBytes.value > 0
+          ? "Sending the required file payloads to the server."
+          : "Streaming upload payloads to the server.",
+        45
+      );
+    } else {
+      setUploadStatus(
+        "finalizing",
+        "Finalizing commit",
+        "No payload upload is required. Applying copy and chunk fast paths on the server.",
+        88
+      );
+    }
+
     await applyCommit(
       {
         revision: props.revision,
@@ -290,26 +456,47 @@ async function submitUploadQueue() {
       },
       uploads,
       {
-        onUploadProgress: function handleUploadProgress(progressEvent) {
-          if (progressEvent.total > 0) {
-            uploadProgress.value = Math.max(
-              uploadProgress.value,
-              Math.round((progressEvent.loaded / progressEvent.total) * 100)
-            );
-          }
-        }
+        onUploadProgress: updateUploadTransferProgress
       }
     );
 
-    if (!uploads.length) {
-      uploadProgress.value = 100;
+    setUploadStatus(
+      "refreshing",
+      "Refreshing repository view",
+      "Reloading refs and repository metadata after the new commit.",
+      98
+    );
+
+    try {
+      await bootstrapSession(props.revision, { force: true });
+    } catch (refreshError) {
+      clearQueuedEntries();
+      setUploadStatus(
+        "completed",
+        "Upload committed",
+        "The commit was written successfully, but the repository view could not be refreshed automatically.",
+        100
+      );
+      warning.value = (refreshError.message || "Failed to refresh the repository view.")
+        + " Use Back to Files to verify the uploaded content.";
+      return;
     }
-    await bootstrapSession(props.revision, { force: true });
+
+    setUploadStatus(
+      "completed",
+      "Upload committed",
+      "Repository upload completed successfully.",
+      100
+    );
     clearUploadQueue();
     await backToFiles();
     ElMessage.success("Repository upload completed.");
   } catch (uploadError) {
     error.value = buildUploadErrorMessage(uploadError);
+    if (uploadStage.value !== "completed") {
+      uploadStatusTitle.value = "Upload interrupted";
+      uploadStatusMessage.value = error.value;
+    }
   } finally {
     writing.value = false;
   }
@@ -336,6 +523,13 @@ watch(
       :closable="false"
       :title="error"
     />
+    <el-alert
+      v-if="warning"
+      data-testid="upload-warning-alert"
+      type="warning"
+      :closable="false"
+      :title="warning"
+    />
 
     <el-card
       class="surface"
@@ -353,14 +547,14 @@ watch(
           </p>
         </div>
         <div class="app-shell__meta">
-          <el-button plain @click="backToFiles">Back to Files</el-button>
-          <el-button :icon="Upload" plain :disabled="!canWrite" @click="triggerFileUpload">
+          <el-button plain :disabled="writing" @click="backToFiles">Back to Files</el-button>
+          <el-button :icon="Upload" plain :disabled="!canWrite || writing" @click="triggerFileUpload">
             Add Files
           </el-button>
-          <el-button :icon="FolderAdd" plain :disabled="!canWrite" @click="triggerFolderUpload">
+          <el-button :icon="FolderAdd" plain :disabled="!canWrite || writing" @click="triggerFolderUpload">
             Add Folder
           </el-button>
-          <el-button :icon="Delete" plain :disabled="!queueEntries.length" @click="clearUploadQueue">
+          <el-button :icon="Delete" plain :disabled="writing || !queueEntries.length" @click="clearUploadQueue">
             Clear
           </el-button>
         </div>
@@ -415,15 +609,53 @@ watch(
 
         <el-input
           v-model="commitMessage"
+          :disabled="writing"
           placeholder="Commit message for the queued upload batch"
         />
 
-        <el-progress
-          v-if="writing"
-          :percentage="uploadProgress"
-          :stroke-width="14"
-          status="success"
-        />
+        <div
+          v-if="showUploadStatusPanel"
+          class="upload-status"
+          data-testid="upload-status-panel"
+        >
+          <div class="upload-status__header">
+            <div
+              class="upload-status__icon"
+              :class="{
+                'is-active': writing,
+                'is-success': uploadStage === 'completed' && !warning && !error,
+                'is-warning': Boolean(warning || error)
+              }"
+            >
+              <el-icon v-if="writing"><Loading class="is-loading" /></el-icon>
+              <el-icon v-else-if="warning || error"><WarningFilled /></el-icon>
+              <el-icon v-else><CircleCheck /></el-icon>
+            </div>
+            <div class="stack" style="gap: 4px; min-width: 0;">
+              <strong data-testid="upload-status-title">{{ uploadStatusTitle }}</strong>
+              <span class="muted" data-testid="upload-status-message">{{ uploadStatusMessage }}</span>
+            </div>
+          </div>
+
+          <div class="upload-status__meta">
+            <span class="path-pill path-pill--compact">{{ uploadStageLabel }}</span>
+            <span v-if="uploadTotalBytes > 0" class="path-pill path-pill--compact">
+              {{ formatBytes(uploadProcessedBytes) }} / {{ formatBytes(uploadTotalBytes) }}
+            </span>
+            <span
+              v-else-if="uploadStage === 'finalizing' && lastPlanStatistics && !lastPlanStatistics.planned_upload_bytes"
+              class="path-pill path-pill--compact"
+            >
+              No payload upload required
+            </span>
+          </div>
+
+          <el-progress
+            :percentage="uploadProgress"
+            :stroke-width="12"
+            :status="uploadStage === 'completed' && !warning && !error ? 'success' : undefined"
+          />
+        </div>
 
         <el-empty
           v-if="!queueEntries.length"
@@ -448,6 +680,7 @@ watch(
               :icon="Delete"
               circle
               plain
+              :disabled="writing"
               :aria-label="'Remove queued file ' + item.pathInRepo"
               @click="removeQueueEntry(item.id)"
             />
@@ -462,7 +695,7 @@ watch(
             :icon="CircleCheck"
             type="primary"
             :loading="writing"
-            :disabled="!queueEntries.length"
+            :disabled="writing || !queueEntries.length"
             @click="submitUploadQueue"
           >
             Commit Queued Uploads

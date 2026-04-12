@@ -1,3 +1,5 @@
+import natsort from "natsort";
+
 const README_CANDIDATES = ["README.md", "README.markdown", "README.rst", "README.txt"];
 const IMAGE_EXTENSIONS = [".avif", ".gif", ".jpeg", ".jpg", ".png", ".svg", ".webp"];
 const TEXT_EXTENSIONS = [
@@ -19,6 +21,14 @@ const TEXT_EXTENSIONS = [
   ".yaml",
   ".yml"
 ];
+
+const NATURAL_SORTER = natsort();
+
+function entryName(entry) {
+  const path = String((entry && entry.path) || "");
+  const parts = path.split("/");
+  return parts[parts.length - 1] || path;
+}
 
 export function findReadmePath(files) {
   const values = Array.isArray(files) ? files : [];
@@ -60,6 +70,30 @@ export function isTextLikePath(path) {
 
 export function isCodeLikePath(path) {
   return isTextLikePath(path) && !isMarkdownPath(path);
+}
+
+export function naturalCompare(left, right) {
+  const leftText = String(left || "");
+  const rightText = String(right || "");
+  return NATURAL_SORTER(leftText, rightText);
+}
+
+export function sortRepoEntries(entries) {
+  const values = Array.isArray(entries) ? entries.slice() : [];
+  return values.sort(function sortEntries(left, right) {
+    const leftIsFolder = left && left.entry_type === "folder";
+    const rightIsFolder = right && right.entry_type === "folder";
+    if (leftIsFolder !== rightIsFolder) {
+      return leftIsFolder ? -1 : 1;
+    }
+
+    const byName = naturalCompare(entryName(left), entryName(right));
+    if (byName !== 0) {
+      return byName;
+    }
+
+    return naturalCompare(String((left && left.path) || ""), String((right && right.path) || ""));
+  });
 }
 
 export function decodeUtf8Bytes(bytes) {

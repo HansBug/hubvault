@@ -23,12 +23,14 @@
     "js-sha256": "^0.11.1",
     "juxtaposejs": "^1.1.6",
     "markdown-it": "^14.1.0",
+    "natsort": "^2.0.3",
     "prismjs": "^1.30.0",
     "vue": "^3.5.13",
     "vue-router": "^4.5.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.54.2",
+    "@types/natsort": "^1.0.1",
     "@vitejs/plugin-legacy": "^6.1.1",
     "@vitejs/plugin-vue": "^6.0.1",
     "@vitest/coverage-v8": "^2.1.9",

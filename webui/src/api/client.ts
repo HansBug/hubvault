@@ -4,6 +4,8 @@ const http = axios.create({
   timeout: 30000
 });
 
+const WRITE_REQUEST_TIMEOUT = 0;
+
 export interface UploadProgressEventPayload {
   loaded: number;
   total: number;
@@ -212,7 +214,8 @@ export function planCommit(manifest) {
   return request({
     method: "post",
     url: "/api/v1/write/commit-plan",
-    data: manifest
+    data: manifest,
+    timeout: WRITE_REQUEST_TIMEOUT
   });
 }
 
@@ -231,7 +234,8 @@ export function applyCommit(manifest, uploads, options: ApplyCommitOptions = {})
       method: "post",
       url: "/api/v1/write/commit",
       data: manifest,
-      onUploadProgress: handleUploadProgress
+      onUploadProgress: handleUploadProgress,
+      timeout: WRITE_REQUEST_TIMEOUT
     });
   }
 
@@ -245,7 +249,8 @@ export function applyCommit(manifest, uploads, options: ApplyCommitOptions = {})
     method: "post",
     url: "/api/v1/write/commit",
     data: formData,
-    onUploadProgress: handleUploadProgress
+    onUploadProgress: handleUploadProgress,
+    timeout: WRITE_REQUEST_TIMEOUT
   });
 }
 

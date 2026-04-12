@@ -34,6 +34,10 @@ const isImageChange = computed(function resolveIsImageChange() {
   return isImagePath(props.change.path);
 });
 
+const showBinaryMetadata = computed(function resolveShowBinaryMetadata() {
+  return Boolean(props.change.is_binary && !isImageChange.value);
+});
+
 const changeTagType = computed(function resolveChangeTagType() {
   if (props.change.change_type === "added") {
     return "success";
@@ -88,6 +92,29 @@ const fileSummary = computed(function resolveFileSummary() {
   }
   return parts.join(" · ");
 });
+
+function versionRows(fileVersion) {
+  if (!fileVersion) {
+    return [];
+  }
+  return [
+    {
+      label: "Size",
+      value: formatBytes(fileVersion.size),
+      mono: false
+    },
+    {
+      label: "OID",
+      value: shortOid(fileVersion.oid),
+      mono: true
+    },
+    {
+      label: "SHA-256",
+      value: shortOid(fileVersion.sha256),
+      mono: true
+    }
+  ];
+}
 </script>
 
 <template>
@@ -114,25 +141,21 @@ const fileSummary = computed(function resolveFileSummary() {
       </div>
     </div>
 
-    <div class="commit-change-card__meta">
-      <div class="commit-change-card__side">
+    <div v-if="showBinaryMetadata" class="commit-change-card__meta" data-testid="binary-metadata-panel">
+      <div class="commit-change-card__side commit-change-card__side--compact">
         <div class="commit-change-card__side-title">
           <el-icon v-if="change.old_file"><Remove /></el-icon>
           <el-icon v-else><Files /></el-icon>
           <span>Before</span>
         </div>
-        <div v-if="change.old_file" class="kv-list">
-          <div class="kv-row">
-            <span>Size</span>
-            <strong>{{ formatBytes(change.old_file.size) }}</strong>
-          </div>
-          <div class="kv-row">
-            <span>OID</span>
-            <strong class="mono">{{ shortOid(change.old_file.oid) }}</strong>
-          </div>
-          <div class="kv-row">
-            <span>SHA-256</span>
-            <strong class="mono">{{ shortOid(change.old_file.sha256) }}</strong>
+        <div v-if="change.old_file" class="kv-list kv-list--compact">
+          <div
+            v-for="row in versionRows(change.old_file)"
+            :key="'old-' + row.label"
+            class="kv-row"
+          >
+            <span>{{ row.label }}</span>
+            <strong :class="{ mono: row.mono }">{{ row.value }}</strong>
           </div>
           <el-button
             v-if="oldDownloadUrl"
@@ -144,30 +167,26 @@ const fileSummary = computed(function resolveFileSummary() {
             Download Old
           </el-button>
         </div>
-        <el-empty v-else description="Not present" />
+        <div v-else class="commit-change-card__missing muted">Not present</div>
       </div>
 
-      <div class="commit-change-card__side">
+      <div class="commit-change-card__side commit-change-card__side--compact">
         <div class="commit-change-card__side-title">
           <el-icon v-if="change.new_file"><Plus /></el-icon>
           <el-icon v-else><Files /></el-icon>
           <span>After</span>
         </div>
-        <div v-if="change.new_file" class="kv-list">
-          <div class="kv-row">
-            <span>Size</span>
-            <strong>{{ formatBytes(change.new_file.size) }}</strong>
-          </div>
-          <div class="kv-row">
-            <span>OID</span>
-            <strong class="mono">{{ shortOid(change.new_file.oid) }}</strong>
-          </div>
-          <div class="kv-row">
-            <span>SHA-256</span>
-            <strong class="mono">{{ shortOid(change.new_file.sha256) }}</strong>
+        <div v-if="change.new_file" class="kv-list kv-list--compact">
+          <div
+            v-for="row in versionRows(change.new_file)"
+            :key="'new-' + row.label"
+            class="kv-row"
+          >
+            <span>{{ row.label }}</span>
+            <strong :class="{ mono: row.mono }">{{ row.value }}</strong>
           </div>
         </div>
-        <el-empty v-else description="Removed by this commit" />
+        <div v-else class="commit-change-card__missing muted">Removed by this commit</div>
       </div>
     </div>
 

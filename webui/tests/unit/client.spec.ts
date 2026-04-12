@@ -300,13 +300,24 @@ describe("api client helpers", function suite() {
       url: "/api/v1/write/commit",
       data: {
         revision: "release/v1"
-      }
+      },
+      onUploadProgress: undefined,
+      timeout: 0
+    });
+    expect(axiosState.request).toHaveBeenCalledWith({
+      method: "post",
+      url: "/api/v1/write/commit-plan",
+      data: {
+        revision: "release/v1"
+      },
+      timeout: 0
     });
     expect(axiosState.request.mock.calls.some(function hasMultipartCall(call) {
       const config = call[0];
       return config.url === "/api/v1/write/commit"
         && config.data instanceof FormData
-        && typeof config.onUploadProgress === "function";
+        && typeof config.onUploadProgress === "function"
+        && config.timeout === 0;
     })).toBe(true);
     expect(axiosState.request).toHaveBeenCalledWith({
       method: "delete",

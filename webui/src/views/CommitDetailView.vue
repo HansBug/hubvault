@@ -117,33 +117,41 @@ watch(
             <h3 class="detail-hero__title">{{ detail.commit.title }}</h3>
             <p v-if="detail.commit.message" class="detail-hero__message">{{ detail.commit.message }}</p>
             <div class="app-shell__meta">
-              <span class="path-pill">
+              <span class="path-pill path-pill--compact commit-detail-pill">
                 <el-icon><Clock /></el-icon>
                 {{ formatDateTime(detail.commit.created_at) }}
               </span>
-              <span class="path-pill">commit: <span class="mono">{{ shortOid(detail.commit.commit_id) }}</span></span>
-              <span class="path-pill" v-if="detail.compare_parent_commit_id">
+              <span class="path-pill path-pill--compact commit-detail-pill">commit: <span class="mono">{{ shortOid(detail.commit.commit_id) }}</span></span>
+              <span class="path-pill path-pill--compact commit-detail-pill" v-if="detail.compare_parent_commit_id">
                 parent: <span class="mono">{{ shortOid(detail.compare_parent_commit_id) }}</span>
               </span>
             </div>
           </div>
 
           <div class="summary-grid detail-hero__stats">
-            <el-card class="surface" body-style="padding: 16px;">
-              <div class="metric-card__label">Added</div>
-              <div class="metric-card__value">{{ changeSummary.added }}</div>
+            <el-card class="surface" body-style="padding: 14px 16px;">
+              <div class="metric-card metric-card--inline">
+                <div class="metric-card__label">Added</div>
+                <div class="metric-card__value">{{ changeSummary.added }}</div>
+              </div>
             </el-card>
-            <el-card class="surface" body-style="padding: 16px;">
-              <div class="metric-card__label">Modified</div>
-              <div class="metric-card__value">{{ changeSummary.modified }}</div>
+            <el-card class="surface" body-style="padding: 14px 16px;">
+              <div class="metric-card metric-card--inline">
+                <div class="metric-card__label">Modified</div>
+                <div class="metric-card__value">{{ changeSummary.modified }}</div>
+              </div>
             </el-card>
-            <el-card class="surface" body-style="padding: 16px;">
-              <div class="metric-card__label">Deleted</div>
-              <div class="metric-card__value">{{ changeSummary.deleted }}</div>
+            <el-card class="surface" body-style="padding: 14px 16px;">
+              <div class="metric-card metric-card--inline">
+                <div class="metric-card__label">Deleted</div>
+                <div class="metric-card__value">{{ changeSummary.deleted }}</div>
+              </div>
             </el-card>
-            <el-card class="surface" body-style="padding: 16px;">
-              <div class="metric-card__label">Parents</div>
-              <div class="metric-card__value">{{ detail.parent_commit_ids.length }}</div>
+            <el-card class="surface" body-style="padding: 14px 16px;">
+              <div class="metric-card metric-card--inline">
+                <div class="metric-card__label">Parents</div>
+                <div class="metric-card__value">{{ detail.parent_commit_ids.length }}</div>
+              </div>
             </el-card>
           </div>
         </div>

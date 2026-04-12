@@ -203,6 +203,11 @@ code,
   line-height: 1.15;
 }
 
+.commit-detail-pill {
+  min-height: 24px;
+  padding: 4px 10px;
+}
+
 .path-breadcrumb {
   display: flex;
   flex-wrap: wrap;
@@ -396,12 +401,26 @@ code,
 .metric-card__label {
   color: var(--el-text-color-secondary);
   font-size: 13px;
+  line-height: 1.2;
 }
 
 .metric-card__value {
   margin-top: 8px;
   font-size: 28px;
   font-weight: 700;
+  line-height: 1;
+}
+
+.metric-card--inline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.metric-card--inline .metric-card__value {
+  margin-top: 0;
+  font-size: 22px;
 }
 
 .detail-tabs .el-tabs__header {
@@ -585,12 +604,12 @@ code,
 .commit-change-card__meta {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
+  gap: 12px;
   margin-bottom: 18px;
 }
 
 .commit-change-card__side {
-  padding: 14px 16px;
+  padding: 10px 12px;
   border-radius: 14px;
   background: #f7fbfc;
   border: 1px solid var(--el-border-color-lighter);
@@ -600,9 +619,72 @@ code,
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
   color: var(--el-color-primary-dark-2);
+  font-size: 13px;
   font-weight: 600;
+}
+
+.kv-list--compact {
+  gap: 6px;
+}
+
+.kv-list--compact .kv-row {
+  min-height: 20px;
+  font-size: 13px;
+}
+
+.commit-change-card__side .el-button {
+  justify-self: start;
+}
+
+.commit-change-card__missing {
+  padding: 2px 0;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.upload-status {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid var(--el-border-color-lighter);
+  background: #f7fbfc;
+}
+
+.upload-status__header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.upload-status__icon {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary-dark-2);
+  flex: 0 0 auto;
+}
+
+.upload-status__icon.is-success {
+  background: var(--el-color-success-light-9);
+  color: var(--el-color-success);
+}
+
+.upload-status__icon.is-warning {
+  background: var(--el-color-warning-light-9);
+  color: var(--el-color-warning-dark-2);
+}
+
+.upload-status__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .upload-queue__summary {
@@ -626,6 +708,10 @@ code,
   border-radius: 14px;
   border: 1px solid var(--el-border-color-lighter);
   background: #f7fbfc;
+}
+
+.upload-queue__footer {
+  align-items: center;
 }
 
 .empty-icon {

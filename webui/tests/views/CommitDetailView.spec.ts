@@ -37,7 +37,7 @@ vi.mock("@/components/CommitChangeCard.vue", function mockCommitChangeCard() {
   return {
     default: {
       props: ["change", "commitId", "compareParentCommitId"],
-      template: "<div data-testid=\"commit-change-card-stub\">{{ change.path }}|{{ commitId }}|{{ compareParentCommitId }}</div>"
+      template: "<div data-testid='commit-change-card-stub'>{{ change.path }}|{{ commitId }}|{{ compareParentCommitId }}</div>"
     }
   };
 });
@@ -69,7 +69,7 @@ describe("CommitDetailView", function suite() {
     });
   });
 
-  it("loads commit detail and routes back to the commit list", async function testCommitDetail() {
+  it("loads commit detail, renders compact summary cards, and routes back to the commit list", async function testCommitDetail() {
     const wrapper = mount(CommitDetailView, {
       props: {
         revision: "release/v1"
@@ -84,7 +84,8 @@ describe("CommitDetailView", function suite() {
     expect(commitDetailMocks.getCommitDetail).toHaveBeenCalledWith("commit-2", true);
     expect(wrapper.text()).toContain("update docs");
     expect(wrapper.text()).toContain("body");
-    expect(wrapper.text()).toContain("1");
+    expect(wrapper.findAll(".commit-detail-pill")).toHaveLength(3);
+    expect(wrapper.findAll(".metric-card--inline")).toHaveLength(4);
     expect(wrapper.get("[data-testid='commit-change-card-stub']").text()).toContain("docs/guide.md|commit-2|commit-1");
 
     const button = wrapper.findAll("button").find(function findMatch(item) {
