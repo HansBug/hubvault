@@ -91,4 +91,64 @@ describe("StorageOverviewPanel", function suite() {
     expect(wrapper.emitted("run-quick-verify")).toHaveLength(1);
     expect(wrapper.emitted("run-full-verify")).toHaveLength(1);
   });
+
+  it("renders loading placeholders and disables actions when background work is running", function testLoadingStates() {
+    const wrapper = mount(StorageOverviewPanel, {
+      props: {
+        loadingSummary: true,
+        loadingOverview: true,
+        loadingQuickVerify: true,
+        loadingFullVerify: true,
+        actionsDisabled: true
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    expect(wrapper.text()).toContain("Loading...");
+    expect(findButton(wrapper, "Refresh").attributes("disabled")).toBeDefined();
+    expect(findButton(wrapper, "Load analysis").attributes("disabled")).toBeDefined();
+    expect(findButton(wrapper, "Run now").attributes("disabled")).toBeDefined();
+  });
+
+  it("renders failed full verification and empty recommendation states", async function testFullVerifyBranches() {
+    const wrapper = mount(StorageOverviewPanel, {
+      props: {
+        summary: {
+          total_size: 8192,
+          total_file_count: 24,
+          metadata_size: 1024
+        },
+        overview: {
+          total_size: 8192,
+          reachable_size: 4096,
+          reclaimable_gc_size: 1024,
+          reclaimable_cache_size: 0,
+          sections: [],
+          recommendations: []
+        },
+        fullVerify: {
+          ok: false,
+          warnings: ["pack missing checksum"],
+          errors: ["missing chunk", "broken ref"]
+        }
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await findButton(wrapper, "Refresh analysis").trigger("click");
+    await findButton(wrapper, "Run again").trigger("click");
+
+    expect(wrapper.text()).toContain("Issues found");
+    expect(wrapper.text()).toContain("Warnings");
+    expect(wrapper.text()).toContain("1");
+    expect(wrapper.text()).toContain("Errors");
+    expect(wrapper.text()).toContain("2");
+    expect(wrapper.text()).toContain("No storage recommendations at the moment.");
+    expect(wrapper.emitted("load-overview")).toHaveLength(1);
+    expect(wrapper.emitted("run-full-verify")).toHaveLength(1);
+  });
 });

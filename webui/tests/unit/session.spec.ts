@@ -18,7 +18,14 @@ vi.mock("@/api/client", function mockClientModule() {
   };
 });
 
-import { bootstrapSession, clearSession, setSessionToken, useSessionStore } from "@/stores/session";
+import {
+  bootstrapSession,
+  clearSession,
+  hasSessionToken,
+  restoreSessionToken,
+  setSessionToken,
+  useSessionStore
+} from "@/stores/session";
 
 describe("session store", function suite() {
   beforeEach(function resetState() {
@@ -81,5 +88,30 @@ describe("session store", function suite() {
     expect(clientMocks.getWhoAmI).toHaveBeenCalledTimes(2);
     expect(clientMocks.getRepoRefs).toHaveBeenCalledTimes(2);
     expect(useSessionStore().state.refs?.branches).toHaveLength(3);
+  });
+
+  it("restores tokens, exposes hasToken, and clears stored session state", function testTokenPersistence() {
+    window.sessionStorage.setItem("hubvault.webui.token", "persisted-token");
+
+    restoreSessionToken();
+    expect(hasSessionToken()).toBe(true);
+    expect(useSessionStore().hasToken.value).toBe(true);
+
+    clearSession();
+
+    expect(hasSessionToken()).toBe(false);
+    expect(useSessionStore().hasToken.value).toBe(false);
+    expect(window.sessionStorage.getItem("hubvault.webui.token")).toBeNull();
+  });
+
+  it("rejects missing tokens and preserves readable bootstrap errors", async function testBootstrapErrors() {
+    await expect(bootstrapSession("release/v1")).rejects.toThrow("Missing API token.");
+
+    setSessionToken("rw-token");
+    clientMocks.getServiceMeta.mockReset();
+    clientMocks.getServiceMeta.mockRejectedValueOnce(new Error("meta unavailable"));
+
+    await expect(bootstrapSession("release/v1")).rejects.toThrow("meta unavailable");
+    expect(useSessionStore().state.error).toBe("meta unavailable");
   });
 });

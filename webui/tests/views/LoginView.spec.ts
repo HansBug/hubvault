@@ -78,4 +78,49 @@ describe("LoginView", function suite() {
     expect(loginMocks.clearSession).toHaveBeenCalledTimes(1);
     expect(wrapper.text()).toContain("bad token");
   });
+
+  it("keeps redirect URLs with an existing revision and falls back to the overview route otherwise", async function testRedirectBranches() {
+    loginMocks.route.query = {
+      redirect: "/repo/files?path=docs&revision=dev"
+    };
+    loginMocks.bootstrapSession.mockResolvedValueOnce({
+      repoRevision: "release/v1"
+    });
+
+    const redirectWrapper = mount(LoginView, {
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await redirectWrapper.get("input").setValue("rw-token");
+    await redirectWrapper.get("form").trigger("submit");
+    await flushPromises();
+
+    expect(loginMocks.replace).toHaveBeenCalledWith("/repo/files?path=docs&revision=dev");
+
+    loginMocks.route.query = {
+      redirect: "/outside"
+    };
+    loginMocks.bootstrapSession.mockResolvedValueOnce({
+      repoRevision: "release/v2"
+    });
+
+    const fallbackWrapper = mount(LoginView, {
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await fallbackWrapper.get("input").setValue("ro-token");
+    await fallbackWrapper.get("button").trigger("click");
+    await flushPromises();
+
+    expect(loginMocks.replace).toHaveBeenLastCalledWith({
+      name: "overview",
+      query: {
+        revision: "release/v2"
+      }
+    });
+  });
 });

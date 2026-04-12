@@ -173,4 +173,151 @@ describe("RefsView", function suite() {
       }
     });
   });
+
+  it("creates tags, switches revisions from the panel, and deletes the current tag", async function testTagActions() {
+    vi.spyOn(ElMessageBox, "prompt").mockResolvedValue({ value: "v2.0" } as never);
+
+    const wrapper = mount(RefsView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await findButton(wrapper, "New Tag").trigger("click");
+    await flushPromises();
+
+    expect(refsViewMocks.createTagRef).toHaveBeenCalledWith({
+      tag: "v2.0",
+      revision: "release/v1"
+    });
+    expect(refsViewMocks.bootstrapSession).toHaveBeenCalledWith("release/v1", { force: true });
+
+    await findButton(wrapper, "dev").trigger("click");
+    expect(refsViewMocks.push).toHaveBeenLastCalledWith({
+      name: "refs",
+      query: {
+        revision: "dev"
+      }
+    });
+
+    await findButton(wrapper, "v1.0").trigger("click");
+    expect(refsViewMocks.push).toHaveBeenLastCalledWith({
+      name: "refs",
+      query: {
+        revision: "v1.0"
+      }
+    });
+
+    vi.spyOn(ElMessageBox, "confirm").mockResolvedValue(undefined as never);
+    const tagWrapper = mount(RefsView, {
+      props: {
+        revision: "v1.0"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await findButton(tagWrapper, "Delete Current").trigger("click");
+    await flushPromises();
+
+    expect(refsViewMocks.deleteTagRef).toHaveBeenCalledWith("v1.0");
+    expect(refsViewMocks.push).toHaveBeenLastCalledWith({
+      name: "refs",
+      query: {
+        revision: "release/v1"
+      }
+    });
+  });
+
+  it("keeps cancelled actions silent and surfaces write failures", async function testActionErrors() {
+    const promptSpy = vi.spyOn(ElMessageBox, "prompt");
+    promptSpy
+      .mockRejectedValueOnce("cancel" as never)
+      .mockResolvedValueOnce({ value: "v2.1" } as never)
+      .mockResolvedValueOnce({ value: "feature/slow" } as never)
+      .mockResolvedValueOnce({ value: "base-commit" } as never);
+    vi.spyOn(ElMessageBox, "confirm").mockRejectedValueOnce("close" as never);
+
+    refsViewMocks.createTagRef.mockRejectedValueOnce(new Error("tag create failed"));
+    refsViewMocks.mergeRevision.mockRejectedValueOnce(new Error("merge failed"));
+    refsViewMocks.resetBranchRef.mockRejectedValueOnce(new Error("reset failed"));
+
+    const wrapper = mount(RefsView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await findButton(wrapper, "New Branch").trigger("click");
+    await flushPromises();
+    expect(refsViewMocks.createBranchRef).not.toHaveBeenCalled();
+
+    await findButton(wrapper, "New Tag").trigger("click");
+    await flushPromises();
+    expect(refsViewMocks.createTagRef).toHaveBeenCalledWith({
+      tag: "v2.1",
+      revision: "release/v1"
+    });
+    expect(wrapper.text()).toContain("tag create failed");
+
+    await findButton(wrapper, "Merge Into Current").trigger("click");
+    await flushPromises();
+    expect(refsViewMocks.mergeRevision).toHaveBeenCalledWith({
+      source_revision: "feature/slow",
+      target_revision: "release/v1"
+    });
+    expect(wrapper.text()).toContain("merge failed");
+
+    await findButton(wrapper, "Reset Current").trigger("click");
+    await flushPromises();
+    expect(refsViewMocks.resetBranchRef).toHaveBeenCalledWith({
+      ref_name: "release/v1",
+      to_revision: "base-commit"
+    });
+    expect(wrapper.text()).toContain("reset failed");
+
+    await findButton(wrapper, "Delete Current").trigger("click");
+    await flushPromises();
+    expect(refsViewMocks.deleteBranchRef).not.toHaveBeenCalled();
+  });
+
+  it("hides write actions for readonly sessions and disables branch-only actions on tag revisions", function testReadonlyAndTagStates() {
+    sessionState.auth = {
+      access: "ro",
+      can_write: false
+    };
+
+    const readonlyWrapper = mount(RefsView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    expect(readonlyWrapper.find("[data-testid='refs-action-create-branch']").exists()).toBe(false);
+    expect(readonlyWrapper.find("[data-testid='refs-action-create-tag']").exists()).toBe(false);
+
+    resetSessionState();
+    const tagWrapper = mount(RefsView, {
+      props: {
+        revision: "v1.0"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    expect(tagWrapper.get("[data-testid='refs-action-merge']").attributes("disabled")).toBeDefined();
+    expect(tagWrapper.get("[data-testid='refs-action-reset']").attributes("disabled")).toBeDefined();
+    expect(tagWrapper.get("[data-testid='refs-action-delete']").attributes("disabled")).toBeUndefined();
+  });
 });

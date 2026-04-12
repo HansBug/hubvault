@@ -196,4 +196,110 @@ describe("FilesView", function suite() {
       }
     });
   });
+
+  it("redirects file paths into file detail views", async function testFileRedirects() {
+    filesViewMocks.route.query = {
+      path: "docs/config.json"
+    };
+    filesViewMocks.getPathsInfo.mockResolvedValue([
+      {
+        path: "docs/config.json",
+        entry_type: "file"
+      }
+    ]);
+
+    const wrapper = mount(FilesView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    expect(filesViewMocks.push).toHaveBeenCalledWith({
+      name: "file-detail",
+      params: {
+        pathMatch: ["docs", "config.json"]
+      },
+      query: {
+        revision: "release/v1"
+      }
+    });
+    expect(filesViewMocks.getRepoTree).not.toHaveBeenCalled();
+  });
+
+  it("supports folder deletion from directory listings", async function testFolderDelete() {
+    vi.spyOn(ElMessageBox, "confirm").mockResolvedValue(undefined as never);
+    filesViewMocks.route.query = {
+      path: "docs"
+    };
+    filesViewMocks.getRepoTree.mockResolvedValue([
+      {
+        path: "docs/subdir",
+        entry_type: "folder",
+        size: 0,
+        last_commit: {
+          oid: "commit-folder",
+          title: "add folder",
+          date: "2026-04-12T00:00:00Z"
+        }
+      }
+    ]);
+    filesViewMocks.deleteRepoFolder.mockResolvedValue({
+      oid: "delete-folder-commit"
+    });
+
+    const wrapper = mount(FilesView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+    await flushPromises();
+
+    await findButtonByText(wrapper, "delete docs/subdir").trigger("click");
+    await flushPromises();
+
+    expect(filesViewMocks.deleteRepoFolder).toHaveBeenCalledWith({
+      path_in_repo: "docs/subdir",
+      revision: "release/v1",
+      commit_message: "Delete folder docs/subdir with hubvault"
+    });
+  });
+
+  it("keeps the current file list stable when deletion is cancelled or fails", async function testDeleteGuards() {
+    const confirmSpy = vi.spyOn(ElMessageBox, "confirm");
+    confirmSpy.mockRejectedValueOnce("cancel" as never);
+    confirmSpy.mockResolvedValueOnce(undefined as never);
+    filesViewMocks.deleteRepoFile.mockRejectedValueOnce(new Error("delete failed"));
+
+    const wrapper = mount(FilesView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+    await flushPromises();
+
+    await findButtonByText(wrapper, "delete docs/config.json").trigger("click");
+    await flushPromises();
+    expect(filesViewMocks.deleteRepoFile).not.toHaveBeenCalled();
+
+    await findButtonByText(wrapper, "delete docs/config.json").trigger("click");
+    await flushPromises();
+
+    expect(filesViewMocks.deleteRepoFile).toHaveBeenCalledTimes(1);
+    expect(wrapper.text()).toContain("delete failed");
+  });
 });

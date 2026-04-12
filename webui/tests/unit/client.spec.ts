@@ -149,6 +149,7 @@ describe("api client helpers", function suite() {
     const file = new File(["hello"], "demo.txt", {
       type: "text/plain"
     });
+    const uploadProgress = vi.fn();
 
     await apiClient.getServiceMeta();
     await apiClient.getWhoAmI();
@@ -186,7 +187,7 @@ describe("api client helpers", function suite() {
         }
       ],
       {
-        onUploadProgress: vi.fn()
+        onUploadProgress: uploadProgress
       }
     );
     await apiClient.applyCommit(
@@ -340,6 +341,21 @@ describe("api client helpers", function suite() {
         && typeof config.onUploadProgress === "function"
         && config.timeout === 0;
     })).toBe(true);
+    const multipartCall = axiosState.request.mock.calls.find(function findMultipartCall(call) {
+      const config = call[0];
+      return config.url === "/api/v1/write/commit"
+        && config.data instanceof FormData
+        && typeof config.onUploadProgress === "function";
+    });
+    expect(multipartCall).toBeTruthy();
+    multipartCall![0].onUploadProgress({
+      loaded: "2",
+      total: "5"
+    });
+    expect(uploadProgress).toHaveBeenCalledWith({
+      loaded: 2,
+      total: 5
+    });
     expect(axiosState.request).toHaveBeenCalledWith({
       method: "delete",
       url: "/api/v1/write/branches/release%2Fv1"

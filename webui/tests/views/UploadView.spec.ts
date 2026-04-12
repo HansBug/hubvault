@@ -397,4 +397,259 @@ describe("UploadView", function suite() {
     expect(wrapper.text()).toContain("No files are queued yet.");
     expect(uploadViewMocks.push).not.toHaveBeenCalled();
   });
+
+  it("supports readonly sessions and back-to-files navigation", async function testReadonlyState() {
+    sessionState.auth = {
+      access: "ro",
+      can_write: false
+    };
+
+    const wrapper = mount(UploadView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Upload requires a read / write token.");
+    await findButtonByText(wrapper, "Back to Files").trigger("click");
+
+    expect(uploadViewMocks.push).toHaveBeenCalledWith({
+      name: "files",
+      query: {
+        revision: "release/v1",
+        path: "docs"
+      }
+    });
+  });
+
+  it("normalizes file targets, opens file and folder pickers, and supports clearing or removing queued entries", async function testQueueManagement() {
+    uploadViewMocks.route.query = {
+      path: "docs/config.json"
+    };
+    uploadViewMocks.getPathsInfo.mockResolvedValue([
+      {
+        path: "docs/config.json",
+        entry_type: "file"
+      }
+    ]);
+
+    const wrapper = mount(UploadView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    const fileInput = wrapper.get("[data-testid='upload-file-input']");
+    const folderInput = wrapper.get("[data-testid='upload-folder-input']");
+    const fileInputElement = fileInput.element as HTMLInputElement;
+    const folderInputElement = folderInput.element as HTMLInputElement;
+    const fileClickSpy = vi.spyOn(fileInputElement, "click");
+    const folderClickSpy = vi.spyOn(folderInputElement, "click");
+    const file = new File(["hello"], "notes.txt", {
+      type: "text/plain"
+    });
+    const folderFile = new File(["folder"], "demo.txt", {
+      type: "text/plain"
+    });
+
+    Object.defineProperty(folderFile, "webkitRelativePath", {
+      configurable: true,
+      value: "nested/demo.txt"
+    });
+
+    expect(wrapper.get("[data-testid='upload-commit-message-input']").attributes("placeholder")).toBe(
+      "Upload queued files to docs with hubvault"
+    );
+
+    await findButtonByText(wrapper, "Add Files").trigger("click");
+    await findButtonByText(wrapper, "Add Folder").trigger("click");
+    expect(fileClickSpy).toHaveBeenCalledTimes(1);
+    expect(folderClickSpy).toHaveBeenCalledTimes(1);
+
+    setInputFiles(fileInputElement, [file]);
+    await fileInput.trigger("change");
+    await flushPromises();
+    expect(fileInputElement.value).toBe("");
+    expect(wrapper.text()).toContain("docs/notes.txt");
+
+    await findButtonByText(wrapper, "Clear").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("No files are queued yet.");
+
+    setInputFiles(folderInputElement, [folderFile]);
+    await folderInput.trigger("change");
+    await flushPromises();
+    expect(folderInputElement.value).toBe("");
+    expect(wrapper.text()).toContain("docs/nested/demo.txt");
+
+    await wrapper.get('button[aria-label="Remove queued file docs/nested/demo.txt"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("No files are queued yet.");
+  });
+
+  it("keeps users informed during zero-payload fast paths before the commit resolves", async function testZeroPayloadStatus() {
+    const file = new File(["hello"], "notes.txt", {
+      type: "text/plain"
+    });
+    uploadViewMocks.planCommit.mockResolvedValue({
+      base_head: "base-1",
+      statistics: {
+        planned_upload_bytes: 0,
+        copy_file_count: 1,
+        chunk_fast_upload_file_count: 1
+      },
+      operations: [
+        {
+          index: 0,
+          type: "add",
+          strategy: "chunk-fast"
+        }
+      ]
+    });
+
+    let resolveApplyCommit: (value: unknown) => void = function noop() {};
+    uploadViewMocks.applyCommit.mockImplementation(function deferApply() {
+      return new Promise(function waitForResolution(resolve) {
+        resolveApplyCommit = resolve;
+      });
+    });
+
+    const wrapper = mount(UploadView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    const input = wrapper.get("[data-testid='upload-file-input']");
+    setInputFiles(input.element as HTMLInputElement, [file]);
+    await input.trigger("change");
+    await flushPromises();
+
+    await findButtonByText(wrapper, "Commit Queued Uploads").trigger("click");
+    await flushPromises();
+
+    expect(uploadViewMocks.applyCommit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        revision: "release/v1",
+        parent_commit: "base-1"
+      }),
+      [],
+      {
+        onUploadProgress: expect.any(Function)
+      }
+    );
+    expect(wrapper.get("[data-testid='upload-status-title']").text()).toBe("Finalizing commit");
+    expect(wrapper.get("[data-testid='upload-status-message']").text()).toContain("No payload upload is required");
+    expect(wrapper.get("[data-testid='upload-status-panel']").text()).toContain("No payload upload required");
+    expect(wrapper.text()).toContain("1 copy fast paths");
+    expect(wrapper.text()).toContain("1 chunk fast paths");
+
+    resolveApplyCommit({
+      oid: "upload-commit"
+    });
+    await flushPromises();
+    await flushPromises();
+
+    expect(uploadViewMocks.push).toHaveBeenLastCalledWith({
+      name: "files",
+      query: {
+        revision: "release/v1",
+        path: "docs"
+      }
+    });
+  });
+
+  it("updates upload progress callbacks and surfaces apply errors", async function testUploadProgressErrors() {
+    const file = new File(["hello"], "notes.txt", {
+      type: "text/plain"
+    });
+    uploadViewMocks.planCommit.mockResolvedValue({
+      base_head: "base-1",
+      statistics: {
+        planned_upload_bytes: 5,
+        copy_file_count: 0,
+        chunk_fast_upload_file_count: 0
+      },
+      operations: [
+        {
+          index: 0,
+          type: "add",
+          strategy: "upload-full",
+          field_name: "upload_file_0"
+        }
+      ]
+    });
+    uploadViewMocks.applyCommit.mockImplementation(async function applyWithProgress(_manifest, _uploads, options) {
+      options.onUploadProgress({
+        loaded: 2,
+        total: 5
+      });
+      options.onUploadProgress({
+        loaded: 5,
+        total: 5
+      });
+      throw new Error("upload transport failed");
+    });
+
+    const wrapper = mount(UploadView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    const input = wrapper.get("[data-testid='upload-file-input']");
+    setInputFiles(input.element as HTMLInputElement, [file]);
+    await input.trigger("change");
+    await flushPromises();
+
+    await findButtonByText(wrapper, "Commit Queued Uploads").trigger("click");
+    await flushPromises();
+    await flushPromises();
+
+    expect(uploadViewMocks.applyCommit).toHaveBeenCalled();
+    expect(wrapper.get("[data-testid='upload-status-title']").text()).toBe("Upload interrupted");
+    expect(wrapper.get("[data-testid='upload-status-message']").text()).toContain("upload transport failed");
+    expect(wrapper.text()).toContain("upload transport failed");
+    expect(uploadViewMocks.bootstrapSession).not.toHaveBeenCalled();
+  });
+
+  it("shows workspace preparation errors when the upload destination cannot be resolved", async function testWorkspaceErrors() {
+    uploadViewMocks.route.query = {
+      path: "broken/path"
+    };
+    uploadViewMocks.getPathsInfo.mockRejectedValueOnce(new Error("workspace unavailable"));
+
+    const wrapper = mount(UploadView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("workspace unavailable");
+  });
 });

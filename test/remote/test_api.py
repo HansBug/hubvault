@@ -1,6 +1,7 @@
 import io
 from pathlib import Path
 
+import fastapi
 import pytest
 
 from hubvault import CommitOperationAdd, CommitOperationCopy, CommitOperationDelete
@@ -8,7 +9,7 @@ from hubvault.errors import EntryNotFoundError
 from hubvault.optional import MissingOptionalDependencyError
 from hubvault.remote import HubVaultRemoteAPI, HubVaultRemoteApi
 from hubvault.remote.cache import build_snapshot_target, get_remote_cache_layout
-from hubvault.remote.errors import HubVaultRemoteAuthError
+from hubvault.remote.errors import HubVaultRemoteAuthError, HubVaultRemoteProtocolError
 from test.support import (
     TEST_DEFAULT_BRANCH,
     create_phase45_app,
@@ -213,6 +214,78 @@ class TestRemoteApi:
         assert progress_updates[0] == (0, len(payload))
         assert progress_updates[-1] == (len(payload), len(payload))
         assert all(sent <= total for sent, total in progress_updates)
+
+    def test_remote_upload_file_supports_public_tqdm_progress_mode(self, monkeypatch, tmp_path):
+        repo_dir = tmp_path / "repo"
+        seeded = seed_phase78_repo(repo_dir)
+        app = create_phase45_app(repo_dir)
+        patch_remote_test_client(monkeypatch, app)
+        remote_api = HubVaultRemoteApi("http://testserver", token="rw-token", revision=TEST_DEFAULT_BRANCH)
+
+        commit = remote_api.upload_file(
+            path_or_fileobj=b"progress via tqdm\n",
+            path_in_repo="docs/tqdm-progress.txt",
+            show_progress=True,
+        )
+
+        assert commit.commit_message == "Upload docs/tqdm-progress.txt with hubvault"
+        assert seeded["api"].read_bytes("docs/tqdm-progress.txt") == b"progress via tqdm\n"
+
+    def test_remote_upload_file_gracefully_skips_tqdm_when_optional_progress_extra_is_missing(
+        self, monkeypatch, tmp_path
+    ):
+        repo_dir = tmp_path / "repo"
+        seeded = seed_phase78_repo(repo_dir)
+        app = create_phase45_app(repo_dir)
+        patch_remote_test_client(monkeypatch, app)
+        remote_api = HubVaultRemoteApi("http://testserver", token="rw-token", revision=TEST_DEFAULT_BRANCH)
+
+        def _raise_missing(*args, **kwargs):
+            raise MissingOptionalDependencyError(extra="remote", feature="progress", missing_name="tqdm")
+
+        monkeypatch.setattr("hubvault.remote.api.import_optional_dependency", _raise_missing)
+
+        commit = remote_api.upload_file(
+            path_or_fileobj=b"progress without tqdm\n",
+            path_in_repo="docs/tqdm-missing.txt",
+            show_progress=True,
+        )
+
+        assert commit.commit_message == "Upload docs/tqdm-missing.txt with hubvault"
+        assert seeded["api"].read_bytes("docs/tqdm-missing.txt") == b"progress without tqdm\n"
+
+    def test_remote_create_commit_rejects_invalid_upload_plans_from_the_server(self, monkeypatch):
+        app = fastapi.FastAPI()
+
+        @app.post("/api/v1/write/commit-plan")
+        def commit_plan():
+            return {
+                "base_head": "commit-1",
+                "statistics": {
+                    "planned_upload_bytes": 5
+                },
+                "operations": [
+                    {
+                        "index": 7,
+                        "type": "add",
+                        "strategy": "upload-full",
+                        "field_name": "upload_file_7"
+                    }
+                ]
+            }
+
+        @app.post("/api/v1/write/commit")
+        def commit_apply():
+            raise AssertionError("commit apply must not be reached for invalid upload plans")
+
+        patch_remote_test_client(monkeypatch, app)
+        remote_api = HubVaultRemoteApi("http://testserver", token="rw-token", revision=TEST_DEFAULT_BRANCH)
+
+        with pytest.raises(HubVaultRemoteProtocolError, match="missing local source index"):
+            remote_api.create_commit(
+                operations=[CommitOperationAdd("docs/demo.txt", b"hello")],
+                commit_message="bad upload plan",
+            )
 
     def test_remote_write_methods_support_copy_delete_reset_and_folder_delete(self, monkeypatch, tmp_path):
         repo_dir = tmp_path / "repo"

@@ -180,6 +180,42 @@ describe("CommitChangeCard", function suite() {
     expect(wrapper.find("[data-testid='binary-metadata-panel']").exists()).toBe(false);
   });
 
+  it("renders video changes in the media comparison viewer", function testVideoChange() {
+    const wrapper = mount(CommitChangeCard, {
+      props: {
+        commitId: "commit-2",
+        compareParentCommitId: "commit-1",
+        change: {
+          path: "media/demo.mp4",
+          change_type: "modified",
+          is_binary: true,
+          unified_diff: null,
+          old_file: {
+            path: "media/demo.mp4",
+            size: 1024,
+            oid: "old-video",
+            blob_id: "old-blob",
+            sha256: "old-video-sha"
+          },
+          new_file: {
+            path: "media/demo.mp4",
+            size: 2048,
+            oid: "new-video",
+            blob_id: "new-blob",
+            sha256: "new-video-sha"
+          }
+        }
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    expect(wrapper.get("[data-testid='media-compare-viewer-stub']").text()).toContain("video");
+    expect(wrapper.find("[data-testid='binary-metadata-panel']").exists()).toBe(false);
+    expect(wrapper.text()).toContain("1.0 KB -> 2.0 KB");
+  });
+
   it("shows compact metadata only for opaque binary changes", function testBinaryMetadataChange() {
     const wrapper = mount(CommitChangeCard, {
       props: {
@@ -210,5 +246,41 @@ describe("CommitChangeCard", function suite() {
     expect(wrapper.get("[data-testid='binary-metadata-panel']").text()).toContain("After");
     expect(wrapper.find("[data-testid='html-diff-viewer-stub']").exists()).toBe(false);
     expect(wrapper.find("[data-testid='image-compare-viewer-stub']").exists()).toBe(false);
+  });
+
+  it("keeps deleted opaque binaries compact and exposes only the previous download", function testDeletedBinaryMetadata() {
+    const wrapper = mount(CommitChangeCard, {
+      props: {
+        commitId: "commit-2",
+        compareParentCommitId: "commit-1",
+        change: {
+          path: "artifacts/legacy.bin",
+          change_type: "deleted",
+          is_binary: true,
+          unified_diff: null,
+          old_file: {
+            path: "artifacts/legacy.bin",
+            size: 8192,
+            oid: "old-legacy-oid",
+            blob_id: "old-legacy-blob",
+            sha256: "old-legacy-sha"
+          },
+          new_file: null
+        }
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    const metadata = wrapper.get("[data-testid='binary-metadata-panel']");
+
+    expect(metadata.text()).toContain("Before");
+    expect(metadata.text()).toContain("8.0 KB");
+    expect(metadata.text()).toContain("After");
+    expect(metadata.text()).toContain("Removed by this commit");
+    expect(wrapper.html()).toContain("/api/v1/content/download/artifacts/legacy.bin?revision=commit-1");
+    expect(wrapper.text()).toContain("deleted");
+    expect(wrapper.find("[data-testid='media-compare-viewer-stub']").exists()).toBe(false);
   });
 });

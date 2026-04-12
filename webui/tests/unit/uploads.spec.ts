@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { basename, buildExactUploadManifest, joinRepoPath } from "@/utils/uploads";
+import { basename, buildExactUploadManifest, joinRepoPath, readBlobAsArrayBuffer } from "@/utils/uploads";
 
 describe("upload helpers", function suite() {
   it("joins repo paths without duplicate separators", function testJoinRepoPath() {
@@ -56,5 +56,72 @@ describe("upload helpers", function suite() {
       processedBytes: 11,
       totalBytes: 11
     });
+  });
+
+  it("rejects browser reads that do not yield bytes or that fail", async function testReadBlobFailures() {
+    const originalFileReader = globalThis.FileReader;
+
+    class ResultMismatchFileReader {
+      result = "not-array-buffer";
+      error = null;
+      onload = null;
+      onerror = null;
+      onprogress = null;
+
+      readAsArrayBuffer() {
+        this.onload({});
+      }
+    }
+
+    class ErrorFileReader {
+      result = null;
+      error = new Error("reader failed");
+      onload = null;
+      onerror = null;
+      onprogress = null;
+
+      readAsArrayBuffer() {
+        this.onerror({});
+      }
+    }
+
+    vi.stubGlobal("FileReader", ResultMismatchFileReader as unknown as typeof FileReader);
+    await expect(readBlobAsArrayBuffer(new Blob(["demo"]))).rejects.toThrow("Unable to read file bytes.");
+
+    vi.stubGlobal("FileReader", ErrorFileReader as unknown as typeof FileReader);
+    await expect(readBlobAsArrayBuffer(new Blob(["demo"]))).rejects.toThrow("reader failed");
+
+    vi.stubGlobal("FileReader", originalFileReader);
+  });
+
+  it("forwards browser read progress events before resolving file bytes", async function testReadBlobProgress() {
+    const originalFileReader = globalThis.FileReader;
+    const progressSpy = vi.fn();
+
+    class ProgressFileReader {
+      result = new ArrayBuffer(4);
+      error = null;
+      onload = null;
+      onerror = null;
+      onprogress = null;
+
+      readAsArrayBuffer() {
+        this.onprogress({
+          lengthComputable: true,
+          loaded: 4,
+          total: 4
+        });
+        this.onload({});
+      }
+    }
+
+    vi.stubGlobal("FileReader", ProgressFileReader as unknown as typeof FileReader);
+
+    const result = await readBlobAsArrayBuffer(new Blob(["demo"]), progressSpy);
+
+    expect(result.byteLength).toBe(4);
+    expect(progressSpy).toHaveBeenCalledWith(4, 4);
+
+    vi.stubGlobal("FileReader", originalFileReader);
   });
 });

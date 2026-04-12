@@ -30,4 +30,44 @@ Visible text`
     expect(wrapper.html()).toContain("language-python");
     expect(wrapper.html()).toContain("token keyword");
   });
+
+  it("renders loading, empty, and plain-text fallback states through public props", function testNonMarkdownStates() {
+    const loadingWrapper = mount(ReadmeViewer, {
+      props: {
+        path: "README.md",
+        content: "",
+        loading: true
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+    expect(loadingWrapper.html()).toContain("el-skeleton");
+
+    const emptyWrapper = mount(ReadmeViewer, {
+      props: {
+        path: "README.md",
+        content: "",
+        emptyTitle: "No README",
+        emptyDescription: "Custom empty message"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+    expect(emptyWrapper.text()).toContain("No README");
+    expect(emptyWrapper.text()).toContain("Custom empty message");
+
+    const plainWrapper = mount(ReadmeViewer, {
+      props: {
+        path: "notes.txt",
+        content: "plain preview body"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+    expect(plainWrapper.text()).toContain("plain preview body");
+    expect(plainWrapper.find("[data-testid='readme-viewer-markdown']").exists()).toBe(false);
+  });
 });

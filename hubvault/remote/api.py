@@ -30,6 +30,7 @@ from .cache import (
     snapshot_is_complete,
 )
 from .client import build_http_client, request_bytes, request_json
+from .errors import HubVaultRemoteProtocolError
 from .serde import (
     decode_commit_detail_info,
     decode_commit_info,
@@ -503,7 +504,9 @@ class HubVaultRemoteApi:
                     continue
                 source = upload_sources.get(int(planned_operation["index"]))
                 if source is None:
-                    continue
+                    raise HubVaultRemoteProtocolError(
+                        "Upload plan referenced missing local source index %r." % (planned_operation.get("index"),)
+                    )
                 if planned_operation.get("strategy") == "upload-full":
                     field_name = str(planned_operation["field_name"])
                     payload_data = bytes(source["data"])

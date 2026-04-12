@@ -178,4 +178,51 @@ describe("StorageView", function suite() {
     expect(storageViewMocks.getStorageOverview).toHaveBeenCalledTimes(3);
     expect(wrapper.text()).toContain("Latest Squash Result");
   });
+
+  it("keeps cancellation paths silent, surfaces failures, and disables squash when no current branch is selected", async function testFailureAndGuardBranches() {
+    storageViewMocks.runFullVerify.mockRejectedValueOnce(new Error("full verify failed"));
+    vi.spyOn(ElMessageBox, "confirm").mockRejectedValueOnce("cancel" as never);
+    vi.spyOn(ElMessageBox, "prompt").mockRejectedValueOnce("close" as never);
+
+    const wrapper = mount(StorageView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    await findButton(wrapper, "Run now", 1).trigger("click");
+    await flushPromises();
+
+    expect(storageViewMocks.runFullVerify).toHaveBeenCalledTimes(1);
+    expect(wrapper.get("[data-testid='storage-status-title']").text()).toBe("Storage task interrupted");
+    expect(wrapper.text()).toContain("full verify failed");
+
+    await findButton(wrapper, "Run GC").trigger("click");
+    await flushPromises();
+    expect(storageViewMocks.runGc).toHaveBeenCalledTimes(0);
+
+    await findButton(wrapper, "Squash Current Branch").trigger("click");
+    await flushPromises();
+    expect(storageViewMocks.runSquashHistory).not.toHaveBeenCalled();
+
+    wrapper.unmount();
+
+    resetSessionState();
+    const detachedWrapper = mount(StorageView, {
+      props: {
+        revision: "v1.0"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+    expect(findButton(detachedWrapper, "Squash Current Branch").attributes("disabled")).toBeDefined();
+  });
 });
