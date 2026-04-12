@@ -1,0 +1,44 @@
+{
+  "name": "hubvault-webui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "playwright test",
+    "sync": "python ../tools/webui_sync.py"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.1",
+    "@fontsource/ibm-plex-mono": "^5.2.7",
+    "axios": "^1.8.4",
+    "dayjs": "^1.11.13",
+    "diff2html": "^3.4.56",
+    "dompurify": "^3.2.3",
+    "element-plus": "^2.10.1",
+    "js-sha256": "^0.11.1",
+    "juxtaposejs": "^1.1.6",
+    "markdown-it": "^14.1.0",
+    "natsort": "^2.0.3",
+    "prismjs": "^1.30.0",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.54.2",
+    "@types/natsort": "^1.0.1",
+    "@vitejs/plugin-legacy": "^6.1.1",
+    "@vitejs/plugin-vue": "^6.0.1",
+    "@vitest/coverage-v8": "^2.1.9",
+    "@vue/test-utils": "^2.4.6",
+    "jsdom": "^26.0.0",
+    "sass": "^1.87.0",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5",
+    "vitest": "^2.1.9"
+  }
+}

@@ -12,7 +12,10 @@ API Documentation
     api_doc/errors
     api_doc/models
     api_doc/operations
+    api_doc/optional
+    api_doc/remote/index
     api_doc/repo/index
+    api_doc/server/index
     api_doc/storage/index
 
 * :doc:`api_doc/api`
@@ -21,6 +24,9 @@ API Documentation
 * :doc:`api_doc/errors`
 * :doc:`api_doc/models`
 * :doc:`api_doc/operations`
+* :doc:`api_doc/optional`
+* :doc:`api_doc/remote/index`
 * :doc:`api_doc/repo/index`
+* :doc:`api_doc/server/index`
 * :doc:`api_doc/storage/index`
 

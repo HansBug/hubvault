@@ -53,6 +53,20 @@ EXCLUDED_MODULES: Sequence[str] = [
     'py',
 ]
 
+OPTIONAL_RUNTIME_PACKAGES: Sequence[str] = [
+    'anyio',
+    'fastapi',
+    'h11',
+    'httpx',
+    'multipart',
+    'portalocker',
+    'pydantic',
+    'sniffio',
+    'starlette',
+    'typing_extensions',
+    'uvicorn',
+]
+
 
 def collect_datas() -> List[Tuple[str, str]]:
     """Collect data files that need to be packaged."""
@@ -67,6 +81,24 @@ def collect_datas() -> List[Tuple[str, str]]:
         print(f"Warning: Could not collect resources from tools.resources: {err}", file=sys.stderr)
 
     return datas
+
+
+def collect_hiddenimports() -> List[str]:
+    """Collect hidden imports required by lazily imported runtime extras."""
+    try:
+        from PyInstaller.utils.hooks import collect_submodules
+    except ImportError:
+        return []
+
+    hiddenimports = set()
+    for package_name in OPTIONAL_RUNTIME_PACKAGES:
+        try:
+            hiddenimports.add(package_name)
+            hiddenimports.update(collect_submodules(package_name))
+        except Exception:
+            continue
+
+    return sorted(hiddenimports)
 
 
 def _analysis_optimize_line() -> str:
@@ -87,6 +119,7 @@ def _analysis_optimize_line() -> str:
 def generate_spec():
     """Generate spec file content."""
     datas = collect_datas()
+    hiddenimports = collect_hiddenimports()
     optimize_line = _analysis_optimize_line()
     spec_content = f'''# -*- mode: python ; coding: utf-8 -*-
 
@@ -97,7 +130,7 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas={datas!r},
-    hiddenimports=[],
+    hiddenimports={hiddenimports!r},
     hookspath=[],
     hooksconfig={{}},
     runtime_hooks=[],

@@ -2,11 +2,15 @@
 """Smoke-test the built hubvault CLI executable."""
 
 import argparse
+import json
+import socket
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
+from urllib.request import Request, urlopen
 
 
 def _run(cli_path: str, args: Sequence[str]) -> subprocess.CompletedProcess:
@@ -32,6 +36,82 @@ def _assert_success(name: str, result: subprocess.CompletedProcess, needles: Ite
     for needle in needles:
         if needle not in lowered:
             raise AssertionError(f'{name} output missing {needle!r}: {output}')
+
+
+def _find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _http_get(url: str, headers: Optional[dict] = None) -> tuple:
+    request = Request(url, headers=headers or {})
+    with urlopen(request, timeout=5) as response:
+        return int(response.status), response.read()
+
+
+def _assert_frontend_server(cli_path: str, repo_dir: Path) -> None:
+    token = "smoke-rw-token"
+    port = _find_free_port()
+    process = subprocess.Popen(
+        [
+            cli_path,
+            "serve",
+            str(repo_dir),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--mode",
+            "frontend",
+            "--token-rw",
+            token,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+
+    try:
+        base_url = f"http://127.0.0.1:{port}"
+        deadline = time.time() + 30.0
+        last_error = ""
+        while time.time() < deadline:
+            if process.poll() is not None:
+                output = process.stdout.read() if process.stdout else ""
+                raise AssertionError(f"serve exited early with code {process.returncode}: {output}")
+            try:
+                root_status, root_body = _http_get(base_url + "/")
+                if root_status == 200 and b"hubvault" in root_body.lower():
+                    break
+            except Exception as err:  # pragma: no cover - timing dependent
+                last_error = str(err)
+            time.sleep(0.5)
+        else:  # pragma: no cover - timing dependent
+            raise AssertionError(f"serve did not become ready in time: {last_error}")
+
+        service_status, service_body = _http_get(
+            base_url + "/api/v1/meta/service",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        if service_status != 200:
+            raise AssertionError(f"service endpoint returned unexpected status: {service_status}")
+
+        payload = json.loads(service_body.decode("utf-8"))
+        if payload.get("mode") != "frontend":
+            raise AssertionError(f"service payload mode mismatch: {payload!r}")
+        if not payload.get("ui_enabled"):
+            raise AssertionError(f"service payload did not report ui_enabled: {payload!r}")
+
+        print("[OK] serve frontend")
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:  # pragma: no cover - best effort cleanup
+                process.kill()
+                process.wait(timeout=10)
 
 
 def _parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
@@ -126,6 +206,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         if len(log_lines) != 1:
             raise AssertionError(f'log --oneline returned unexpected lines: {log_result.stdout!r}')
         print('[OK] log')
+
+        _assert_frontend_server(cli_path, repo_dir)
 
 
 if __name__ == '__main__':

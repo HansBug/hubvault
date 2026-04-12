@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import BinaryIO, List, Optional, Sequence, Union
 
 from .models import (
+    CommitDetailInfo,
     CommitInfo,
     GcReport,
     GitCommitInfo,
@@ -482,6 +483,54 @@ class HubVaultApi:
         return self._backend.list_repo_commits(
             revision=revision or self._default_revision,
             formatted=formatted,
+        )
+
+    def get_commit_detail(
+        self,
+        commit_id: str,
+        *,
+        formatted: bool = False,
+        diff_context_lines: int = 3,
+        diff_max_text_size: int = 256 * 1024,
+    ) -> CommitDetailInfo:
+        """
+        Return one commit together with its first-parent file changes.
+
+        :param commit_id: Public commit ID or revision resolving to a commit
+        :type commit_id: str
+        :param formatted: Whether HTML-formatted title/message fields should be
+            populated
+        :type formatted: bool, optional
+        :param diff_context_lines: Context line count used for text diffs
+        :type diff_context_lines: int, optional
+        :param diff_max_text_size: Maximum size in bytes for inline text diffs
+        :type diff_max_text_size: int, optional
+        :return: Commit metadata with file-level changes
+        :rtype: CommitDetailInfo
+        :raises hubvault.errors.RevisionNotFoundError: Raised when ``commit_id``
+            cannot be resolved.
+
+        Example::
+
+            >>> import tempfile
+            >>> from pathlib import Path
+            >>> from hubvault import CommitOperationAdd
+            >>> with tempfile.TemporaryDirectory() as tmpdir:
+            ...     api = HubVaultApi(Path(tmpdir) / "repo")
+            ...     _ = api.create_repo()
+            ...     commit = api.create_commit(
+            ...         operations=[CommitOperationAdd("demo.txt", b"hello")],
+            ...         commit_message="seed",
+            ...     )
+            ...     api.get_commit_detail(commit.oid).commit.title
+            'seed'
+        """
+
+        return self._backend.get_commit_detail(
+            commit_id,
+            formatted=formatted,
+            diff_context_lines=diff_context_lines,
+            diff_max_text_size=diff_max_text_size,
         )
 
     def list_repo_refs(self, *, include_pull_requests: bool = False) -> GitRefs:

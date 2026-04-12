@@ -12,6 +12,9 @@ The module contains:
 * :class:`MergeConflict` - Structured merge-conflict description
 * :class:`MergeResult` - Result of a branch merge attempt
 * :class:`GitCommitInfo` - HF-style commit listing metadata
+* :class:`CommitFileVersionInfo` - File metadata for one side of a commit diff
+* :class:`CommitChangeInfo` - File-level change metadata for a commit diff
+* :class:`CommitDetailInfo` - Commit metadata with file-level changes
 * :class:`GitRefInfo` - HF-style git reference metadata
 * :class:`GitRefs` - HF-style git reference collection
 * :class:`ReflogEntry` - Local reflog entry metadata
@@ -316,6 +319,111 @@ class GitCommitInfo:
     message: str
     formatted_title: Optional[str]
     formatted_message: Optional[str]
+
+
+@dataclass(frozen=True)
+class CommitFileVersionInfo:
+    """
+    Describe one file version used by a commit-diff entry.
+
+    This model keeps the same public identity vocabulary as :class:`RepoFile`
+    while omitting UI-only fields such as HTTP download URLs. Callers can use
+    the surrounding commit IDs to build local or remote download links.
+
+    :param path: Repo-relative path for this file version
+    :type path: str
+    :param size: Logical file size in bytes
+    :type size: int
+    :param oid: HF-style public object identifier
+    :type oid: str
+    :param blob_id: HF-style blob identifier
+    :type blob_id: str
+    :param sha256: Bare hexadecimal SHA-256 digest for the logical payload
+    :type sha256: str
+
+    Example::
+
+        >>> info = CommitFileVersionInfo("demo.txt", 5, "oid", "blob", "abc")
+        >>> info.path
+        'demo.txt'
+    """
+
+    path: str
+    size: int
+    oid: str
+    blob_id: str
+    sha256: str
+
+
+@dataclass(frozen=True)
+class CommitChangeInfo:
+    """
+    Describe one file-level change in a commit diff.
+
+    Text changes may carry a Git-style unified diff. Binary or too-large files
+    still carry old/new metadata so UIs can compare size and content identity
+    without downloading the payload automatically.
+
+    :param path: Repo-relative path being described
+    :type path: str
+    :param change_type: One of ``"added"``, ``"deleted"``, or ``"modified"``
+    :type change_type: str
+    :param old_file: File metadata before the commit, or ``None`` for additions
+    :type old_file: Optional[CommitFileVersionInfo]
+    :param new_file: File metadata after the commit, or ``None`` for deletions
+    :type new_file: Optional[CommitFileVersionInfo]
+    :param is_binary: Whether the change should be treated as non-text
+    :type is_binary: bool
+    :param unified_diff: Git-style unified diff text for renderable text files
+    :type unified_diff: Optional[str]
+
+    Example::
+
+        >>> change = CommitChangeInfo("demo.txt", "added", None, None, True, None)
+        >>> change.change_type
+        'added'
+    """
+
+    path: str
+    change_type: str
+    old_file: Optional[CommitFileVersionInfo]
+    new_file: Optional[CommitFileVersionInfo]
+    is_binary: bool
+    unified_diff: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class CommitDetailInfo:
+    """
+    Describe one commit together with its first-parent file changes.
+
+    The first Phase 9 implementation intentionally compares a commit with its
+    first parent, matching common repository-browser defaults. Multi-parent
+    merge comparison UIs can be layered on later without changing the commit
+    listing model.
+
+    :param commit: Public commit-list metadata
+    :type commit: GitCommitInfo
+    :param parent_commit_ids: Public commit IDs of all parents
+    :type parent_commit_ids: List[str]
+    :param compare_parent_commit_id: Parent used as the diff base, or ``None``
+        for root commits
+    :type compare_parent_commit_id: Optional[str]
+    :param changes: File-level changes from the selected parent to ``commit``
+    :type changes: List[CommitChangeInfo]
+
+    Example::
+
+        >>> commit = GitCommitInfo("c", [], datetime(2024, 1, 1), "seed", "", None, None)
+        >>> detail = CommitDetailInfo(commit, [], None, [])
+        >>> detail.commit.title
+        'seed'
+    """
+
+    commit: GitCommitInfo
+    parent_commit_ids: List[str]
+    compare_parent_commit_id: Optional[str]
+    changes: List[CommitChangeInfo] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

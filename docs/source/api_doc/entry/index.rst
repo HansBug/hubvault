@@ -18,6 +18,8 @@ hubvault.entry
     history
     refs
     repo
+    server
+    style
 
 \_\_all\_\_
 -----------------------------------------------------
