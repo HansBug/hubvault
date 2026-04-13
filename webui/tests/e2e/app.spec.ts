@@ -148,6 +148,31 @@ test("readonly frontend supports token query entry plus standalone file and comm
   expect(codeBlockStyles.widthZhA).toBeGreaterThan(codeBlockStyles.widthLatin);
   expect(codeBlockStyles.color).not.toBe(codeBlockStyles.backgroundColor);
 
+  await expect(page.getByTestId("overview-readme-card").locator("table")).toBeVisible();
+  await expectImageLoaded(page.getByTestId("overview-readme-card").locator("img").first());
+  const readmeLayoutMetrics = await page.getByTestId("overview-readme-card").evaluate(function inspectReadmeCard(node) {
+    const markdown = node.querySelector("[data-testid='readme-viewer-markdown']");
+    const table = markdown ? markdown.querySelector("table") : null;
+    const image = markdown ? markdown.querySelector("img") : null;
+    const cardRect = node.getBoundingClientRect();
+    const markdownRect = markdown ? markdown.getBoundingClientRect() : new DOMRect();
+    const tableRect = table ? table.getBoundingClientRect() : new DOMRect();
+    const imageRect = image ? image.getBoundingClientRect() : new DOMRect();
+    return {
+      cardClientWidth: node.clientWidth,
+      cardScrollWidth: node.scrollWidth,
+      markdownWidth: markdownRect.width,
+      tableWidth: tableRect.width,
+      imageWidth: imageRect.width,
+      cardWidth: cardRect.width
+    };
+  });
+  expect(readmeLayoutMetrics.cardScrollWidth - readmeLayoutMetrics.cardClientWidth).toBeLessThanOrEqual(4);
+  expect(readmeLayoutMetrics.tableWidth).toBeGreaterThan(0);
+  expect(readmeLayoutMetrics.tableWidth).toBeLessThanOrEqual(readmeLayoutMetrics.markdownWidth + 1);
+  expect(readmeLayoutMetrics.imageWidth).toBeGreaterThan(100);
+  expect(readmeLayoutMetrics.imageWidth).toBeLessThanOrEqual(readmeLayoutMetrics.markdownWidth + 1);
+
   const readmeHeight = await getHeight(page.getByTestId("overview-readme-card"));
   const snapshotHeight = await getHeight(page.getByTestId("overview-snapshot-card"));
   const commitsHeight = await getHeight(page.getByTestId("overview-commits-card"));

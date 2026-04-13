@@ -260,8 +260,11 @@ code,
 }
 
 .markdown-body {
+  min-width: 0;
+  max-width: 100%;
   color: var(--el-text-color-primary);
   line-height: 1.75;
+  overflow-wrap: anywhere;
 }
 
 .markdown-body h1,
@@ -274,6 +277,39 @@ code,
 .markdown-body p:first-child,
 .markdown-body h1:first-child {
   margin-top: 0;
+}
+
+.markdown-body table {
+  width: 100%;
+  max-width: 100%;
+  margin: 1.2em 0;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.markdown-body th,
+.markdown-body td {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--el-border-color-lighter);
+  vertical-align: top;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.markdown-body th {
+  background: #f7fbfc;
+  font-weight: 600;
+  text-align: left;
+}
+
+.markdown-body img {
+  display: block;
+  max-width: 100%;
+  width: auto;
+  height: auto;
+  margin: 1.2em auto;
+  border-radius: 14px;
 }
 
 .markdown-body pre,
