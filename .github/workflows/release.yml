@@ -9,6 +9,8 @@ jobs:
     name: Publish to official pypi
     runs-on: ${{ matrix.os }}
     if: ${{ github.repository == 'hansbug/hubvault' }}
+    needs:
+      - release_docker_smoke
     strategy:
       matrix:
         os:
@@ -55,10 +57,36 @@ jobs:
           overwrite: true
           file_glob: true
 
+  release_docker_smoke:
+    name: Container Smoke Test
+    runs-on: ubuntu-latest
+    if: ${{ github.repository == 'hansbug/hubvault' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build local image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: local/hubvault:release
+
+      - name: Smoke test startup and persistent repository volume
+        shell: bash
+        run: |
+          bash docker/smoke-test.sh local/hubvault:release 9480
+
   release_docker_ghcr:
     name: Container Build And Release (GHCR)
     runs-on: ubuntu-latest
     if: ${{ github.repository == 'hansbug/hubvault' }}
+    needs:
+      - release_docker_smoke
     permissions:
       contents: read
       packages: write
@@ -106,6 +134,8 @@ jobs:
     name: Container Build And Release (Docker Hub)
     runs-on: ubuntu-latest
     if: ${{ github.repository == 'hansbug/hubvault' }}
+    needs:
+      - release_docker_smoke
     permissions:
       contents: read
     env:
@@ -175,6 +205,8 @@ jobs:
     name: CLI Build And Release
     runs-on: ${{ matrix.os }}
     if: ${{ github.repository == 'hansbug/hubvault' }}
+    needs:
+      - release_docker_smoke
     strategy:
       fail-fast: false
       matrix:

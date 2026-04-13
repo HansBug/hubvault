@@ -1,3 +1,16 @@
+FROM node:22-alpine3.21 AS webui-builder
+
+WORKDIR /webui
+
+COPY webui/package.json webui/package-lock.json ./
+
+RUN npm ci
+
+COPY webui ./
+
+RUN npm run build
+
+
 FROM python:3.12-alpine3.21 AS builder
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -12,9 +25,12 @@ RUN python -m venv /opt/venv
 
 COPY README.md setup.py requirements*.txt ./
 COPY hubvault ./hubvault
+COPY tools ./tools
+COPY --from=webui-builder /webui/dist ./webui/dist
 
-RUN pip install --upgrade pip setuptools wheel \
-    && pip install '.[api]'
+RUN python tools/webui_sync.py --dist-dir ./webui/dist --target-dir ./hubvault/server/static/webui \
+    && pip install --upgrade pip setuptools wheel \
+    && pip install '.[full]'
 
 
 FROM python:3.12-alpine3.21

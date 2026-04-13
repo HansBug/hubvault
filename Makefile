@@ -1,8 +1,9 @@
-.PHONY: help docs docs_en docs_zh pdocs rst_auto test unittest benchmark benchmark_smoke benchmark_standard benchmark_phase9 benchmark_phase9_smoke benchmark_phase9_standard benchmark_phase9_pressure benchmark_phase12 benchmark_phase12_raw benchmark_phase12_summary benchmark_phase12_smoke benchmark_phase12_standard benchmark_phase12_nightly benchmark_phase12_pressure benchmark_compare benchmark_phase12_compare build test_cli package clean webui_install webui_test webui_coverage webui_e2e webui_build webui_sync webui_package webui_check webui_clean
+.PHONY: help docs docs_en docs_zh pdocs rst_auto test unittest benchmark benchmark_smoke benchmark_standard benchmark_phase9 benchmark_phase9_smoke benchmark_phase9_standard benchmark_phase9_pressure benchmark_phase12 benchmark_phase12_raw benchmark_phase12_summary benchmark_phase12_smoke benchmark_phase12_standard benchmark_phase12_nightly benchmark_phase12_pressure benchmark_compare benchmark_phase12_compare build test_cli package clean webui_install webui_test webui_coverage webui_e2e webui_build webui_sync webui_package webui_check webui_clean docker_build docker_run docker_run_bind docker_smoke docker_clean
 
 PYTHON := $(shell [ -x ./venv/bin/python ] && printf '%s' ./venv/bin/python || which python)
 SPHINXBUILD ?= $(shell [ -x ./venv/bin/sphinx-build ] && printf '%s' ./venv/bin/sphinx-build || which sphinx-build)
 SPHINXMULTIVERSION ?= $(shell [ -x ./venv/bin/sphinx-multiversion ] && printf '%s' ./venv/bin/sphinx-multiversion || which sphinx-multiversion)
+DOCKER ?= $(shell which docker)
 
 PROJECT_NAME := hubvault
 PROJ_DIR     := .
@@ -24,6 +25,13 @@ WEBUI_VITE_CACHE_DIR := ${WEBUI_DIR}/node_modules/.vite
 WEBUI_INSTALL_STAMP := ${WEBUI_DIR}/node_modules/.hubvault-install.stamp
 WEBUI_BUILD_STAMP := ${BUILD_DIR}/webui/.hubvault-build.stamp
 WEBUI_LEGACY_BUILD_STAMP := ${WEBUI_DIST_DIR}/.hubvault-build.stamp
+DOCKER_IMAGE ?= hubvault:local
+DOCKER_PORT ?= 9472
+DOCKER_SMOKE_PORT ?= 9480
+DOCKER_VOLUME ?= hubvault-data
+DOCKER_CONTAINER ?= hubvault-local
+DOCKER_TOKEN_RW ?= dev-token
+DOCKER_REPO_DIR ?= ${PROJ_DIR}/demo-repo
 NPM ?= $(shell which npm)
 PYINSTALLER ?= $(PYTHON) -m PyInstaller
 WEBUI_INSTALL_ACTION := $(if $(wildcard ${WEBUI_DIR}/package-lock.json),ci,install)
@@ -82,6 +90,12 @@ help:
 	@echo "  make package      - Build Python package (sdist and wheel)"
 	@echo "  make build        - Build standalone executable with PyInstaller"
 	@echo "  make clean        - Remove build and packaging artifacts"
+	@echo "  make docker_build - Build the local full Docker image with bundled frontend"
+	@echo "  make docker_run   - Run the local full Docker image with a persistent named volume"
+	@echo "  make docker_run_bind"
+	@echo "                    - Run the local full Docker image with a bind-mounted repository directory"
+	@echo "  make docker_smoke - Build and smoke-test the local full Docker image"
+	@echo "  make docker_clean - Remove the local Docker dev container and named volume"
 	@echo "  make webui_install"
 	@echo "                    - Install frontend dependencies with npm ci/install"
 	@echo "  make webui_test   - Run frontend unit/component tests"
@@ -147,10 +161,54 @@ help:
 	@echo "  COV_TYPES=<types> - Coverage reports to generate (default: xml term-missing)"
 	@echo "  MIN_COVERAGE=<n>  - Minimum required coverage percentage"
 	@echo "  WORKERS=<n>       - Number of pytest-xdist workers"
+	@echo "  DOCKER_IMAGE=<tag> - Docker image tag for docker_* targets (default: hubvault:local)"
+	@echo "  DOCKER_PORT=<port> - Exposed service port for docker_run/docker_run_bind (default: 9472)"
+	@echo "  DOCKER_SMOKE_PORT=<port>"
+	@echo "                    - Host port for docker_smoke (default: 9480)"
+	@echo "  DOCKER_VOLUME=<name>"
+	@echo "                    - Named volume for docker_run/docker_clean (default: hubvault-data)"
+	@echo "  DOCKER_REPO_DIR=<path>"
+	@echo "                    - Bind-mounted repository path for docker_run_bind (default: ./demo-repo)"
+	@echo "  DOCKER_TOKEN_RW=<token>"
+	@echo "                    - RW token for docker_run/docker_run_bind (default: dev-token)"
 
 package: webui_package
 	rm -rf ${BUILD_DIR}/lib ${BUILD_DIR}/bdist.*
 	$(PYTHON) -m build --sdist --wheel --outdir ${DIST_DIR}
+
+docker_build:
+	@test -n "${DOCKER}" || (echo "docker not found. Install Docker first." && exit 1)
+	${DOCKER} build -t ${DOCKER_IMAGE} .
+
+docker_run: docker_build
+	@test -n "${DOCKER}" || (echo "docker not found. Install Docker first." && exit 1)
+	${DOCKER} run --rm -it \
+		--name ${DOCKER_CONTAINER} \
+		-e HUBVAULT_TOKEN_RW=${DOCKER_TOKEN_RW} \
+		-e HUBVAULT_PORT=${DOCKER_PORT} \
+		-v ${DOCKER_VOLUME}:/data/repo \
+		-p ${DOCKER_PORT}:${DOCKER_PORT} \
+		${DOCKER_IMAGE}
+
+docker_run_bind: docker_build
+	@test -n "${DOCKER}" || (echo "docker not found. Install Docker first." && exit 1)
+	@mkdir -p "${DOCKER_REPO_DIR}"
+	${DOCKER} run --rm -it \
+		--name ${DOCKER_CONTAINER} \
+		-e HUBVAULT_TOKEN_RW=${DOCKER_TOKEN_RW} \
+		-e HUBVAULT_PORT=${DOCKER_PORT} \
+		-v "$$(cd "${DOCKER_REPO_DIR}" && pwd):/data/repo" \
+		-p ${DOCKER_PORT}:${DOCKER_PORT} \
+		${DOCKER_IMAGE}
+
+docker_smoke: docker_build
+	@test -n "${DOCKER}" || (echo "docker not found. Install Docker first." && exit 1)
+	bash docker/smoke-test.sh ${DOCKER_IMAGE} ${DOCKER_SMOKE_PORT}
+
+docker_clean:
+	@test -n "${DOCKER}" || (echo "docker not found. Install Docker first." && exit 1)
+	-${DOCKER} rm -f ${DOCKER_CONTAINER}
+	-${DOCKER} volume rm -f ${DOCKER_VOLUME}
 
 webui_install: ${WEBUI_INSTALL_STAMP}
 

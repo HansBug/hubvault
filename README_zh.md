@@ -184,7 +184,8 @@ gunicorn \
 
 ## Docker
 
-仓库现在也带了一套基于 Alpine 的轻量容器镜像，默认配置如下：
+仓库现在也带了一套基于 Alpine 的轻量容器镜像。镜像会按 `full` extra 构建，
+并把编译后的前端静态资源一并打进去，所以启动后前端界面可以直接使用。默认配置如下：
 
 - `frontend` 模式
 - 自动初始化仓库
@@ -198,6 +199,12 @@ gunicorn \
 docker build -t hubvault:local .
 ```
 
+如果你想直接走仓库内置命令，也可以：
+
+```bash
+make docker_build
+```
+
 直接用一条 `docker run` 命令启动，并把仓库数据持久化到 named volume：
 
 ```bash
@@ -207,6 +214,8 @@ docker run --rm -it \
   -p 9472:9472 \
   hubvault:local
 ```
+
+同样的流程也可以直接用 `make docker_run`。
 
 如果你希望仓库固定落在某个本地目录，可以改成 bind mount：
 
@@ -218,6 +227,8 @@ docker run --rm -it \
   -p 8080:8080 \
   hubvault:local
 ```
+
+或者直接使用 `make docker_run_bind DOCKER_REPO_DIR=./demo-repo DOCKER_PORT=8080`。
 
 如果你在 Linux 上用 bind mount，并且希望生成的仓库文件继续归宿主机当前用户所有，
 可以额外加上 `--user "$(id -u):$(id -g)"`，避免文件落成 `root`。
@@ -244,6 +255,8 @@ docker run --rm -it \
 - `Package Release` 在 release 时发布 GHCR 镜像
 - `Package Release` 在仓库 secrets 配好 `DOCKERHUB_USERNAME` 和
   `DOCKERHUB_TOKEN` 之后，也会同步发布 Docker Hub 镜像
+
+本地如果想复用同一套检查逻辑，可以直接执行 `make docker_smoke`，它会先构建镜像，再运行和 CI 一样的脚本化 smoke test。
 
 ## Remote Client
 

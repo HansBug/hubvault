@@ -185,7 +185,9 @@ gunicorn \
 ## Docker
 
 The repository also ships a lightweight Alpine-based container image for the
-embedded server. The image defaults to:
+full embedded server. The image is built with the `full` extra and bundles the
+compiled frontend assets, so the browser UI works directly after startup. It
+defaults to:
 
 - `frontend` mode
 - automatic repository initialization
@@ -199,6 +201,12 @@ Build the image locally:
 docker build -t hubvault:local .
 ```
 
+Or use the convenience make target:
+
+```bash
+make docker_build
+```
+
 Then start the server with one `docker run` command and a persistent named
 volume:
 
@@ -209,6 +217,8 @@ docker run --rm -it \
   -p 9472:9472 \
   hubvault:local
 ```
+
+The same flow is also available through `make docker_run`.
 
 Use a bind mount when you want the repository to stay in one explicit local
 directory:
@@ -221,6 +231,8 @@ docker run --rm -it \
   -p 8080:8080 \
   hubvault:local
 ```
+
+Or use `make docker_run_bind DOCKER_REPO_DIR=./demo-repo DOCKER_PORT=8080`.
 
 On Linux bind mounts, add `--user "$(id -u):$(id -g)"` when you want the
 persisted repository files to stay owned by your host user instead of `root`.
@@ -251,6 +263,9 @@ workflows:
 - `Package Release` publishes release images to GHCR
 - `Package Release` also mirrors to Docker Hub once `DOCKERHUB_USERNAME` and
   `DOCKERHUB_TOKEN` are configured in repository secrets
+
+For local validation, `make docker_smoke` builds the image and runs the same
+scripted smoke test used by CI.
 
 ## Remote Client
 

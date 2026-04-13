@@ -19,4 +19,8 @@ plan
 test
 test_repo
 venv
-webui
+webui/coverage
+webui/dist
+webui/node_modules
+webui/playwright-report
+webui/test-results
