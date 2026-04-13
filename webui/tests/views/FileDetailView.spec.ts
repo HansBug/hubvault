@@ -108,7 +108,11 @@ describe("FileDetailView", function suite() {
     expect(fileDetailMocks.getPathsInfo).toHaveBeenCalledWith("release/v1", ["docs/guide.md"]);
     expect(fileDetailMocks.getBlobBytes).toHaveBeenCalledWith("release/v1", "docs/guide.md");
     expect(wrapper.get("[data-testid='readme-viewer-stub']").text()).toContain("docs/guide.md|# Guide");
-    expect(wrapper.text()).toContain("<home>");
+    expect(wrapper.text()).not.toContain("<home>");
+    expect(wrapper.get("[data-testid='path-breadcrumb']").text()).toContain("docs");
+    expect(wrapper.findAll("button").some(function hasRepositoryRoot(item) {
+      return item.attributes("aria-label") === "Repository root";
+    })).toBe(true);
 
     await findButtonByLabelOrText(wrapper, "Back to Directory").trigger("click");
 
@@ -205,5 +209,41 @@ describe("FileDetailView", function suite() {
 
     expect(fileDetailMocks.getBlobBytes).not.toHaveBeenCalled();
     expect(wrapper.get("img").attributes("src")).toContain("/api/v1/content/blob/images/logo.png?revision=release/v1");
+  });
+
+  it("shows an inline fallback for avi files instead of a broken video player", async function testUnsupportedVideoDetail() {
+    fileDetailMocks.route.params.pathMatch = ["media", "demo.avi"];
+    fileDetailMocks.getPathsInfo.mockResolvedValue([
+      {
+        path: "media/demo.avi",
+        entry_type: "file",
+        size: 2048,
+        oid: "oid-4",
+        sha256: "sha-4",
+        blob_id: "blob-4",
+        etag: "etag-4",
+        last_commit: null
+      }
+    ]);
+
+    const wrapper = mount(FileDetailView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    expect(fileDetailMocks.getBlobBytes).not.toHaveBeenCalled();
+    expect(wrapper.find("video").exists()).toBe(false);
+    expect(wrapper.get("[data-testid='media-preview-unavailable']").text()).toContain(
+      "AVI video preview is not available in this browser."
+    );
+    expect(wrapper.get("[data-testid='media-preview-download']").attributes("href")).toContain(
+      "/api/v1/content/download/media/demo.avi?revision=release/v1"
+    );
   });
 });

@@ -49,7 +49,6 @@ const breadcrumbItems = computed(function resolveBreadcrumbItems() {
   const items: any[] = [
     {
       home: true,
-      label: "<home>",
       current: !segments.length,
       ariaLabel: "Repository root",
       to: {
@@ -332,13 +331,15 @@ watch(
             <div>
               <h3 class="surface__title">{{ previewMode === 'video' ? 'Video Preview' : 'Audio Preview' }}</h3>
               <p class="surface__subtitle">
-                The current media file is streamed directly from the repository blob route.
+                Inline playback depends on browser media support. Unsupported formats fall back to a download prompt.
               </p>
             </div>
           </div>
           <media-preview-card
             :kind="previewMode"
             :src="blobUrl"
+            :path="entry.path"
+            :download-url="downloadUrl"
             :label="entry.path"
             empty-text="This media file cannot be rendered inline. Use the download button to inspect it locally."
           />

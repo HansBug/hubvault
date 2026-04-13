@@ -75,6 +75,7 @@ SVG_V2 = b"""<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" vi
 """
 
 ICON_AUDIT_FILES = (
+    ("icon-audit/LICENSE", b"HubVault fixture license text.\n"),
     ("icon-audit/README.md", b"# Icon Audit\n\nFrontend icon alignment fixtures.\n"),
     ("icon-audit/blob.bin", b"\x00hubvault-binary-icon-fixture\x01"),
     ("icon-audit/clip.wav", b"RIFF$\x00\x00\x00WAVEfmt "),
@@ -121,6 +122,11 @@ def _build_fixture_repo(repo_dir: Path) -> None:
                     b"3. Storage analysis should stay hidden until the operator asks for it.\n"
                     b"4. Lightweight storage metrics should refresh independently.\n"
                     b"5. File and commit pages stay wired for the broader phase 9 smoke flow.\n\n"
+                    b"| Column | Very Long Column | Notes |\n"
+                    b"| --- | --- | --- |\n"
+                    b"| repo | fixture-token-token-token-token-token-token-token-token-token | Wide markdown tables should fit the overview card width. |\n"
+                    b"| media | /api/v1/content/blob/images/logo.svg?revision=release/v1&token=ro-token | Images should scale to the README panel width. |\n\n"
+                    b"![Overview fixture image](/api/v1/content/blob/images/logo.svg?revision=release/v1&token=ro-token)\n\n"
                     b"Additional context line 01 keeps the markdown panel tall.\n"
                     b"Additional context line 02 keeps the markdown panel tall.\n"
                     b"Additional context line 03 keeps the markdown panel tall.\n"

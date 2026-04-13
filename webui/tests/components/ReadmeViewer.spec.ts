@@ -11,6 +11,12 @@ describe("ReadmeViewer", function suite() {
         path: "README.md",
         content: `# Demo
 
+| Column | Very Long Column |
+| --- | --- |
+| alpha | a-very-very-very-very-very-very-long-token-that-should-still-stay-inside-the-readme-card |
+
+![Fixture image](/api/v1/content/blob/images/logo.svg?revision=release%2Fv1&token=ro-token)
+
 \`\`\`python
 def demo():
     return 1
@@ -29,6 +35,8 @@ Visible text`
     expect(wrapper.html()).not.toContain("<script>");
     expect(wrapper.html()).toContain("language-python");
     expect(wrapper.html()).toContain("token keyword");
+    expect(wrapper.find("table").exists()).toBe(true);
+    expect(wrapper.find("img").attributes("src")).toContain("/api/v1/content/blob/images/logo.svg");
   });
 
   it("renders loading, empty, and plain-text fallback states through public props", function testNonMarkdownStates() {

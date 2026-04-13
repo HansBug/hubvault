@@ -120,7 +120,9 @@ describe("PathBreadcrumb", function suite() {
       }
     });
 
-    expect(wrapper.text()).toContain("<home>");
+    expect(wrapper.text()).not.toContain("<home>");
+    expect(wrapper.text()).toContain("/");
+    expect(wrapper.find("button[aria-label='Repository root'] .el-icon").exists()).toBe(true);
 
     await findButtonByLabelOrText(wrapper, "Repository root").trigger("click");
     await findButtonByLabelOrText(wrapper, "Current path").trigger("click");

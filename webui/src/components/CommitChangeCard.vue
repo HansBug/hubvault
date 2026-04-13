@@ -221,6 +221,10 @@ function versionRows(fileVersion) {
       :kind="mediaKind"
       :old-media-url="oldBlobUrl"
       :new-media-url="newBlobUrl"
+      :old-path="change.old_file ? change.old_file.path : ''"
+      :new-path="change.new_file ? change.new_file.path : ''"
+      :old-download-url="oldDownloadUrl"
+      :new-download-url="newDownloadUrl"
       old-label="Parent"
       new-label="Commit"
     />

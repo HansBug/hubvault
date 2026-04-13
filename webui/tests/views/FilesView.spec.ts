@@ -150,7 +150,8 @@ describe("FilesView", function suite() {
 
     expect(filesViewMocks.getPathsInfo).toHaveBeenCalledWith("release/v1", ["docs"]);
     expect(filesViewMocks.getRepoTree).toHaveBeenCalledWith("release/v1", "docs");
-    expect(wrapper.text()).toContain("<home>");
+    expect(wrapper.text()).not.toContain("<home>");
+    expect(wrapper.find("[aria-label='Repository root']").exists()).toBe(true);
 
     await findButtonByText(wrapper, "delete docs/config.json").trigger("click");
     await flushPromises();

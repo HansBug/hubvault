@@ -70,6 +70,26 @@ describe('FileTable', function suite() {
             }
           },
           {
+            path: 'LICENSE',
+            entry_type: 'file',
+            size: 96,
+            last_commit: {
+              oid: 'commit-license',
+              title: 'add license',
+              date: '2026-04-12T00:00:00Z'
+            }
+          },
+          {
+            path: 'README.md',
+            entry_type: 'file',
+            size: 144,
+            last_commit: {
+              oid: 'commit-root-readme',
+              title: 'add root readme',
+              date: '2026-04-12T00:00:00Z'
+            }
+          },
+          {
             path: 'models/model.safetensors',
             entry_type: 'file',
             size: 2048,
@@ -167,7 +187,9 @@ describe('FileTable', function suite() {
     expect(findButtonByLabelOrText(wrapper, 'docs').attributes('data-file-kind')).toBe('folder');
     expect(findButtonByLabelOrText(wrapper, '.gitattributes').attributes('data-file-kind')).toBe('git');
     expect(findButtonByLabelOrText(wrapper, 'Dockerfile').attributes('data-file-kind')).toBe('docker');
-    expect(findButtonByLabelOrText(wrapper, 'model.safetensors').attributes('data-file-kind')).toBe('pytorch');
+    expect(findButtonByLabelOrText(wrapper, 'LICENSE').attributes('data-file-kind')).toBe('license');
+    expect(findButtonByLabelOrText(wrapper, 'README.md').attributes('data-file-kind')).toBe('readme');
+    expect(findButtonByLabelOrText(wrapper, 'model.safetensors').attributes('data-file-kind')).toBe('safetensors');
     expect(findButtonByLabelOrText(wrapper, 'train.parquet').attributes('data-file-kind')).toBe('table');
     expect(findButtonByLabelOrText(wrapper, 'events.out.tfevents.1710000.fixture').attributes('data-file-kind')).toBe('log');
     expect(findButtonByLabelOrText(wrapper, 'readme.md').attributes('data-file-kind')).toBe('readme');

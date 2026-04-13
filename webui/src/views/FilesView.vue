@@ -34,7 +34,6 @@ const breadcrumbItems = computed(function resolveBreadcrumbItems() {
   const items: any[] = [
     {
       home: true,
-      label: "<home>",
       current: !breadcrumbs.value.length,
       ariaLabel: "Repository root",
       to: {
