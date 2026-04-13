@@ -50,18 +50,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          repo_root="$(mktemp -d)"
+          volume_name="hubvault-smoke-data"
           cleanup() {
             docker rm -f hubvault-smoke >/dev/null 2>&1 || true
-            rm -rf "${repo_root}"
+            docker volume rm -f "${volume_name}" >/dev/null 2>&1 || true
           }
           trap cleanup EXIT
+
+          docker volume create "${volume_name}" >/dev/null
 
           docker run -d \
             --name hubvault-smoke \
             -e HUBVAULT_TOKEN_RW=ci-token \
             -e HUBVAULT_PORT=9480 \
-            -v "${repo_root}:/data/repo" \
+            -v "${volume_name}:/data/repo" \
             -p 9480:9480 \
             local/hubvault:ci
 
@@ -75,8 +77,10 @@ jobs:
             sleep 1
           done
 
-          test -f "${repo_root}/FORMAT"
-          test -f "${repo_root}/metadata.sqlite3"
+          docker run --rm \
+            -v "${volume_name}:/data/repo" \
+            local/hubvault:ci \
+            sh -c 'test -f /data/repo/FORMAT && test -f /data/repo/metadata.sqlite3'
 
           docker rm -f hubvault-smoke >/dev/null 2>&1 || true
 
@@ -85,7 +89,7 @@ jobs:
             -e HUBVAULT_TOKEN_RW=ci-token \
             -e HUBVAULT_INIT=0 \
             -e HUBVAULT_PORT=9480 \
-            -v "${repo_root}:/data/repo" \
+            -v "${volume_name}:/data/repo" \
             -p 9480:9480 \
             local/hubvault:ci
 
