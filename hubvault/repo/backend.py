@@ -5009,14 +5009,12 @@ class RepositoryBackend(object):
         self,
         target_commit_id: str,
         source_commit_id: str,
-    ) -> Optional[str]:
+    ) -> str:
         """Resolve the nearest common ancestor used as the merge base."""
 
         target_distances = self._ancestor_distances_unlocked(target_commit_id)
         source_distances = self._ancestor_distances_unlocked(source_commit_id)
         candidates = set(target_distances).intersection(source_distances)
-        if not candidates:
-            return None
         return min(
             candidates,
             key=lambda commit_id: (
@@ -5090,17 +5088,12 @@ class RepositoryBackend(object):
         """Return structural conflicts for a merged snapshot candidate."""
 
         conflicts = []
-        seen_pairs = set()
         seen_per_dir = {}
         for path in sorted(snapshot):
             parts = path.split("/")
             for index in range(1, len(parts)):
                 prefix = "/".join(parts[:index])
                 if prefix in snapshot:
-                    key = (prefix, path, "file/directory")
-                    if key in seen_pairs:
-                        continue
-                    seen_pairs.add(key)
                     conflicts.append(
                         MergeConflict(
                             path=prefix,
@@ -5119,20 +5112,17 @@ class RepositoryBackend(object):
             if folded in directory_entries and directory_entries[folded] != parts[-1]:
                 other_name = directory_entries[folded]
                 other_path = other_name if not parent else parent + "/" + other_name
-                key = tuple(sorted((other_path, path)) + ["case-fold"])
-                if key not in seen_pairs:
-                    seen_pairs.add(key)
-                    conflicts.append(
-                        MergeConflict(
-                            path=other_path,
-                            conflict_type="case-fold",
-                            message="case-insensitive path conflict",
-                            base_oid=None,
-                            target_oid=None,
-                            source_oid=None,
-                            related_path=path,
-                        )
+                conflicts.append(
+                    MergeConflict(
+                        path=other_path,
+                        conflict_type="case-fold",
+                        message="case-insensitive path conflict",
+                        base_oid=None,
+                        target_oid=None,
+                        source_oid=None,
+                        related_path=path,
                     )
+                )
             directory_entries[folded] = parts[-1]
         return conflicts
 
@@ -5918,12 +5908,12 @@ class RepositoryBackend(object):
         head = self._resolve_revision(revision)
         return self._file_object_id_for_commit(head, path_in_repo)
 
-    def _file_object_id_for_commit(self, commit_id: Optional[str], path_in_repo: str) -> str:
+    def _file_object_id_for_commit(self, commit_id: str, path_in_repo: str) -> str:
         """
         Resolve one file object ID from a commit without flattening the tree.
 
         :param commit_id: Commit object identifier
-        :type commit_id: Optional[str]
+        :type commit_id: str
         :param path_in_repo: Repo-relative file path
         :type path_in_repo: str
         :return: File object identifier for the requested path
@@ -5932,8 +5922,6 @@ class RepositoryBackend(object):
         """
 
         normalized_path = _normalize_repo_path(path_in_repo)
-        if commit_id is None:
-            raise EntryNotFoundError("path not found: %s" % normalized_path)
         commit_payload = self._read_object_payload("commits", commit_id)
         return self._file_object_id_for_tree(str(commit_payload["tree_id"]), normalized_path)
 
@@ -6084,7 +6072,7 @@ class RepositoryBackend(object):
 
     def _last_commit_info_by_path_unlocked(
         self,
-        head_commit_id: Optional[str],
+        head_commit_id: str,
         paths: Sequence[str],
         head_snapshot: Optional[Dict[str, str]] = None,
     ) -> Dict[str, LastCommitInfo]:
@@ -6092,7 +6080,7 @@ class RepositoryBackend(object):
         Resolve the newest reachable commit that introduced each visible path state.
 
         :param head_commit_id: Commit object selected by the caller revision
-        :type head_commit_id: Optional[str]
+        :type head_commit_id: str
         :param paths: Visible repo-relative paths to inspect
         :type paths: Sequence[str]
         :param head_snapshot: Optional precomputed head snapshot
@@ -6100,9 +6088,6 @@ class RepositoryBackend(object):
         :return: Mapping of repo-relative path to last-commit metadata
         :rtype: Dict[str, LastCommitInfo]
         """
-
-        if head_commit_id is None:
-            return {}
 
         normalized_paths = []
         seen_paths = set()
@@ -6113,7 +6098,7 @@ class RepositoryBackend(object):
             seen_paths.add(normalized_path)
             normalized_paths.append(normalized_path)
 
-        current_snapshot = dict(head_snapshot or self._snapshot_for_commit(head_commit_id))
+        current_snapshot = dict(head_snapshot if head_snapshot is not None else self._snapshot_for_commit(head_commit_id))
         target_states = {
             path: self._path_state_from_snapshot(current_snapshot, path)
             for path in normalized_paths
@@ -6126,11 +6111,9 @@ class RepositoryBackend(object):
         if not unresolved:
             return {}
 
-        snapshot_cache = {
-            None: {},
-            head_commit_id: current_snapshot,
-        }
-        def _snapshot_for(commit_id: Optional[str]) -> Dict[str, str]:
+        snapshot_cache = {head_commit_id: current_snapshot}
+
+        def _snapshot_for(commit_id: str) -> Dict[str, str]:
             cached_snapshot = snapshot_cache.get(commit_id)
             if cached_snapshot is not None:
                 return cached_snapshot
@@ -6146,7 +6129,7 @@ class RepositoryBackend(object):
         visited = set()
         while pending and unresolved:
             commit_id = pending.pop(0)
-            if commit_id is None or commit_id in visited:
+            if commit_id in visited:
                 continue
             visited.add(commit_id)
 
@@ -6157,10 +6140,6 @@ class RepositoryBackend(object):
             for path in list(unresolved):
                 target_state = target_states[path]
                 if self._path_state_from_snapshot(commit_snapshot, path) != target_state:
-                    continue
-                if not parent_ids:
-                    resolved[path] = self._last_commit_info_for_commit(commit_id)
-                    unresolved.remove(path)
                     continue
                 if all(self._path_state_from_snapshot(_snapshot_for(parent_id), path) != target_state for parent_id in parent_ids):
                     resolved[path] = self._last_commit_info_for_commit(commit_id)
@@ -6198,13 +6177,11 @@ class RepositoryBackend(object):
                 sha256=entry.sha256,
                 etag=entry.etag,
             )
-        if isinstance(entry, RepoFolder):
-            return RepoFolder(
-                path=entry.path,
-                tree_id=entry.tree_id,
-                last_commit=last_commit,
-            )
-        raise TypeError("Unsupported repository entry model: %r." % (type(entry).__name__,))
+        return RepoFolder(
+            path=entry.path,
+            tree_id=entry.tree_id,
+            last_commit=last_commit,
+        )
 
     def _compose_commit_text(self, commit_message: str, commit_description: str) -> str:
         """
@@ -7086,7 +7063,7 @@ class RepositoryBackend(object):
             )
         elif change_type == "added":
             headers.append("new file mode 100644")
-        elif change_type == "deleted":
+        else:
             headers.append("deleted file mode 100644")
         return headers
 

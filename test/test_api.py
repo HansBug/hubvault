@@ -734,6 +734,85 @@ class TestApi:
         assert result.conflicts[0].conflict_type == "delete/modify"
         assert result.conflicts[0].path == "shared.txt"
 
+    def test_merge_public_api_auto_merges_matching_deletions(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        _ = api.create_commit(
+            operations=[CommitOperationAdd("shared.txt", b"seed")],
+            commit_message="seed",
+        )
+        api.create_branch(branch="feature")
+        api.create_commit(
+            operations=[CommitOperationDelete("shared.txt")],
+            commit_message="main delete",
+        )
+        api.create_commit(
+            revision="feature",
+            operations=[CommitOperationDelete("shared.txt")],
+            commit_message="feature delete",
+        )
+
+        result = api.merge("feature")
+
+        assert result.status == "merged"
+        assert result.commit is not None
+        assert result.conflicts == []
+        assert api.list_repo_files() == []
+
+    def test_merge_public_api_prefers_deleted_path_when_target_kept_base_version(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        _ = api.create_commit(
+            operations=[CommitOperationAdd("shared.txt", b"seed")],
+            commit_message="seed",
+        )
+        api.create_branch(branch="feature")
+        api.create_commit(
+            operations=[CommitOperationAdd("main.txt", b"main")],
+            commit_message="main work",
+        )
+        api.create_commit(
+            revision="feature",
+            operations=[CommitOperationDelete("shared.txt")],
+            commit_message="feature delete",
+        )
+
+        result = api.merge("feature")
+
+        assert result.status == "merged"
+        assert result.commit is not None
+        assert result.conflicts == []
+        assert api.list_repo_files() == ["main.txt"]
+        with pytest.raises(EntryNotFoundError):
+            api.read_bytes("shared.txt")
+
+    def test_merge_public_api_prefers_deleted_path_when_source_kept_base_version(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        _ = api.create_commit(
+            operations=[CommitOperationAdd("shared.txt", b"seed")],
+            commit_message="seed",
+        )
+        api.create_branch(branch="feature")
+        api.create_commit(
+            operations=[CommitOperationDelete("shared.txt")],
+            commit_message="main delete",
+        )
+        api.create_commit(
+            revision="feature",
+            operations=[CommitOperationAdd("feature.txt", b"feature")],
+            commit_message="feature work",
+        )
+
+        result = api.merge("feature")
+
+        assert result.status == "merged"
+        assert result.commit is not None
+        assert result.conflicts == []
+        assert api.list_repo_files() == ["feature.txt"]
+        with pytest.raises(EntryNotFoundError):
+            api.read_bytes("shared.txt")
+
     def test_merge_public_api_handles_ancestor_revisions_through_existing_merge_history(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")
         api.create_repo()
