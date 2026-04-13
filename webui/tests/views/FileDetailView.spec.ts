@@ -108,7 +108,11 @@ describe("FileDetailView", function suite() {
     expect(fileDetailMocks.getPathsInfo).toHaveBeenCalledWith("release/v1", ["docs/guide.md"]);
     expect(fileDetailMocks.getBlobBytes).toHaveBeenCalledWith("release/v1", "docs/guide.md");
     expect(wrapper.get("[data-testid='readme-viewer-stub']").text()).toContain("docs/guide.md|# Guide");
-    expect(wrapper.text()).toContain("<home>");
+    expect(wrapper.text()).not.toContain("<home>");
+    expect(wrapper.get("[data-testid='path-breadcrumb']").text()).toContain("docs");
+    expect(wrapper.findAll("button").some(function hasRepositoryRoot(item) {
+      return item.attributes("aria-label") === "Repository root";
+    })).toBe(true);
 
     await findButtonByLabelOrText(wrapper, "Back to Directory").trigger("click");
 

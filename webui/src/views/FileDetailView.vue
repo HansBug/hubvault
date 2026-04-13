@@ -49,7 +49,6 @@ const breadcrumbItems = computed(function resolveBreadcrumbItems() {
   const items: any[] = [
     {
       home: true,
-      label: "<home>",
       current: !segments.length,
       ariaLabel: "Repository root",
       to: {
