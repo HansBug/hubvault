@@ -16,6 +16,22 @@ const props = defineProps({
     type: String,
     default: ""
   },
+  oldPath: {
+    type: String,
+    default: ""
+  },
+  newPath: {
+    type: String,
+    default: ""
+  },
+  oldDownloadUrl: {
+    type: String,
+    default: ""
+  },
+  newDownloadUrl: {
+    type: String,
+    default: ""
+  },
   oldLabel: {
     type: String,
     default: "Before"
@@ -35,6 +51,12 @@ const singleMediaUrl = computed(function resolveSingleMediaUrl() {
 const singleLabel = computed(function resolveSingleLabel() {
   return props.newMediaUrl ? props.newLabel : props.oldLabel;
 });
+const singlePath = computed(function resolveSinglePath() {
+  return props.newMediaUrl ? props.newPath : props.oldPath;
+});
+const singleDownloadUrl = computed(function resolveSingleDownloadUrl() {
+  return props.newMediaUrl ? props.newDownloadUrl : props.oldDownloadUrl;
+});
 const singleEmptyText = computed(function resolveSingleEmptyText() {
   return props.newMediaUrl ? "Not present in the parent revision." : "Not present in this commit.";
 });
@@ -46,12 +68,16 @@ const singleEmptyText = computed(function resolveSingleEmptyText() {
       <media-preview-card
         :kind="props.kind"
         :src="oldMediaUrl"
+        :path="oldPath"
+        :download-url="oldDownloadUrl"
         :label="oldLabel"
         empty-text="Not present in the parent revision."
       />
       <media-preview-card
         :kind="props.kind"
         :src="newMediaUrl"
+        :path="newPath"
+        :download-url="newDownloadUrl"
         :label="newLabel"
         empty-text="Not present in this commit."
       />
@@ -60,6 +86,8 @@ const singleEmptyText = computed(function resolveSingleEmptyText() {
       <media-preview-card
         :kind="props.kind"
         :src="singleMediaUrl"
+        :path="singlePath"
+        :download-url="singleDownloadUrl"
         :label="singleLabel"
         :empty-text="singleEmptyText"
       />

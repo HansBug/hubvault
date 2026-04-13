@@ -753,6 +753,25 @@ code,
   background: #f0fbfd;
 }
 
+.media-preview-card__fallback {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  border-radius: 16px;
+  border: 1px dashed var(--el-border-color);
+  background: #fffaf0;
+}
+
+.media-preview-card__hint {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.media-preview-card__fallback .el-button {
+  justify-self: start;
+}
+
 .media-preview-card__player {
   display: block;
   width: 100%;

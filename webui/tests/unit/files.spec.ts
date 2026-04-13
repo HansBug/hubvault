@@ -7,6 +7,7 @@ import {
   isAudioPath,
   isCodeLikePath,
   isImagePath,
+  isKnownUnsupportedBrowserVideoPath,
   isMarkdownPath,
   isTextLikePath,
   isVideoPath,
@@ -25,6 +26,8 @@ describe("file helpers", function suite() {
     expect(isImagePath("images/logo.png")).toBe(true);
     expect(isAudioPath("media/voice.wav")).toBe(true);
     expect(isVideoPath("clips/demo.mp4")).toBe(true);
+    expect(isKnownUnsupportedBrowserVideoPath("clips/demo.avi")).toBe(true);
+    expect(isKnownUnsupportedBrowserVideoPath("clips/demo.mp4")).toBe(false);
     expect(isTextLikePath("config.yaml")).toBe(true);
     expect(isTextLikePath("requirements-test.txt")).toBe(true);
     expect(isTextLikePath("events.out.tfevents.1710000.fixture")).toBe(false);

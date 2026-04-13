@@ -44,4 +44,27 @@ describe("MediaCompareViewer", function suite() {
     expect(wrapper.find("video").attributes("src")).toBe("/commit.mp4");
     expect(wrapper.text()).toContain("Commit");
   });
+
+  it("shows the unsupported preview state for avi compare entries", function testUnsupportedAviRender() {
+    const wrapper = mount(MediaCompareViewer, {
+      props: {
+        kind: "video",
+        oldMediaUrl: "/parent.avi",
+        newMediaUrl: "/commit.avi",
+        oldPath: "media/demo.avi",
+        newPath: "media/demo.avi",
+        oldDownloadUrl: "/download/parent.avi",
+        newDownloadUrl: "/download/commit.avi",
+        oldLabel: "Parent",
+        newLabel: "Commit"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    expect(wrapper.findAll("[data-testid='media-preview-unavailable']")).toHaveLength(2);
+    expect(wrapper.find("video").exists()).toBe(false);
+    expect(wrapper.text()).toContain("AVI video preview is not available in this browser.");
+  });
 });

@@ -4,6 +4,7 @@ const README_CANDIDATES = ["README.md", "README.markdown", "README.rst", "README
 const IMAGE_EXTENSIONS = [".avif", ".gif", ".jpeg", ".jpg", ".png", ".svg", ".webp"];
 const AUDIO_EXTENSIONS = [".aac", ".flac", ".m4a", ".mp3", ".oga", ".ogg", ".opus", ".wav"];
 const VIDEO_EXTENSIONS = [".avi", ".m4v", ".mkv", ".mov", ".mp4", ".ogv", ".webm"];
+const KNOWN_UNSUPPORTED_BROWSER_VIDEO_EXTENSIONS = [".avi"];
 const FONT_EXTENSIONS = [".eot", ".otf", ".ttf", ".woff", ".woff2"];
 const MULTIPART_EXTENSIONS = [".tar.bz2", ".tar.gz", ".tar.xz", ".tar.zst"];
 const ARCHIVE_EXTENSIONS = [".7z", ".bz2", ".gz", ".rar", ".tar", ".tar.bz2", ".tar.gz", ".tar.xz", ".tgz", ".xz", ".zip"];
@@ -407,6 +408,10 @@ export function isAudioPath(path) {
 
 export function isVideoPath(path) {
   return hasKnownExtension(path, VIDEO_EXTENSIONS);
+}
+
+export function isKnownUnsupportedBrowserVideoPath(path) {
+  return hasKnownExtension(path, KNOWN_UNSUPPORTED_BROWSER_VIDEO_EXTENSIONS);
 }
 
 export function isTextLikePath(path) {
