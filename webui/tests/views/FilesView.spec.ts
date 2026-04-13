@@ -302,4 +302,68 @@ describe("FilesView", function suite() {
     expect(filesViewMocks.deleteRepoFile).toHaveBeenCalledTimes(1);
     expect(wrapper.text()).toContain("delete failed");
   });
+
+  it("loads repository root listings, routes folder clicks, and hides upload actions for read-only sessions", async function testRootListingFlow() {
+    sessionState.auth = {
+      access: "r",
+      can_write: false
+    };
+    filesViewMocks.route.query = {};
+    filesViewMocks.getRepoTree.mockResolvedValue([
+      {
+        path: "docs",
+        entry_type: "folder",
+        size: 0,
+        last_commit: {
+          oid: "commit-docs",
+          title: "add docs",
+          date: "2026-04-12T00:00:00Z"
+        }
+      }
+    ]);
+
+    const wrapper = mount(FilesView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+    await flushPromises();
+
+    expect(filesViewMocks.getPathsInfo).not.toHaveBeenCalled();
+    expect(filesViewMocks.getRepoTree).toHaveBeenCalledWith("release/v1", "");
+    expect(wrapper.find("[data-testid='files-upload-button']").exists()).toBe(false);
+
+    await findButtonByText(wrapper, "open docs").trigger("click");
+    expect(filesViewMocks.push).toHaveBeenLastCalledWith({
+      name: "files",
+      query: {
+        revision: "release/v1",
+        path: "docs"
+      }
+    });
+  });
+
+  it("shows a stable fallback error when file listing fails without a message", async function testListErrorFallback() {
+    filesViewMocks.route.query = {};
+    filesViewMocks.getRepoTree.mockRejectedValueOnce({});
+
+    const wrapper = mount(FilesView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Unable to load repository files.");
+  });
 });

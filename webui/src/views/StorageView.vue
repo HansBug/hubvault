@@ -234,7 +234,7 @@ async function runStorageTask<T>(
     finishStatus(successTitle, successMessage, "success");
     return result;
   } catch (taskError) {
-    const message = taskError instanceof Error ? taskError.message : String(taskError || "");
+    const message = taskError instanceof Error ? taskError.message : typeof taskError === "string" ? taskError : "";
     error.value = message || failureMessage;
     finishStatus("Storage task interrupted", error.value, "warning");
     return null;

@@ -72,15 +72,16 @@ export async function buildExactUploadManifest(
   entries: BrowserUploadEntry[],
   onProgress?: ManifestBuildProgressCallback
 ): Promise<ExactUploadManifestResult> {
+  const normalizedEntries = Array.isArray(entries) ? entries : [];
   const operations: ExactUploadManifestOperation[] = [];
-  const totalEntries = Array.isArray(entries) ? entries.length : 0;
-  const totalBytes = entries.reduce(function accumulate(total, entry) {
+  const totalEntries = normalizedEntries.length;
+  const totalBytes = normalizedEntries.reduce(function accumulate(total, entry) {
     return total + Number(entry.file.size || 0);
   }, 0);
   let processedBytes = 0;
 
-  for (let index = 0; index < entries.length; index += 1) {
-    const entry = entries[index];
+  for (let index = 0; index < normalizedEntries.length; index += 1) {
+    const entry = normalizedEntries[index];
     const currentPath = String(entry.pathInRepo || "");
     const currentSize = Number(entry.file.size || 0);
     if (typeof onProgress === "function") {
@@ -136,6 +137,6 @@ export async function buildExactUploadManifest(
   }
   return {
     operations,
-    uploads: entries.slice()
+    uploads: normalizedEntries.slice()
   };
 }

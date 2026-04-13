@@ -225,4 +225,69 @@ describe("StorageView", function suite() {
     await flushPromises();
     expect(findButton(detachedWrapper, "Squash Current Branch").attributes("disabled")).toBeDefined();
   });
+
+  it("runs non-dry-run GC flows and falls back squash commit messages to null", async function testGcRunAndSquashFallbacks() {
+    storageViewMocks.runGc.mockResolvedValueOnce({
+      dry_run: false,
+      reclaimed_size: 512,
+      removed_file_count: 2
+    });
+    vi.spyOn(ElMessageBox, "confirm").mockResolvedValue(undefined as never);
+    vi.spyOn(ElMessageBox, "prompt").mockResolvedValueOnce({ value: "   " } as never);
+
+    const wrapper = mount(StorageView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    await findButton(wrapper, "Run GC").trigger("click");
+    await flushPromises();
+    await flushPromises();
+
+    expect(storageViewMocks.runGc).toHaveBeenCalledWith({
+      dry_run: false,
+      prune_cache: true
+    });
+    expect(wrapper.text()).toContain("Applied");
+
+    await findButton(wrapper, "Squash Current Branch").trigger("click");
+    await flushPromises();
+
+    expect(storageViewMocks.runSquashHistory).toHaveBeenCalledWith({
+      ref_name: "release/v1",
+      commit_message: null,
+      run_gc: false,
+      prune_cache: false
+    });
+  });
+
+  it("uses fallback summary errors and hides maintenance actions for readonly sessions", async function testReadonlySummaryFallback() {
+    sessionState.auth = {
+      access: "ro",
+      can_write: false
+    };
+    storageViewMocks.getStorageSummary.mockRejectedValueOnce({});
+
+    const wrapper = mount(StorageView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Unable to load the quick storage summary.");
+    expect(wrapper.findAll("button").some(function hasGcButton(item) {
+      return item.text().trim() === "Preview GC" || item.text().trim() === "Run GC";
+    })).toBe(false);
+  });
 });

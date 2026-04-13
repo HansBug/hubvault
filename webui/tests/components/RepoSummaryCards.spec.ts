@@ -29,4 +29,23 @@ describe("RepoSummaryCards", function suite() {
     expect(wrapper.text()).toContain("7");
     expect(wrapper.text()).toContain("4.0 KB");
   });
+
+  it("falls back to zero counts and pending storage when summary data is absent", function testSummaryFallbacks() {
+    const wrapper = mount(RepoSummaryCards, {
+      props: {
+        refs: null,
+        filesCount: 0,
+        commitsCount: 0,
+        storageOverview: null
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    expect(wrapper.text()).toContain("0 / 0");
+    expect(wrapper.text()).toContain("Files");
+    expect(wrapper.text()).toContain("Commits");
+    expect(wrapper.text()).toContain("Pending");
+  });
 });

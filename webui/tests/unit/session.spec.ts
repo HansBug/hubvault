@@ -114,4 +114,63 @@ describe("session store", function suite() {
     await expect(bootstrapSession("release/v1")).rejects.toThrow("meta unavailable");
     expect(useSessionStore().state.error).toBe("meta unavailable");
   });
+
+  it("falls back to repo-provided revisions and default bootstrap errors when metadata is sparse", async function testBootstrapFallbacks() {
+    setSessionToken("rw-token");
+    clientMocks.getServiceMeta.mockReset();
+    clientMocks.getWhoAmI.mockReset();
+    clientMocks.getRepoRefs.mockReset();
+    clientMocks.getRepoInfo.mockReset();
+
+    clientMocks.getServiceMeta.mockResolvedValueOnce({
+      repo: {
+        default_branch: ""
+      }
+    });
+    clientMocks.getWhoAmI.mockResolvedValueOnce({
+      access: "ro",
+      can_write: false
+    });
+    clientMocks.getRepoRefs.mockResolvedValueOnce({
+      branches: [],
+      tags: []
+    });
+    clientMocks.getRepoInfo.mockResolvedValueOnce({
+      default_branch: "fallback-main",
+      head: "head-fallback"
+    });
+
+    await bootstrapSession("");
+
+    expect(clientMocks.getRepoInfo).toHaveBeenCalledWith(undefined);
+    expect(useSessionStore().state.repoRevision).toBe("fallback-main");
+
+    clientMocks.getServiceMeta.mockRejectedValueOnce({});
+    await expect(bootstrapSession("release/v1", { force: true })).rejects.toEqual({});
+    expect(useSessionStore().state.error).toBe("Failed to load session data.");
+  });
+
+  it("trims stored tokens and tolerates missing sessionStorage during restoration", function testSessionStorageGuards() {
+    const originalStorage = window.sessionStorage;
+
+    setSessionToken("  rw-token  ");
+    expect(window.sessionStorage.getItem("hubvault.webui.token")).toBe("rw-token");
+
+    setSessionToken("");
+    expect(window.sessionStorage.getItem("hubvault.webui.token")).toBeNull();
+
+    Object.defineProperty(window, "sessionStorage", {
+      configurable: true,
+      value: null
+    });
+
+    expect(function restoreWithoutStorage() {
+      restoreSessionToken();
+    }).not.toThrow();
+
+    Object.defineProperty(window, "sessionStorage", {
+      configurable: true,
+      value: originalStorage
+    });
+  });
 });

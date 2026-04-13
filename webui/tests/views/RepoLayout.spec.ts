@@ -179,4 +179,47 @@ describe("RepoLayout", function suite() {
       }
     });
   });
+
+  it("keeps explicit revisions, surfaces bootstrap errors, and falls back route names to overview", async function testRepoLayoutErrorFallbacks() {
+    repoLayoutMocks.route.name = "" as any;
+    repoLayoutMocks.route.query = {
+      revision: "release/v2",
+      token: "demo"
+    };
+    repoLayoutMocks.bootstrapSession.mockRejectedValueOnce({
+      status: 500,
+      message: "backend unavailable"
+    });
+
+    const wrapper = mount(RepoLayout, {
+      global: {
+        stubs: {
+          RouterView: RouterViewStub,
+          ElAlert: {
+            props: ["title"],
+            template: "<div class=\"el-alert\">{{ title }}</div>"
+          },
+          ElSkeleton: {
+            template: "<div class=\"el-skeleton\"></div>"
+          }
+        }
+      }
+    });
+    await flushPromises();
+
+    expect(repoLayoutMocks.bootstrapSession).toHaveBeenCalledWith("release/v2");
+    expect(wrapper.get("[data-testid='shell-revision']").text()).toBe("release/v2");
+    expect(wrapper.text()).toContain("backend unavailable");
+    expect(repoLayoutMocks.clearSession).not.toHaveBeenCalled();
+    expect(repoLayoutMocks.replace).not.toHaveBeenCalled();
+
+    await wrapper.get("[data-testid='emit-change']").trigger("click");
+    expect(repoLayoutMocks.push).toHaveBeenCalledWith({
+      name: "overview",
+      query: {
+        revision: "dev",
+        token: "demo"
+      }
+    });
+  });
 });
