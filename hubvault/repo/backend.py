@@ -5594,29 +5594,6 @@ class RepositoryBackend(object):
             ]
         )
 
-    def _list_ref_names_under(self, root: Path) -> List[str]:
-        """
-        Recursively list file-backed ref names under a root directory.
-
-        :param root: Ref root directory
-        :type root: pathlib.Path
-        :return: Sorted relative ref names
-        :rtype: List[str]
-
-        Example::
-
-            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
-            >>> backend._list_ref_names_under(Path("/tmp/demo-repo/refs/heads"))  # doctest: +SKIP
-            []
-        """
-
-        names = []
-        for path in sorted(root.rglob("*")):
-            if not path.is_file():
-                continue
-            names.append(path.relative_to(root).as_posix())
-        return names
-
     def _ref_path(self, name: str) -> Path:
         """
         Build the branch ref path for a name.

@@ -50,6 +50,16 @@ class TestChunkStore:
         assert plan.parts == ()
         assert plan.pointer_size == len(canonical_lfs_pointer(expected_sha256, 0))
 
+    def test_plan_bytes_reuses_cached_digest_for_duplicate_chunks(self):
+        payload = b"a" * 4096
+
+        plan = ChunkStore(chunk_size=512, min_chunk_size=128, max_chunk_size=1024).plan_bytes(payload)
+        chunk_ids = [chunk.chunk_id for chunk in plan.chunks]
+
+        assert len(plan.chunks) >= 2
+        assert len(set(chunk_ids)) < len(chunk_ids)
+        assert b"".join(part.data for part in plan.parts) == payload
+
     def test_chunk_store_rejects_invalid_inputs(self):
         with pytest.raises(ValueError):
             ChunkStore(chunk_size=0)

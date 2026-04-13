@@ -19,6 +19,7 @@ from hubvault import (
 )
 from hubvault.repo.sqlite import SQLITE_METADATA_FILENAME
 from hubvault.storage.chunk import DEFAULT_CHUNK_SIZE
+from hubvault.storage.pack import PACK_MAGIC
 
 
 def _only_path(root, pattern):
@@ -730,6 +731,64 @@ class TestRepoBackendPackage:
         stale_report = api.full_verify()
         assert stale_report.ok is True
         assert any("stale snapshot view:" in item for item in stale_report.warnings)
+
+    def test_backend_chunk_reads_detect_missing_pack_after_cache_warmup(self, tmp_path):
+        api, repo_dir, payload = _chunked_repo(tmp_path, "missing-pack-after-cache")
+        pack_path = _only_path(repo_dir / "chunks" / "packs", "*.pack")
+
+        assert api.read_bytes("artifacts/large.bin") == payload
+        pack_path.unlink()
+
+        with pytest.raises(IntegrityError, match="pack not found"):
+            api.read_bytes("artifacts/large.bin")
+
+    def test_backend_full_verify_reports_invalid_pack_header_and_header_overlap(self, tmp_path):
+        api, repo_dir, _ = _chunked_repo(tmp_path, "invalid-pack-header")
+        pack_path = _only_path(repo_dir / "chunks" / "packs", "*.pack")
+        original = pack_path.read_bytes()
+        pack_path.write_bytes((b"x" * len(PACK_MAGIC)) + original[len(PACK_MAGIC):])
+
+        invalid_header_report = api.full_verify()
+
+        assert invalid_header_report.ok is False
+        assert any("invalid pack header" in item for item in invalid_header_report.errors)
+
+        api, repo_dir, _ = _chunked_repo(tmp_path, "pack-header-overlap")
+        _mutate_first_index_record(repo_dir, lambda record: record.__setitem__("offset", 0))
+
+        overlap_report = api.full_verify()
+
+        assert overlap_report.ok is False
+        assert any("range overlaps pack header" in item for item in overlap_report.errors)
+
+    def test_backend_chunk_reads_cover_pack_reader_fallbacks(self, tmp_path, monkeypatch):
+        api, repo_dir, payload = _chunked_repo(tmp_path, "pack-reader-fallback")
+        api = HubVaultApi(repo_dir)
+
+        def _raise_mmap(*args, **kwargs):
+            raise OSError("disable mmap for fallback coverage")
+
+        monkeypatch.setattr("hubvault.repo.backend.mmap.mmap", _raise_mmap)
+        monkeypatch.delattr("hubvault.repo.backend.os.pread", raising=False)
+
+        assert api.read_bytes("artifacts/large.bin") == payload
+
+    def test_backend_chunk_reads_detect_truncated_pread_results(self, tmp_path, monkeypatch):
+        api, repo_dir, _ = _chunked_repo(tmp_path, "short-pread")
+        api = HubVaultApi(repo_dir)
+
+        def _raise_mmap(*args, **kwargs):
+            raise OSError("disable mmap for short pread coverage")
+
+        def _short_pread(_fd, stored_size, _offset):
+            return b"x" * max(0, stored_size - 1)
+
+        _mutate_first_index_record(repo_dir, lambda record: record.__setitem__("offset", len(PACK_MAGIC)))
+        monkeypatch.setattr("hubvault.repo.backend.mmap.mmap", _raise_mmap)
+        monkeypatch.setattr("hubvault.repo.backend.os.pread", _short_pread)
+
+        with pytest.raises(IntegrityError, match="pack truncated"):
+            api.read_bytes("artifacts/large.bin")
 
     def test_backend_missing_ref_and_txn_roots_do_not_break_public_operations(self, tmp_path):
         empty_repo_dir = tmp_path / "empty-repo"

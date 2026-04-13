@@ -1,4 +1,5 @@
 import pytest
+import sqlite3
 
 from hubvault import IntegrityError, RevisionNotFoundError
 from hubvault.repo.sqlite import SQLiteMetadataStore
@@ -170,5 +171,92 @@ class TestSQLiteMetadataStore:
 
             assert store.get_chunk_entry(connection, entries[0].chunk_id) is None
             assert [entry.chunk_id for entry in store.list_chunk_entries(connection)] == [entries[1].chunk_id]
+        finally:
+            connection.close()
+
+    def test_truncate_reflog_keeps_requested_prefix(self, tmp_path):
+        store = _sqlite_store(tmp_path)
+        connection = store.open_connection()
+        try:
+            store.append_reflog(
+                connection,
+                "branch",
+                "main",
+                "2026-04-13T00:00:00Z",
+                None,
+                "sha256:" + ("1" * 64),
+                "seed",
+                "sha256:" + ("a" * 64),
+            )
+            store.append_reflog(
+                connection,
+                "branch",
+                "main",
+                "2026-04-13T00:00:01Z",
+                "sha256:" + ("1" * 64),
+                "sha256:" + ("2" * 64),
+                "advance",
+                "sha256:" + ("b" * 64),
+            )
+
+            store.truncate_reflog(connection, "branch", "main", 1)
+            rows = store.list_reflog(connection, "branch", "main")
+
+            assert len(rows) == 1
+            assert rows[0]["message"] == "seed"
+        finally:
+            connection.close()
+
+    def test_open_connection_falls_back_to_full_and_rejects_invalid_sync_modes(self, tmp_path, monkeypatch):
+        store = SQLiteMetadataStore(tmp_path / "repo")
+
+        class _FakeCursor(object):
+            def __init__(self, sync_values):
+                self._sync_values = list(sync_values)
+                self._last_sql = None
+                self.seen = []
+
+            def execute(self, sql):
+                self._last_sql = str(sql)
+                self.seen.append(self._last_sql)
+                return self
+
+            def fetchone(self):
+                assert self._last_sql == "PRAGMA synchronous"
+                return (self._sync_values.pop(0),)
+
+        class _FakeConnection(object):
+            def __init__(self, sync_values):
+                self.row_factory = None
+                self.cursor_obj = _FakeCursor(sync_values)
+
+            def cursor(self):
+                return self.cursor_obj
+
+        sync_plans = [["1", "2"], ["1", "0"]]
+        created = []
+
+        def _fake_connect(*args, **kwargs):
+            connection = _FakeConnection(sync_plans.pop(0))
+            created.append(connection)
+            return connection
+
+        monkeypatch.setattr(sqlite3, "connect", _fake_connect)
+
+        first = store.open_connection(readonly=False)
+
+        assert first is created[0]
+        assert first.row_factory is sqlite3.Row
+        assert "PRAGMA synchronous=FULL" in first.cursor_obj.seen
+
+        with pytest.raises(IntegrityError, match="failed to configure sqlite synchronous mode"):
+            store.open_connection(readonly=False)
+
+    def test_ensure_schema_is_idempotent_for_the_current_version(self, tmp_path):
+        store = _sqlite_store(tmp_path)
+        connection = store.open_connection()
+        try:
+            store.ensure_schema(connection)
+            store.ensure_schema(connection)
         finally:
             connection.close()

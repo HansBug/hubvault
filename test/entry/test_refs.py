@@ -113,3 +113,50 @@ class TestEntryRefCommands:
 
         assert delete_tag_result.exit_code == 0
         assert "Deleted tag 'empty-tag'." in delete_tag_result.output
+
+    def test_branch_verbose_handles_unborn_refs_and_empty_tag_listing_is_silent(self, tmp_path):
+        repo_dir = tmp_path / "repo"
+        api = HubVaultApi(repo_dir)
+        api.create_repo()
+        api.create_branch(branch="feature")
+
+        with sqlite3.connect(str(repo_dir / SQLITE_METADATA_FILENAME)) as conn:
+            conn.execute(
+                "UPDATE refs SET commit_id = NULL WHERE ref_kind = ? AND ref_name IN (?, ?)",
+                ("branch", "main", "feature"),
+            )
+            conn.commit()
+
+        runner = CliRunner()
+        verbose_result = runner.invoke(cli, ["-C", str(repo_dir), "branch", "-v"])
+        empty_tags_result = runner.invoke(cli, ["-C", str(repo_dir), "tag"])
+
+        assert verbose_result.exit_code == 0
+        assert "* main" in verbose_result.output
+        assert "  feature" in verbose_result.output
+        assert "(empty)" in verbose_result.output
+
+        assert empty_tags_result.exit_code == 0
+        assert empty_tags_result.output == ""
+
+    def test_delete_commands_scan_non_first_refs_before_finding_the_target(self, tmp_path):
+        repo_dir = tmp_path / "repo"
+        api = HubVaultApi(repo_dir)
+        api.create_repo()
+        api.create_commit(
+            operations=[CommitOperationAdd("demo.txt", b"hello")],
+            commit_message="seed",
+        )
+        api.create_branch(branch="alpha")
+        api.create_branch(branch="beta")
+        api.create_tag(tag="v1")
+        api.create_tag(tag="v2")
+
+        runner = CliRunner()
+        delete_branch_result = runner.invoke(cli, ["-C", str(repo_dir), "branch", "-D", "beta"])
+        delete_tag_result = runner.invoke(cli, ["-C", str(repo_dir), "tag", "-d", "v2"])
+
+        assert delete_branch_result.exit_code == 0
+        assert "Deleted branch beta" in delete_branch_result.output
+        assert delete_tag_result.exit_code == 0
+        assert "Deleted tag 'v2'" in delete_tag_result.output

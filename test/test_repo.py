@@ -1023,7 +1023,8 @@ class TestRepoSemantics:
         api.create_commit(
             operations=[
                 CommitOperationAdd("root.txt", b"root\n"),
-                CommitOperationAdd("nested/leaf.txt", b"leaf\n"),
+                CommitOperationAdd("alpha/leaf.txt", b"leaf\n"),
+                CommitOperationAdd("beta/leaf.txt", b"leaf\n"),
             ],
             commit_message="seed nested tree",
         )
@@ -1031,22 +1032,94 @@ class TestRepoSemantics:
         internal_head = _head_commit_id(repo_dir)
         commit_payload = _object_payload(repo_dir, "commits", internal_head)
         root_tree_id = commit_payload["tree_id"]
-        nested_tree_id = next(
+        nested_tree_ids = [
             entry["object_id"]
             for entry in _object_payload(repo_dir, "trees", root_tree_id)["entries"]
             if entry["entry_type"] == "tree"
-        )
+        ]
 
         _mutate_object_payload(repo_dir, "commits", internal_head, lambda payload: payload.pop("git_oid", None))
         _mutate_object_payload(repo_dir, "trees", root_tree_id, lambda payload: payload.pop("git_oid", None))
-        _mutate_object_payload(repo_dir, "trees", nested_tree_id, lambda payload: payload.pop("git_oid", None))
+        _mutate_object_payload(repo_dir, "trees", nested_tree_ids[0], lambda payload: payload.pop("git_oid", None))
 
         info = api.repo_info()
         commits = api.list_repo_commits()
 
+        assert len(set(nested_tree_ids)) == 1
         assert _is_git_oid(info.head)
         assert commits[0].commit_id == info.head
-        assert sorted(api.list_repo_files()) == ["nested/leaf.txt", "root.txt"]
+        assert sorted(api.list_repo_files()) == ["alpha/leaf.txt", "beta/leaf.txt", "root.txt"]
+
+    def test_repo_info_rejects_invalid_stored_public_git_oids_and_payloads(self, tmp_path):
+        api, repo_dir = _single_file_repo(tmp_path, repo_name="invalid-tree-git-oid", payload=b"payload")
+        internal_head = _head_commit_id(repo_dir)
+        tree_object_id = _head_tree_id(repo_dir)
+        _mutate_object_payload(repo_dir, "commits", internal_head, lambda payload: payload.pop("git_oid", None))
+        _mutate_object_payload(
+            repo_dir,
+            "trees",
+            tree_object_id,
+            lambda payload: payload.__setitem__("git_oid", "broken-tree-oid"),
+        )
+        with pytest.raises(IntegrityError, match="invalid stored git tree oid"):
+            api.repo_info()
+
+        api, repo_dir = _single_file_repo(tmp_path, repo_name="invalid-commit-git-oid", payload=b"payload")
+        internal_head = _head_commit_id(repo_dir)
+        _mutate_object_payload(
+            repo_dir,
+            "commits",
+            internal_head,
+            lambda payload: payload.__setitem__("git_oid", "broken-commit-oid"),
+        )
+        with pytest.raises(IntegrityError, match="invalid stored git commit oid"):
+            api.repo_info()
+
+        api, repo_dir = _single_file_repo(tmp_path, repo_name="invalid-tree-payload", payload=b"payload")
+        internal_head = _head_commit_id(repo_dir)
+        tree_object_id = _head_tree_id(repo_dir)
+        _mutate_object_payload(repo_dir, "commits", internal_head, lambda payload: payload.pop("git_oid", None))
+        _mutate_object_payload(repo_dir, "trees", tree_object_id, lambda payload: payload.pop("git_oid", None))
+        _mutate_object_payload(repo_dir, "trees", tree_object_id, lambda payload: payload.__setitem__("entries", [{}]))
+        with pytest.raises(IntegrityError, match="invalid tree"):
+            api.repo_info()
+
+        api, repo_dir = _single_file_repo(tmp_path, repo_name="unknown-tree-entry-type", payload=b"payload")
+        internal_head = _head_commit_id(repo_dir)
+        tree_object_id = _head_tree_id(repo_dir)
+        _mutate_object_payload(repo_dir, "commits", internal_head, lambda payload: payload.pop("git_oid", None))
+        _mutate_object_payload(repo_dir, "trees", tree_object_id, lambda payload: payload.pop("git_oid", None))
+        _mutate_object_payload(
+            repo_dir,
+            "trees",
+            tree_object_id,
+            lambda payload: payload["entries"][0].__setitem__("entry_type", "weird"),
+        )
+        with pytest.raises(IntegrityError, match="unknown tree entry type"):
+            api.repo_info()
+
+        api, repo_dir = _single_file_repo(tmp_path, repo_name="duplicate-public-parent", payload=b"payload")
+        first_head = _head_commit_id(repo_dir)
+        api.create_commit(
+            operations=[CommitOperationAdd("file.bin", b"payload-v2")],
+            parent_commit=first_head,
+            commit_message="second",
+        )
+        branch_head = _head_commit_id(repo_dir)
+
+        def _duplicate_parents(payload):
+            payload.pop("git_oid", None)
+            payload["parents"] = [payload["parents"][0], payload["parents"][0]]
+
+        _mutate_object_payload(repo_dir, "commits", branch_head, _duplicate_parents)
+        assert _is_git_oid(api.repo_info().head)
+
+        api, repo_dir = _single_file_repo(tmp_path, repo_name="invalid-commit-payload", payload=b"payload")
+        internal_head = _head_commit_id(repo_dir)
+        _mutate_object_payload(repo_dir, "commits", internal_head, lambda payload: payload.pop("git_oid", None))
+        _mutate_object_payload(repo_dir, "commits", internal_head, lambda payload: payload.pop("created_at", None))
+        with pytest.raises(IntegrityError, match="invalid commit"):
+            api.repo_info()
 
     def test_repo_detects_public_git_oid_tree_and_commit_cycles(self, tmp_path):
         tree_repo_dir = tmp_path / "tree-cycle"
@@ -1096,6 +1169,42 @@ class TestRepoSemantics:
         with pytest.raises(IntegrityError, match="commit cycle detected"):
             commit_api.repo_info()
 
+    def test_repo_read_bytes_rejects_non_file_paths_and_unknown_tree_kinds(self, tmp_path):
+        empty_api = HubVaultApi(tmp_path / "empty-repo")
+        empty_api.create_repo()
+
+        with pytest.raises(EntryNotFoundError, match="path not found: missing.txt"):
+            empty_api.read_bytes("missing.txt")
+
+        repo_dir = tmp_path / "repo"
+        api = HubVaultApi(repo_dir)
+        api.create_repo()
+        api.create_commit(
+            operations=[
+                CommitOperationAdd("root.txt", b"root\n"),
+                CommitOperationAdd("nested/leaf.txt", b"leaf\n"),
+            ],
+            commit_message="seed paths",
+        )
+
+        with pytest.raises(EntryNotFoundError, match="path not found: nested"):
+            api.read_bytes("nested")
+        with pytest.raises(EntryNotFoundError, match="path not found: root.txt/child"):
+            api.read_bytes("root.txt/child")
+
+        tree_object_id = _head_tree_id(repo_dir)
+
+        def _mutate_unknown_tree_kind(payload):
+            for entry in payload["entries"]:
+                if entry["name"] == "nested":
+                    entry["entry_type"] = "weird"
+                    break
+
+        _mutate_object_payload(repo_dir, "trees", tree_object_id, _mutate_unknown_tree_kind)
+
+        with pytest.raises(IntegrityError, match="unknown tree entry type"):
+            api.read_bytes("nested/leaf.txt")
+
     def test_repo_detects_verify_corruption_cases(self, tmp_path):
         api, repo_dir = _single_file_repo(tmp_path, repo_name="legacy-prefixed-public-sha", payload=b"payload")
         file_object_id = _first_object_id(repo_dir, "files")
@@ -1144,6 +1253,40 @@ class TestRepoSemantics:
         _set_object_payload(repo_dir, "files", file_object_id, file_payload)
         report = api.quick_verify()
         assert report.ok is False
+
+        api, repo_dir = _single_file_repo(tmp_path, repo_name="invalid-object-id-format", payload=b"payload")
+        file_object_id = _first_object_id(repo_dir, "files")
+        file_payload = _object_payload(repo_dir, "files", file_object_id)
+        file_payload["content_object_id"] = "broken-object-id"
+        _set_object_payload(repo_dir, "files", file_object_id, file_payload)
+        with sqlite3.connect(str(_repo_db_path(repo_dir))) as conn:
+            conn.execute(
+                "INSERT INTO objects_blobs (object_id, payload_json) VALUES (?, ?)",
+                (
+                    "broken-object-id",
+                    json.dumps({"payload_sha256": "sha256:" + ("1" * 64)}, sort_keys=True, separators=(",", ":")),
+                ),
+            )
+            conn.commit()
+        with pytest.raises(IntegrityError, match="invalid object id format"):
+            api.read_bytes("file.bin")
+
+        api, repo_dir = _single_file_repo(tmp_path, repo_name="unsupported-object-id", payload=b"payload")
+        file_object_id = _first_object_id(repo_dir, "files")
+        file_payload = _object_payload(repo_dir, "files", file_object_id)
+        file_payload["content_object_id"] = "md5:abc"
+        _set_object_payload(repo_dir, "files", file_object_id, file_payload)
+        with sqlite3.connect(str(_repo_db_path(repo_dir))) as conn:
+            conn.execute(
+                "INSERT INTO objects_blobs (object_id, payload_json) VALUES (?, ?)",
+                (
+                    "md5:abc",
+                    json.dumps({"payload_sha256": "sha256:" + ("1" * 64)}, sort_keys=True, separators=(",", ":")),
+                ),
+            )
+            conn.commit()
+        with pytest.raises(IntegrityError, match="unsupported object id"):
+            api.read_bytes("file.bin")
 
         api, repo_dir = _single_file_repo(tmp_path, repo_name="duplicate-parent", payload=b"payload")
         first_head = _head_commit_id(repo_dir)

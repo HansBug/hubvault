@@ -1,3 +1,4 @@
+import importlib
 import runpy
 import subprocess
 import sys
@@ -57,3 +58,14 @@ class TestMainModule:
 
         assert result.returncode == 0
         assert "hubvault, version" in result.stdout.lower()
+
+    def test_importing_main_module_does_not_execute_cli(self, monkeypatch):
+        def _boom():
+            raise AssertionError("hubvaultcli should not run during import")
+
+        monkeypatch.setattr("hubvault.entry.hubvaultcli", _boom)
+        sys.modules.pop("hubvault.__main__", None)
+
+        module = importlib.import_module("hubvault.__main__")
+
+        assert module.__name__ == "hubvault.__main__"
