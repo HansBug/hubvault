@@ -67,6 +67,7 @@ class TestPackStore:
             store.read_range("demo", len(PACK_MAGIC), 1)
 
     def test_pack_store_tolerates_directory_fsync_failures_and_short_reads(self, tmp_path, monkeypatch):
+        pack_module._fsync_directory(tmp_path / "missing-pack-dir")
         open_failure_store = PackStore(tmp_path / "open-failure-packs")
         original_open = pack_module.os.open
         monkeypatch.setattr(

@@ -210,4 +210,56 @@ describe('FileTable', function suite() {
     expect(wrapper.html()).toContain('Download docs/readme.md');
     expect(wrapper.html()).toContain('/api/v1/content/download/docs/readme.md?revision=release%2Fv1');
   });
+
+  it('shows stable fallbacks for unknown commit metadata and hides write-only actions', async function testFileTableFallbacks() {
+    const wrapper = mount(FileTable, {
+      props: {
+        revision: 'release/v1',
+        canWrite: false,
+        entries: [
+          {
+            path: 'artifacts',
+            entry_type: 'folder',
+            size: 0
+          },
+          {
+            path: 'opaque/payload.bin',
+            entry_type: 'file',
+            size: 8192
+          }
+        ]
+      },
+      global: {
+        stubs: {
+          ElIcon: {
+            template: `<span class='el-icon'><slot /></span>`
+          },
+          ElTooltip: {
+            template: `<span class='el-tooltip-stub'><slot /></span>`
+          },
+          ElTable: ElTableStub,
+          ElTableColumn: ElTableColumnStub,
+          Icon: {
+            props: ['icon'],
+            template: `<span class='iconify-stub'></span>`
+          },
+          ElButton: {
+            props: ['href', 'ariaLabel', 'tag'],
+            emits: ['click'],
+            template: `<button :aria-label='ariaLabel' :data-href='href' @click="$emit('click')"><slot /></button>`
+          }
+        }
+      }
+    });
+
+    expect(findButtonByLabelOrText(wrapper, 'payload.bin').attributes('data-file-kind')).toBe('binary');
+    expect(wrapper.text()).toContain('Unknown');
+    expect(wrapper.html()).toContain('Download opaque/payload.bin');
+    expect(wrapper.html()).not.toContain('Delete opaque/payload.bin');
+    expect(wrapper.html()).not.toContain('Download artifacts');
+    expect(wrapper.findAll('button').some(function hasUnknownCommitButton(item) {
+      return item.text().trim() === 'Unknown';
+    })).toBe(false);
+    expect(wrapper.emitted('open-commit')).toBeFalsy();
+  });
 });

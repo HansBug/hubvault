@@ -209,6 +209,7 @@ unittest:
 		$(PYTHON) -m pytest "${RANGE_TEST_DIR}" \
 		-sv -m unittest \
 		--junitxml=junit.xml -o junit_family=legacy \
+		--cov-branch \
 		$(shell for type in ${COV_TYPES}; do echo "--cov-report=$$type"; done) \
 		--cov="${RANGE_SRC_DIR}" \
 		$(if ${MIN_COVERAGE},--cov-fail-under=${MIN_COVERAGE},) \

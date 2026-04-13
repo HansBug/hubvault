@@ -87,6 +87,12 @@ class TestServerSchemas:
                         "path_in_repo": "old.txt",
                         "is_folder": False,
                     },
+                    {
+                        "type": "copy",
+                        "src_path_in_repo": "source.txt",
+                        "path_in_repo": "copied.txt",
+                        "src_revision": "refs/heads/main",
+                    },
                 ],
                 "upload_plan": {
                     "revision": "main",
@@ -123,17 +129,250 @@ class TestServerSchemas:
         )
 
         assert payload["operations"][0]["sha256"] == "abcd"
+        assert payload["operations"][2]["src_path_in_repo"] == "source.txt"
         assert payload["upload_plan"]["operations"][0]["missing_chunks"][0]["field_name"] == "upload_chunk_0_0"
 
     def test_normalize_commit_manifest_request_rejects_invalid_shapes(self):
+        with pytest.raises(HubVaultValidationError, match="Request body must be a JSON object"):
+            normalize_commit_manifest_request(None)
+
         with pytest.raises(HubVaultValidationError, match="operations must be a JSON array"):
             normalize_commit_manifest_request({"operations": "bad", "commit_message": "seed"})
+
+        with pytest.raises(HubVaultValidationError, match="operations\\[0\\] must be a JSON object"):
+            normalize_commit_manifest_request(
+                {
+                    "commit_message": "seed",
+                    "operations": ["bad"],
+                }
+            )
+
+        with pytest.raises(HubVaultValidationError, match="operations\\[0\\]\\.chunks must be a JSON array"):
+            normalize_commit_manifest_request(
+                {
+                    "commit_message": "seed",
+                    "operations": [
+                        {
+                            "type": "add",
+                            "path_in_repo": "demo.txt",
+                            "size": 4,
+                            "sha256": "sha256:abcd",
+                            "chunks": "bad",
+                        }
+                    ],
+                }
+            )
+
+        with pytest.raises(HubVaultValidationError, match="operations\\[0\\]\\.chunks\\[0\\] must be a JSON object"):
+            normalize_commit_manifest_request(
+                {
+                    "commit_message": "seed",
+                    "operations": [
+                        {
+                            "type": "add",
+                            "path_in_repo": "demo.txt",
+                            "size": 4,
+                            "sha256": "sha256:abcd",
+                            "chunks": ["bad"],
+                        }
+                    ],
+                }
+            )
+
+        with pytest.raises(HubVaultValidationError, match="upload_plan must be a JSON object"):
+            normalize_commit_manifest_request(
+                {
+                    "commit_message": "seed",
+                    "operations": [],
+                    "upload_plan": "bad",
+                }
+            )
+
+        with pytest.raises(HubVaultValidationError, match="upload_plan\\.operations must be a JSON array"):
+            normalize_commit_manifest_request(
+                {
+                    "commit_message": "seed",
+                    "operations": [],
+                    "upload_plan": {
+                        "revision": "main",
+                        "operations": "bad",
+                    },
+                }
+            )
+
+        with pytest.raises(HubVaultValidationError, match="upload_plan\\.operations\\[0\\] must be a JSON object"):
+            normalize_commit_manifest_request(
+                {
+                    "commit_message": "seed",
+                    "operations": [],
+                    "upload_plan": {
+                        "revision": "main",
+                        "operations": ["bad"],
+                    },
+                }
+            )
+
+        with pytest.raises(HubVaultValidationError, match="upload_plan\\.operations\\[0\\]\\.missing_chunks must be a JSON array"):
+            normalize_commit_manifest_request(
+                {
+                    "commit_message": "seed",
+                    "operations": [],
+                    "upload_plan": {
+                        "revision": "main",
+                        "operations": [
+                            {
+                                "index": 0,
+                                "type": "add",
+                                "strategy": "chunk-upload",
+                                "missing_chunks": "bad",
+                            }
+                        ],
+                    },
+                }
+            )
+
+        with pytest.raises(HubVaultValidationError, match="upload_plan\\.operations\\[0\\]\\.missing_chunks\\[0\\] must be a JSON object"):
+            normalize_commit_manifest_request(
+                {
+                    "commit_message": "seed",
+                    "operations": [],
+                    "upload_plan": {
+                        "revision": "main",
+                        "operations": [
+                            {
+                                "index": 0,
+                                "type": "add",
+                                "strategy": "chunk-upload",
+                                "missing_chunks": ["bad"],
+                            }
+                        ],
+                    },
+                }
+            )
+
+        with pytest.raises(HubVaultValidationError, match="commit_message must be a string"):
+            normalize_commit_manifest_request(
+                {
+                    "commit_message": None,
+                    "operations": [],
+                }
+            )
+
+        with pytest.raises(HubVaultValidationError, match="ref_name must be a string"):
+            normalize_squash_history_request(
+                {
+                    "ref_name": None,
+                }
+            )
+
+        with pytest.raises(HubVaultValidationError, match="Request body must be a JSON object"):
+            normalize_gc_request("bad")
+
+        with pytest.raises(HubVaultValidationError, match="Request body must be a JSON object"):
+            normalize_squash_history_request("bad")
+
+        with pytest.raises(HubVaultValidationError, match="run_gc must be a boolean"):
+            normalize_squash_history_request(
+                {
+                    "ref_name": "main",
+                    "run_gc": "bad",
+                }
+            )
+
+        with pytest.raises(HubVaultValidationError, match="dry_run must be a boolean"):
+            normalize_gc_request({"dry_run": "bad"})
+
+        with pytest.raises(HubVaultValidationError, match="prune_cache must be a boolean"):
+            normalize_gc_request({"prune_cache": "bad"})
 
         with pytest.raises(HubVaultValidationError, match="Unsupported write operation type"):
             normalize_commit_manifest_request(
                 {
                     "commit_message": "seed",
                     "operations": [{"type": "unknown"}],
+                }
+            )
+
+    def test_normalize_commit_manifest_request_rejects_invalid_scalar_field_types(self):
+        with pytest.raises(HubVaultValidationError, match="revision must be a string"):
+            normalize_commit_manifest_request(
+                {
+                    "revision": 1,
+                    "commit_message": "seed",
+                    "operations": [],
+                }
+            )
+
+        with pytest.raises(HubVaultValidationError, match="parent_commit must be a string"):
+            normalize_commit_manifest_request(
+                {
+                    "parent_commit": 1,
+                    "commit_message": "seed",
+                    "operations": [],
+                }
+            )
+
+        with pytest.raises(HubVaultValidationError, match="commit_description must be a string"):
+            normalize_commit_manifest_request(
+                {
+                    "commit_message": "seed",
+                    "commit_description": 1,
+                    "operations": [],
+                }
+            )
+
+        with pytest.raises(HubVaultValidationError, match="size must be a non-negative integer"):
+            normalize_commit_manifest_request(
+                {
+                    "commit_message": "seed",
+                    "operations": [
+                        {
+                            "type": "add",
+                            "path_in_repo": "demo.txt",
+                            "size": True,
+                            "sha256": "abcd",
+                            "chunks": [],
+                        }
+                    ],
+                }
+            )
+
+        with pytest.raises(HubVaultValidationError, match="logical_offset must be a non-negative integer"):
+            normalize_commit_manifest_request(
+                {
+                    "commit_message": "seed",
+                    "operations": [
+                        {
+                            "type": "add",
+                            "path_in_repo": "demo.txt",
+                            "size": 4,
+                            "sha256": "abcd",
+                            "chunks": [
+                                {
+                                    "chunk_id": "sha256:chunk",
+                                    "checksum": "sha256:chunk",
+                                    "logical_offset": -1,
+                                    "logical_size": 4,
+                                    "stored_size": 4,
+                                    "compression": "none",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            )
+
+        with pytest.raises(HubVaultValidationError, match="is_folder must be a boolean"):
+            normalize_commit_manifest_request(
+                {
+                    "commit_message": "seed",
+                    "operations": [
+                        {
+                            "type": "delete",
+                            "path_in_repo": "demo.txt",
+                            "is_folder": "bad",
+                        }
+                    ],
                 }
             )
 

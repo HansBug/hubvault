@@ -53,6 +53,18 @@ class TestServerLaunch:
         assert exc_info.value.code == 0
         assert "usage" in captured.out.lower()
 
+    def test_importing_server_main_module_does_not_start_the_server(self, monkeypatch):
+        def _boom():
+            raise AssertionError("server main should not run during import")
+
+        launch_module = import_module("hubvault.server.launch")
+        monkeypatch.setattr(launch_module, "main", _boom)
+        sys.modules.pop("hubvault.server.__main__", None)
+
+        module = import_module("hubvault.server.__main__")
+
+        assert module.__name__ == "hubvault.server.__main__"
+
     def test_missing_api_extra_is_deferred_to_create_app_call(self, monkeypatch, tmp_path):
         config = ServerConfig(repo_path=tmp_path / "repo", token_rw=("rw-token",))
 

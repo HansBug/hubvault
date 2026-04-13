@@ -1,8 +1,10 @@
 import pytest
+import sqlite3
 from click.testing import CliRunner
 
 from hubvault import CommitOperationAdd, HubVaultApi
 from hubvault.entry.cli import cli
+from hubvault.repo.sqlite import SQLITE_METADATA_FILENAME
 
 
 @pytest.mark.unittest
@@ -45,3 +47,21 @@ class TestEntryHistoryCommands:
 
         assert result.exit_code == 0
         assert "Initial commit" in result.output
+
+    def test_log_command_rejects_empty_branch_without_commits(self, tmp_path):
+        repo_dir = tmp_path / "repo"
+        api = HubVaultApi(repo_dir)
+        api.create_repo()
+        api.create_branch(branch="empty")
+        with sqlite3.connect(str(repo_dir / SQLITE_METADATA_FILENAME)) as conn:
+            conn.execute(
+                "UPDATE refs SET commit_id = NULL WHERE ref_kind = ? AND ref_name = ?",
+                ("branch", "empty"),
+            )
+            conn.commit()
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["-C", str(repo_dir), "log", "empty"])
+
+        assert result.exit_code != 0
+        assert "does not have any commits yet" in result.output

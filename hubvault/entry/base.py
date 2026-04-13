@@ -38,7 +38,7 @@ from typing import Optional, IO, Callable, TypeVar
 
 try:
     from typing import ParamSpec
-except ImportError:
+except ImportError:  # pragma: no cover
     from typing_extensions import ParamSpec
 
 import click

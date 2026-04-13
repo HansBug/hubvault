@@ -1,9 +1,13 @@
+import asyncio
 import json
 from hashlib import sha256
+import sqlite3
 
 import pytest
 
-from hubvault import CommitOperationAdd
+from hubvault import CommitOperationAdd, HubVaultValidationError
+from hubvault.repo.sqlite import SQLITE_METADATA_FILENAME
+from hubvault.server.routes.writes import _parse_commit_apply_payload
 from hubvault.storage import ChunkStore
 from test.support import (
     TEST_DEFAULT_BRANCH,
@@ -46,6 +50,16 @@ def _add_manifest(path_in_repo, data, include_chunks=False):
 
 @pytest.mark.unittest
 class TestServerWriteRoutes:
+    def test_parse_commit_apply_payload_rejects_invalid_multipart_form_data(self):
+        class _BadRequest:
+            headers = {"content-type": "multipart/form-data; boundary=test"}
+
+            async def form(self):
+                raise ValueError("broken multipart body")
+
+        with pytest.raises(HubVaultValidationError, match="Invalid multipart payload: broken multipart body."):
+            asyncio.run(_parse_commit_apply_payload(_BadRequest()))
+
     def test_commit_plan_and_apply_support_copy_delete_passthrough(self, tmp_path):
         repo_dir = tmp_path / "repo"
         seeded = seed_phase78_repo(repo_dir)
@@ -168,6 +182,122 @@ class TestServerWriteRoutes:
 
         assert commit_response.status_code == 200
         assert seeded["api"].read_bytes("artifacts/large.bin") == seeded["large_update"]
+
+    def test_commit_plan_and_apply_support_reusing_the_same_visible_chunk_multiple_times(self, tmp_path):
+        repo_dir = tmp_path / "repo"
+        seeded = seed_phase78_repo(repo_dir)
+        TestClient = get_fastapi_test_client()
+        client = TestClient(create_phase45_app(repo_dir))
+        seed_plan = ChunkStore().plan_bytes(seeded["large_base"])
+        first_part = seed_plan.parts[0]
+        duplicated_bytes = first_part.data + first_part.data
+        manifest = {
+            "revision": TEST_DEFAULT_BRANCH,
+            "commit_message": "reuse one visible chunk twice",
+            "operations": [
+                {
+                    "type": "add",
+                    "path_in_repo": "artifacts/reused-twice.bin",
+                    "size": len(duplicated_bytes),
+                    "sha256": _sha256_hex(duplicated_bytes),
+                    "chunks": [
+                        {
+                            "chunk_id": first_part.descriptor.chunk_id,
+                            "checksum": first_part.descriptor.checksum,
+                            "logical_offset": 0,
+                            "logical_size": first_part.descriptor.logical_size,
+                            "stored_size": first_part.descriptor.stored_size,
+                            "compression": first_part.descriptor.compression,
+                        },
+                        {
+                            "chunk_id": first_part.descriptor.chunk_id,
+                            "checksum": first_part.descriptor.checksum,
+                            "logical_offset": first_part.descriptor.logical_size,
+                            "logical_size": first_part.descriptor.logical_size,
+                            "stored_size": first_part.descriptor.stored_size,
+                            "compression": first_part.descriptor.compression,
+                        },
+                    ],
+                }
+            ],
+        }
+
+        plan_response = client.post("/api/v1/write/commit-plan", headers=rw_headers(), json=manifest)
+
+        assert plan_response.status_code == 200
+        plan_payload = plan_response.json()
+        assert plan_payload["operations"][0]["strategy"] == "chunk-upload"
+        assert plan_payload["operations"][0]["missing_chunks"] == []
+        assert plan_payload["operations"][0]["reused_chunk_count"] == 2
+
+        apply_manifest = dict(manifest)
+        apply_manifest["parent_commit"] = plan_payload["base_head"]
+        apply_manifest["upload_plan"] = plan_payload
+        commit_response = client.post(
+            "/api/v1/write/commit",
+            headers=rw_headers(),
+            json=apply_manifest,
+        )
+
+        assert commit_response.status_code == 200
+        assert seeded["api"].read_bytes("artifacts/reused-twice.bin") == duplicated_bytes
+
+    def test_commit_apply_rejects_plans_when_reused_chunk_disappears_after_planning(self, tmp_path):
+        repo_dir = tmp_path / "repo"
+        seeded = seed_phase78_repo(repo_dir)
+        TestClient = get_fastapi_test_client()
+        client = TestClient(create_phase45_app(repo_dir))
+        manifest = {
+            "revision": TEST_DEFAULT_BRANCH,
+            "commit_message": "reuse chunk after stale plan",
+            "operations": [
+                _add_manifest("artifacts/large.bin", seeded["large_update"], include_chunks=True),
+            ],
+        }
+
+        plan_response = client.post("/api/v1/write/commit-plan", headers=rw_headers(), json=manifest)
+        assert plan_response.status_code == 200
+        plan_payload = plan_response.json()
+        planned_operation = plan_payload["operations"][0]
+        assert planned_operation["strategy"] == "chunk-upload"
+        assert planned_operation["reused_chunk_count"] > 0
+
+        missing_ids = set(item["chunk_id"] for item in planned_operation["missing_chunks"])
+        stale_descriptor = next(
+            chunk for chunk in manifest["operations"][0]["chunks"] if chunk["chunk_id"] not in missing_ids
+        )
+        with sqlite3.connect(str(repo_dir / SQLITE_METADATA_FILENAME)) as conn:
+            conn.execute(
+                "DELETE FROM chunk_visible WHERE chunk_id = ?",
+                (stale_descriptor["chunk_id"],),
+            )
+            conn.commit()
+
+        chunk_plan = ChunkStore().plan_bytes(seeded["large_update"])
+        files = {}
+        for missing_chunk in planned_operation["missing_chunks"]:
+            chunk_index = int(missing_chunk["chunk_index"])
+            files[str(missing_chunk["field_name"])] = (
+                str(missing_chunk["chunk_id"]) + ".bin",
+                chunk_plan.parts[chunk_index].data,
+                "application/octet-stream",
+            )
+
+        apply_manifest = dict(manifest)
+        apply_manifest["parent_commit"] = plan_payload["base_head"]
+        apply_manifest["upload_plan"] = plan_payload
+        commit_response = client.post(
+            "/api/v1/write/commit",
+            headers=rw_headers(),
+            data={"manifest": json.dumps(apply_manifest)},
+            files=files,
+        )
+
+        assert commit_response.status_code == 409
+        assert commit_response.json()["error"]["type"] == "ConflictError"
+        assert commit_response.json()["error"]["message"] == (
+            "planned chunk is no longer available; please re-plan the upload"
+        )
 
     def test_commit_apply_rejects_stale_plans_after_intervening_writes(self, tmp_path):
         repo_dir = tmp_path / "repo"
