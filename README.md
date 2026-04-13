@@ -182,6 +182,73 @@ gunicorn \
   'hubvault.server.asgi:create_app()'
 ```
 
+## Docker
+
+The repository also ships a lightweight Alpine-based container image for the
+embedded server. The image defaults to:
+
+- `frontend` mode
+- automatic repository initialization
+- repository data under `/data/repo`
+- bind host `0.0.0.0`
+- port `9472`
+
+Build the image locally:
+
+```bash
+docker build -t hubvault:local .
+```
+
+Then start the server with one `docker run` command and a persistent named
+volume:
+
+```bash
+docker run --rm -it \
+  -e HUBVAULT_TOKEN_RW=dev-token \
+  -v hubvault-data:/data/repo \
+  -p 9472:9472 \
+  hubvault:local
+```
+
+Use a bind mount when you want the repository to stay in one explicit local
+directory:
+
+```bash
+docker run --rm -it \
+  -e HUBVAULT_TOKEN_RW=dev-token \
+  -e HUBVAULT_PORT=8080 \
+  -v "$(pwd)/demo-repo:/data/repo" \
+  -p 8080:8080 \
+  hubvault:local
+```
+
+On Linux bind mounts, add `--user "$(id -u):$(id -g)"` when you want the
+persisted repository files to stay owned by your host user instead of `root`.
+
+The container reads the same `HUBVAULT_*` environment variables as the import
+and ASGI startup paths, so you can override:
+
+- `HUBVAULT_PORT`
+- `HUBVAULT_SERVE_MODE`
+- `HUBVAULT_REPO_PATH`
+- `HUBVAULT_TOKEN_RO`
+- `HUBVAULT_TOKEN_RW`
+- `HUBVAULT_INIT`
+- `HUBVAULT_INITIAL_BRANCH`
+- `HUBVAULT_LARGE_FILE_THRESHOLD`
+
+For published images, the recommended distribution layout is:
+
+- `ghcr.io/hansbug/hubvault` as the canonical registry because releases,
+  source, permissions, and provenance already live on GitHub
+- `docker.io/hansbug/hubvault` as a convenience mirror for users who default to
+  Docker Hub discovery and `docker pull`
+
+This repository now includes a container workflow that smoke-tests the image on
+push / pull request and publishes release images to GHCR. Docker Hub publishing
+is also wired in and activates once `DOCKERHUB_USERNAME` and
+`DOCKERHUB_TOKEN` are configured in repository secrets.
+
 ## Remote Client
 
 Install the remote extra when you want an HF-style client against a running

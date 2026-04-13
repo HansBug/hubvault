@@ -182,6 +182,66 @@ gunicorn \
   'hubvault.server.asgi:create_app()'
 ```
 
+## Docker
+
+仓库现在也带了一套基于 Alpine 的轻量容器镜像，默认配置如下：
+
+- `frontend` 模式
+- 自动初始化仓库
+- 仓库存储目录 `/data/repo`
+- 监听地址 `0.0.0.0`
+- 默认端口 `9472`
+
+本地构建镜像：
+
+```bash
+docker build -t hubvault:local .
+```
+
+直接用一条 `docker run` 命令启动，并把仓库数据持久化到 named volume：
+
+```bash
+docker run --rm -it \
+  -e HUBVAULT_TOKEN_RW=dev-token \
+  -v hubvault-data:/data/repo \
+  -p 9472:9472 \
+  hubvault:local
+```
+
+如果你希望仓库固定落在某个本地目录，可以改成 bind mount：
+
+```bash
+docker run --rm -it \
+  -e HUBVAULT_TOKEN_RW=dev-token \
+  -e HUBVAULT_PORT=8080 \
+  -v "$(pwd)/demo-repo:/data/repo" \
+  -p 8080:8080 \
+  hubvault:local
+```
+
+如果你在 Linux 上用 bind mount，并且希望生成的仓库文件继续归宿主机当前用户所有，
+可以额外加上 `--user "$(id -u):$(id -g)"`，避免文件落成 `root`。
+
+容器读取和 import / ASGI 启动完全相同的 `HUBVAULT_*` 环境变量，因此你可以直接覆盖：
+
+- `HUBVAULT_PORT`
+- `HUBVAULT_SERVE_MODE`
+- `HUBVAULT_REPO_PATH`
+- `HUBVAULT_TOKEN_RO`
+- `HUBVAULT_TOKEN_RW`
+- `HUBVAULT_INIT`
+- `HUBVAULT_INITIAL_BRANCH`
+- `HUBVAULT_LARGE_FILE_THRESHOLD`
+
+镜像发布策略上，更合适的做法是双发：
+
+- `ghcr.io/hansbug/hubvault` 作为主发布源，原因是源码、release、权限和溯源都已经在 GitHub
+- `docker.io/hansbug/hubvault` 作为镜像分发镜像源，方便用户直接在 Docker Hub 搜索和拉取
+
+仓库里也已经补上了容器 workflow：push / pull request 会做镜像 smoke test，
+release 会发布到 GHCR；Docker Hub 发布流程也已经接好，等仓库 secrets 里配置
+`DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN` 之后就会自动生效。
+
 ## Remote Client
 
 如果你要从另一个 Python 进程访问运行中的服务端，安装 remote extra：
