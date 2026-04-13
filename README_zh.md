@@ -238,9 +238,12 @@ docker run --rm -it \
 - `ghcr.io/hansbug/hubvault` 作为主发布源，原因是源码、release、权限和溯源都已经在 GitHub
 - `docker.io/hansbug/hubvault` 作为镜像分发镜像源，方便用户直接在 Docker Hub 搜索和拉取
 
-仓库里也已经补上了容器 workflow：push / pull request 会做镜像 smoke test，
-release 会发布到 GHCR；Docker Hub 发布流程也已经接好，等仓库 secrets 里配置
-`DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN` 之后就会自动生效。
+仓库里也已经把容器流程并进现有 release 体系了：
+
+- `Release Test` 在普通 push 上做 Docker 镜像 smoke test
+- `Package Release` 在 release 时发布 GHCR 镜像
+- `Package Release` 在仓库 secrets 配好 `DOCKERHUB_USERNAME` 和
+  `DOCKERHUB_TOKEN` 之后，也会同步发布 Docker Hub 镜像
 
 ## Remote Client
 

@@ -244,10 +244,13 @@ For published images, the recommended distribution layout is:
 - `docker.io/hansbug/hubvault` as a convenience mirror for users who default to
   Docker Hub discovery and `docker pull`
 
-This repository now includes a container workflow that smoke-tests the image on
-push / pull request and publishes release images to GHCR. Docker Hub publishing
-is also wired in and activates once `DOCKERHUB_USERNAME` and
-`DOCKERHUB_TOKEN` are configured in repository secrets.
+This repository now folds container automation into the existing release
+workflows:
+
+- `Release Test` smoke-tests the Docker image on ordinary pushes
+- `Package Release` publishes release images to GHCR
+- `Package Release` also mirrors to Docker Hub once `DOCKERHUB_USERNAME` and
+  `DOCKERHUB_TOKEN` are configured in repository secrets
 
 ## Remote Client
 
