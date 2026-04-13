@@ -906,7 +906,7 @@ class TestRepoBackendPackage:
 
         _mutate_first_index_record(repo_dir, lambda record: record.__setitem__("offset", len(PACK_MAGIC)))
         monkeypatch.setattr("hubvault.repo.backend.mmap.mmap", _raise_mmap)
-        monkeypatch.setattr("hubvault.repo.backend.os.pread", _short_pread)
+        monkeypatch.setattr("hubvault.repo.backend.os.pread", _short_pread, raising=False)
 
         with pytest.raises(IntegrityError, match="pack truncated"):
             api.read_bytes("artifacts/large.bin")
