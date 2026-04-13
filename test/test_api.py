@@ -384,6 +384,56 @@ class TestApi:
         assert changes["assets/logo.bin"].is_binary is True
         assert changes["assets/logo.bin"].unified_diff is None
 
+    def test_get_commit_detail_reports_deleted_text_files(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        first_commit = api.create_commit(
+            operations=[
+                CommitOperationAdd("README.md", b"# hubvault\n"),
+                CommitOperationAdd("docs/demo.py", b"print('v1')\n"),
+            ],
+            commit_message="seed docs",
+        )
+        delete_commit = api.create_commit(
+            operations=[CommitOperationDelete("README.md")],
+            commit_message="remove readme",
+        )
+
+        detail = api.get_commit_detail(delete_commit.oid)
+        changes = {item.path: item for item in detail.changes}
+
+        assert detail.compare_parent_commit_id == first_commit.oid
+        assert changes["README.md"].change_type == "deleted"
+        assert changes["README.md"].is_binary is False
+        assert "deleted file mode 100644" in changes["README.md"].unified_diff
+        assert "--- a/README.md" in changes["README.md"].unified_diff
+        assert "+++ /dev/null" in changes["README.md"].unified_diff
+        assert "-# hubvault" in changes["README.md"].unified_diff
+
+    def test_public_git_oid_revisions_work_for_repo_reads(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo(default_branch="release/v1")
+        commit = api.create_commit(
+            operations=[
+                CommitOperationAdd("README.md", b"# hubvault\n"),
+                CommitOperationAdd("docs/demo.py", b"print('v1')\n"),
+            ],
+            commit_message="seed docs",
+            revision="release/v1",
+        )
+
+        assert api.list_repo_files(revision=commit.oid) == ["README.md", "docs/demo.py"]
+        assert api.read_bytes("README.md", revision=commit.oid) == b"# hubvault\n"
+        assert [item.path for item in api.list_repo_tree(revision=commit.oid)] == ["README.md", "docs"]
+        assert [item.path for item in api.get_paths_info(["README.md", "docs"], revision=commit.oid)] == [
+            "README.md",
+            "docs",
+        ]
+        assert api.get_commit_detail(commit.oid).commit.commit_id == commit.oid
+
+        with pytest.raises(RevisionNotFoundError, match="revision not found"):
+            api.list_repo_files(revision="0" * 40)
+
     def test_merge_public_api_supports_fast_forward_and_merge_commit_results(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")
         api.create_repo(large_file_threshold=64)

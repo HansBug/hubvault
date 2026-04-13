@@ -1205,6 +1205,35 @@ class TestRepoSemantics:
         with pytest.raises(IntegrityError, match="unknown tree entry type"):
             api.read_bytes("nested/leaf.txt")
 
+    def test_repo_path_info_deduplicates_requested_paths_and_falls_back_to_commit_message_title(self, tmp_path):
+        repo_dir = tmp_path / "repo"
+        api = HubVaultApi(repo_dir)
+        api.create_repo()
+        api.create_commit(
+            operations=[
+                CommitOperationAdd("README.md", b"# hubvault\n"),
+                CommitOperationAdd("docs/demo.py", b"print('v1')\n"),
+            ],
+            commit_message="seed docs\n\nbody text",
+        )
+
+        head_commit_id = _head_commit_id(repo_dir)
+
+        def _drop_commit_title(payload):
+            payload["title"] = ""
+
+        _mutate_object_payload(repo_dir, "commits", head_commit_id, _drop_commit_title)
+
+        infos = api.get_paths_info(["README.md", "README.md", "docs", "docs"])
+
+        assert [item.path for item in infos] == ["README.md", "README.md", "docs", "docs"]
+        assert [item.last_commit.title for item in infos] == [
+            "seed docs",
+            "seed docs",
+            "seed docs",
+            "seed docs",
+        ]
+
     def test_repo_detects_verify_corruption_cases(self, tmp_path):
         api, repo_dir = _single_file_repo(tmp_path, repo_name="legacy-prefixed-public-sha", payload=b"payload")
         file_object_id = _first_object_id(repo_dir, "files")

@@ -422,6 +422,41 @@ class TestRepoBackendPackage:
             api.read_bytes("artifacts/large.bin")
 
     @pytest.mark.parametrize(
+        ("case_name", "expected_message"),
+        [
+            ("missing-index", "chunk missing from index"),
+            ("logical-size", "chunk logical size mismatch"),
+            ("file-logical-size", "file logical size mismatch"),
+        ],
+    )
+    def test_backend_chunked_read_bytes_detects_index_and_size_mismatches(
+        self,
+        tmp_path,
+        case_name,
+        expected_message,
+    ):
+        api, repo_dir, payload = _chunked_repo(tmp_path, "read-bytes-" + case_name)
+
+        if case_name == "missing-index":
+            _mutate_file_payload(
+                repo_dir,
+                lambda file_payload: file_payload["chunks"][0].__setitem__("chunk_id", "sha256:" + ("0" * 64)),
+            )
+        elif case_name == "logical-size":
+            _mutate_first_index_record(
+                repo_dir,
+                lambda record: record.__setitem__("logical_size", int(record["logical_size"]) - 1),
+            )
+        else:
+            _mutate_file_payload(
+                repo_dir,
+                lambda file_payload: file_payload.__setitem__("logical_size", len(payload) + 1),
+            )
+
+        with pytest.raises(IntegrityError, match=expected_message):
+            api.read_bytes("artifacts/large.bin")
+
+    @pytest.mark.parametrize(
         ("field_name", "field_mutator", "expected_message"),
         [
             ("logical_size", lambda payload, data_length: payload.__setitem__("logical_size", data_length + 1), "file logical size mismatch"),
@@ -445,6 +480,92 @@ class TestRepoBackendPackage:
         report = api.quick_verify()
         assert report.ok is False
         assert any(expected_message in item for item in report.errors)
+
+    @pytest.mark.parametrize(
+        ("case_name", "expected_message"),
+        [
+            ("missing-index", "chunk missing from index"),
+            ("logical-size", "chunk logical size mismatch"),
+            ("sha256", "file sha256 mismatch"),
+            ("oid", "file oid mismatch"),
+            ("etag", "file etag mismatch"),
+        ],
+    )
+    def test_backend_quick_verify_reports_chunked_index_and_file_corruption(
+        self,
+        tmp_path,
+        case_name,
+        expected_message,
+    ):
+        api, repo_dir, _ = _chunked_repo(tmp_path, "quick-verify-" + case_name)
+
+        if case_name == "missing-index":
+            _mutate_file_payload(
+                repo_dir,
+                lambda payload: payload["chunks"][0].__setitem__("chunk_id", "sha256:" + ("0" * 64)),
+            )
+        elif case_name == "logical-size":
+            _mutate_first_index_record(
+                repo_dir,
+                lambda record: record.__setitem__("logical_size", int(record["logical_size"]) - 1),
+            )
+        else:
+            _mutate_file_payload(
+                repo_dir,
+                lambda payload: payload.__setitem__(
+                    case_name,
+                    {
+                        "sha256": "0" * 64,
+                        "oid": "0" * 40,
+                        "etag": "1" * 64,
+                    }[case_name],
+                ),
+            )
+
+        report = api.quick_verify()
+        assert report.ok is False
+        assert any(expected_message in item for item in report.errors)
+
+    @pytest.mark.parametrize(
+        ("case_name", "expected_message"),
+        [
+            ("missing-index", "chunk missing from index"),
+            ("unsupported-compression", "unsupported chunk compression"),
+            ("stored-size", "chunk size mismatch"),
+            ("chunk-checksum", "chunk checksum mismatch"),
+        ],
+    )
+    def test_backend_storage_overview_rejects_chunk_plan_corruption(
+        self,
+        tmp_path,
+        case_name,
+        expected_message,
+    ):
+        api, repo_dir, _ = _chunked_repo(tmp_path, "overview-" + case_name)
+
+        if case_name == "missing-index":
+            _mutate_file_payload(
+                repo_dir,
+                lambda payload: payload["chunks"][0].__setitem__("chunk_id", "sha256:" + ("0" * 64)),
+            )
+        elif case_name == "unsupported-compression":
+            _mutate_first_index_record(
+                repo_dir,
+                lambda record: record.__setitem__("compression", "gzip"),
+            )
+        elif case_name == "stored-size":
+            _mutate_first_index_record(
+                repo_dir,
+                lambda record: record.__setitem__("stored_size", int(record["stored_size"]) - 1),
+            )
+        else:
+            _mutate_first_index_record(
+                repo_dir,
+                lambda record: record.__setitem__("checksum", "sha256:" + ("2" * 64)),
+            )
+
+        with pytest.raises(IntegrityError, match=expected_message):
+            api.get_storage_overview()
 
     def test_backend_snapshot_metadata_warning_and_gitattributes_preservation(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")
