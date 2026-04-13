@@ -14,6 +14,8 @@
 
 It gives you Hugging Face style file APIs and Git-like commit / branch / tag / merge semantics, while the repository itself remains a single movable local directory. There is no remote service requirement and no repo-external database to operate.
 
+Audience: repository users who want to evaluate, install, and run `hubvault`.
+
 ## Quick Start
 
 Install from PyPI:
@@ -195,7 +197,26 @@ defaults to:
 - bind host `0.0.0.0`
 - port `9472`
 
-Build the image locally:
+Pull a published image when you want to run it directly:
+
+```bash
+docker pull ghcr.io/hansbug/hubvault:latest
+# optional mirror when you prefer Docker Hub
+docker pull hansbug/hubvault:latest
+```
+
+Then start the server with one `docker run` command and a persistent named
+volume:
+
+```bash
+docker run --rm -it \
+  -e HUBVAULT_TOKEN_RW=dev-token \
+  -v hubvault-data:/data/repo \
+  -p 9472:9472 \
+  ghcr.io/hansbug/hubvault:latest
+```
+
+Build the image locally from a source checkout when you need a local variant:
 
 ```bash
 docker build -t hubvault:local .
@@ -207,8 +228,7 @@ Or use the convenience make target:
 make docker_build
 ```
 
-Then start the server with one `docker run` command and a persistent named
-volume:
+Run the local image with the same command shape, changing only the image name:
 
 ```bash
 docker run --rm -it \
@@ -218,7 +238,7 @@ docker run --rm -it \
   hubvault:local
 ```
 
-The same flow is also available through `make docker_run`.
+The same local-run flow is available through `make docker_run`.
 
 Use a bind mount when you want the repository to stay in one explicit local
 directory:
@@ -248,24 +268,6 @@ and ASGI startup paths, so you can override:
 - `HUBVAULT_INIT`
 - `HUBVAULT_INITIAL_BRANCH`
 - `HUBVAULT_LARGE_FILE_THRESHOLD`
-
-For published images, the recommended distribution layout is:
-
-- `ghcr.io/hansbug/hubvault` as the canonical registry because releases,
-  source, permissions, and provenance already live on GitHub
-- `docker.io/hansbug/hubvault` as a convenience mirror for users who default to
-  Docker Hub discovery and `docker pull`
-
-This repository now folds container automation into the existing release
-workflows:
-
-- `Release Test` smoke-tests the Docker image on ordinary pushes
-- `Package Release` publishes release images to GHCR
-- `Package Release` also mirrors to Docker Hub once `DOCKERHUB_USERNAME` and
-  `DOCKERHUB_TOKEN` are configured in repository secrets
-
-For local validation, `make docker_smoke` builds the image and runs the same
-scripted smoke test used by CI.
 
 ## Remote Client
 
@@ -470,20 +472,6 @@ Current non-goals:
 - Contribution guide: [CONTRIBUTING.md](CONTRIBUTING.md)
 - Repository collaboration rules: [AGENTS.md](AGENTS.md)
 - Benchmark records: [build/benchmark/](build/benchmark/)
-
-## Build and Release Notes
-
-The packaged frontend is part of the same Python distribution and the same
-standalone executable. The maintained build flow is:
-
-1. Run `make webui_package` to build `webui/dist/` and sync it into `hubvault/server/static/webui/`.
-2. Run `make package` to produce sdist and wheel artifacts that already contain the synced static files.
-3. Run `make build` to produce the standalone executable with the same bundled frontend.
-
-`make package` and `make build` already depend on the frontend packaging step,
-so the normal release path does not require manual copying. The sync rule is
-still useful when you want to inspect or commit the generated static assets
-explicitly.
 
 ## Project Status
 

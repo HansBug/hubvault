@@ -14,6 +14,8 @@
 
 它提供接近 Hugging Face Hub 的文件 API 手感，也提供接近 Git 的 commit / branch / tag / merge 语义，但仓库本身仍然只是一个可以整体移动的本地目录。不需要远端服务，也不需要你额外维护 repo 外数据库。
 
+面向对象：想评估、安装和使用 `hubvault` 的仓库用户。
+
 ## 快速开始
 
 安装:
@@ -193,7 +195,25 @@ gunicorn \
 - 监听地址 `0.0.0.0`
 - 默认端口 `9472`
 
-本地构建镜像：
+如果你只是想直接运行，先拉取已发布镜像：
+
+```bash
+docker pull ghcr.io/hansbug/hubvault:latest
+# 如果你更习惯 Docker Hub，也可以尝试镜像同步源
+docker pull hansbug/hubvault:latest
+```
+
+然后直接用一条 `docker run` 命令启动，并把仓库数据持久化到 named volume：
+
+```bash
+docker run --rm -it \
+  -e HUBVAULT_TOKEN_RW=dev-token \
+  -v hubvault-data:/data/repo \
+  -p 9472:9472 \
+  ghcr.io/hansbug/hubvault:latest
+```
+
+如果你是从源码仓库本地构建，再执行：
 
 ```bash
 docker build -t hubvault:local .
@@ -205,7 +225,7 @@ docker build -t hubvault:local .
 make docker_build
 ```
 
-直接用一条 `docker run` 命令启动，并把仓库数据持久化到 named volume：
+如果你要运行本地构建出的镜像，只需要把镜像名改成 `hubvault:local`：
 
 ```bash
 docker run --rm -it \
@@ -215,7 +235,7 @@ docker run --rm -it \
   hubvault:local
 ```
 
-同样的流程也可以直接用 `make docker_run`。
+同样的本地运行流程也可以直接用 `make docker_run`。
 
 如果你希望仓库固定落在某个本地目录，可以改成 bind mount：
 
@@ -243,20 +263,6 @@ docker run --rm -it \
 - `HUBVAULT_INIT`
 - `HUBVAULT_INITIAL_BRANCH`
 - `HUBVAULT_LARGE_FILE_THRESHOLD`
-
-镜像发布策略上，更合适的做法是双发：
-
-- `ghcr.io/hansbug/hubvault` 作为主发布源，原因是源码、release、权限和溯源都已经在 GitHub
-- `docker.io/hansbug/hubvault` 作为镜像分发镜像源，方便用户直接在 Docker Hub 搜索和拉取
-
-仓库里也已经把容器流程并进现有 release 体系了：
-
-- `Release Test` 在普通 push 上做 Docker 镜像 smoke test
-- `Package Release` 在 release 时发布 GHCR 镜像
-- `Package Release` 在仓库 secrets 配好 `DOCKERHUB_USERNAME` 和
-  `DOCKERHUB_TOKEN` 之后，也会同步发布 Docker Hub 镜像
-
-本地如果想复用同一套检查逻辑，可以直接执行 `make docker_smoke`，它会先构建镜像，再运行和 CI 一样的脚本化 smoke test。
 
 ## Remote Client
 
@@ -459,18 +465,6 @@ repo/
 - 贡献指南: [CONTRIBUTING.md](CONTRIBUTING.md)
 - 仓库协作规范: [AGENTS.md](AGENTS.md)
 - Benchmark 记录: [build/benchmark/](build/benchmark/)
-
-## 构建与发布说明
-
-前端静态资源是同一个 Python 包、同一个独立可执行文件的一部分。维护中的构建
-流程如下：
-
-1. 运行 `make webui_package`，构建 `webui/dist/` 并同步到 `hubvault/server/static/webui/`。
-2. 运行 `make package`，产出已经带有这些静态资源的 sdist 和 wheel。
-3. 运行 `make build`，产出带有同一套前端资源的独立可执行文件。
-
-`make package` 和 `make build` 已经依赖前端打包步骤，所以正常发布路径不需要
-手工复制文件；单独保留 sync 流程，是为了本地检查或显式提交静态资源时更方便。
 
 ## 项目状态
 

@@ -1,5 +1,7 @@
 # Contributing to hubvault
 
+Audience: contributors and maintainers changing code, tests, documentation, packaging, CI, or release automation for `hubvault`.
+
 This document is for contributors who want to submit code, tests, documentation, or benchmark evidence to `hubvault`.
 
 If you are new to the repository, keep this sentence in mind first:
@@ -87,6 +89,10 @@ make benchmark_phase12_standard
 make build
 make test_cli
 make package
+make docker_build
+make docker_run
+make docker_run_bind
+make docker_smoke
 make docs
 make docs_en
 make docs_zh
@@ -99,6 +105,20 @@ Useful variables:
 - `WORKERS=<n>`: pytest-xdist worker count
 - `MIN_COVERAGE=<n>`: coverage floor
 - `BENCHMARK_SCALE=<smoke|standard|nightly|stress|pressure>`: benchmark tier
+- `DOCKER_IMAGE=<tag>` / `DOCKER_PORT=<port>` / `DOCKER_SMOKE_PORT=<port>`: container-image and smoke-test overrides
+- `DOCKER_VOLUME=<name>` / `DOCKER_REPO_DIR=<path>` / `DOCKER_TOKEN_RW=<token>`: local container-run settings
+
+## Container packaging and release maintenance
+
+Contributor-facing notes for the maintained Docker path:
+
+- the maintained container image must ship the compiled frontend and install `hubvault[full]`
+- README should explain how users pull and run images; registry topology, release workflow layout, CI smoke tests, and secrets belong here instead
+- the canonical published image is `ghcr.io/hansbug/hubvault`
+- `docker.io/hansbug/hubvault` is a convenience mirror when Docker Hub publishing secrets are configured
+- use `make docker_build`, `make docker_run`, `make docker_run_bind`, and `make docker_smoke` for local contributor iteration
+- `release_test.yml` is expected to build the image and run `docker/smoke-test.sh`
+- `release.yml` is expected to run the same smoke test before any PyPI or image publish jobs
 
 ## Recommended development flow
 
@@ -189,9 +209,33 @@ Minimum regression expectations:
 
 ## Documentation requirements
 
+### Audience-first writing rule
+
+Before adding or editing a document, answer these two questions first:
+
+- who is this document for?
+- what task or decision should that audience complete after reading it?
+
+Then keep the content inside that audience boundary. Do not mix repository-user,
+contributor, API-reference, and frontend/browser-operating guidance in one
+document.
+
+Typical document ownership in this repository:
+
+- `README.md` and `README_zh.md`: repository users evaluating, installing, and running `hubvault`
+- `CONTRIBUTING.md`: contributors and maintainers changing code, packaging, CI, release automation, or docs structure
+- `docs/source/tutorials/installation/*`, `quick_start/*`, `workflow/*`, and `structure/*`: repository users learning product behavior
+- `docs/source/tutorials/service/*`: service operators and API users running the embedded server
+- `docs/source/tutorials/remote/*`: Python remote-client users
+- `docs/source/tutorials/webui/*`: browser/frontend users and operators
+- `docs/source/api_doc/*`: API reference readers
+- `plan/*`: contributors and maintainers tracking execution state
+
 ### README
 
 - README is a project introduction, not an academic analysis report
+- README should stay in the repository-user view
+- contributor-only topics such as release workflows, registry strategy, CI layout, packaging internals, and secrets belong in `CONTRIBUTING.md` or `plan/`
 - performance highlights are welcome, but they must come from preserved benchmark evidence
 - when documenting wins, also mention the important known regressions or limits
 

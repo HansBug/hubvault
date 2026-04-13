@@ -230,9 +230,33 @@ Do not claim completion without actually running the relevant regression set unl
 ### README and Benchmark Docs
 
 - README is a project-introduction document, not an execution log or an academic analysis report
+- README should stay in the repository-user view
+- contributor-only topics such as release workflows, registry strategy, CI layout, packaging internals, and secret configuration belong in `CONTRIBUTING.md` or `plan/`, not in README
 - performance claims must be grounded in existing evidence files rather than intuition
 - benchmark conclusions should cite preserved records under `build/benchmark/` or `plan/`
 - when README highlights performance wins, it should also mention the known regression or boundary conditions that still matter
+
+### Documentation Audience Rules
+
+Every documentation change should start by identifying the target audience and
+keeping the content scoped to that audience's tasks.
+
+Requirements:
+
+- do not mix repository-user, contributor, API-reference, and frontend/browser-operation guidance in one document
+- if a document drifts across audiences, split or move the material instead of letting one file become a catch-all
+- when opening or creating a document, make its intended audience obvious in the opening lines or document purpose
+
+Typical document ownership:
+
+- `README.md` and `README_zh.md`: repository users evaluating, installing, and running `hubvault`
+- `CONTRIBUTING.md`: contributors and maintainers working on code, packaging, CI, release automation, or docs structure
+- `docs/source/tutorials/installation/*`, `quick_start/*`, `workflow/*`, and `structure/*`: repository users learning product behavior
+- `docs/source/tutorials/service/*`: service operators and API users
+- `docs/source/tutorials/remote/*`: Python remote-client users
+- `docs/source/tutorials/webui/*`: browser/frontend users and operators
+- `docs/source/api_doc/*`: API reference readers
+- `plan/*`: contributors and maintainers tracking implementation phases
 
 ### Planning Documents
 
