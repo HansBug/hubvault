@@ -104,7 +104,7 @@ function updateRoutePath(path) {
     name: "files",
     query: {
       revision: props.revision,
-      path: path || undefined
+      path: path
     }
   });
 }

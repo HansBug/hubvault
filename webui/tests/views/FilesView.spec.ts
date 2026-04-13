@@ -367,4 +367,102 @@ describe("FilesView", function suite() {
 
     expect(wrapper.text()).toContain("Unable to load repository files.");
   });
+
+  it("uses unresolved route paths directly and keeps root upload navigation query-free", async function testRouteFallbackBranches() {
+    filesViewMocks.route.query = {
+      path: "missing/folder"
+    };
+    filesViewMocks.getPathsInfo.mockResolvedValueOnce([]);
+    filesViewMocks.getRepoTree.mockResolvedValueOnce([]);
+
+    const missingWrapper = mount(FilesView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+    await flushPromises();
+
+    expect(filesViewMocks.getRepoTree).toHaveBeenCalledWith("release/v1", "missing/folder");
+
+    filesViewMocks.route.query = {};
+    filesViewMocks.getRepoTree.mockResolvedValueOnce([]);
+
+    const rootWrapper = mount(FilesView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+    await flushPromises();
+
+    await rootWrapper.get("[data-testid='files-upload-button']").trigger("click");
+    expect(filesViewMocks.push).toHaveBeenLastCalledWith({
+      name: "upload",
+      query: {
+        revision: "release/v1",
+        path: undefined
+      }
+    });
+  });
+
+  it("treats closed delete dialogs as no-ops and uses the default delete error copy", async function testDeleteFallbackCopy() {
+    const confirmSpy = vi.spyOn(ElMessageBox, "confirm");
+    confirmSpy.mockRejectedValueOnce("close" as never);
+    confirmSpy.mockResolvedValueOnce(undefined as never);
+    filesViewMocks.deleteRepoFile.mockRejectedValueOnce({});
+
+    const wrapper = mount(FilesView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+    await flushPromises();
+
+    await findButtonByText(wrapper, "delete docs/config.json").trigger("click");
+    await flushPromises();
+    expect(filesViewMocks.deleteRepoFile).not.toHaveBeenCalled();
+
+    await findButtonByText(wrapper, "delete docs/config.json").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Unable to delete the selected entry.");
+  });
+
+  it("rethrows unexpected delete dialog failures instead of silently swallowing them", async function testDeleteDialogErrors() {
+    const dialogError = new Error("dialog transport failed");
+    vi.spyOn(ElMessageBox, "confirm").mockRejectedValueOnce(dialogError as never);
+
+    const wrapper = mount(FilesView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+    await flushPromises();
+
+    await expect(
+      (wrapper.vm as any).handleDeleteEntry({
+        path: "docs/config.json",
+        entry_type: "file"
+      })
+    ).rejects.toThrow("dialog transport failed");
+  });
 });

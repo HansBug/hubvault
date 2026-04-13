@@ -11,9 +11,6 @@ const props = defineProps({
 });
 
 const renderedHtml = computed(function buildRenderedHtml() {
-  if (!props.diffText) {
-    return "";
-  }
   return DOMPurify.sanitize(
     renderDiffHtml(props.diffText, {
       drawFileList: false,

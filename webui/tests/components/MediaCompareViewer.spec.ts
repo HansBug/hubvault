@@ -2,6 +2,7 @@ import ElementPlus from "element-plus";
 import { mount } from "@vue/test-utils";
 import { describe, expect, it } from "vitest";
 
+import MediaPreviewCard from "@/components/MediaPreviewCard.vue";
 import MediaCompareViewer from "@/components/MediaCompareViewer.vue";
 
 describe("MediaCompareViewer", function suite() {
@@ -43,6 +44,27 @@ describe("MediaCompareViewer", function suite() {
     expect(wrapper.findAll("[data-testid='media-preview-card']")).toHaveLength(1);
     expect(wrapper.find("video").attributes("src")).toBe("/commit.mp4");
     expect(wrapper.text()).toContain("Commit");
+  });
+
+  it("renders the parent-side metadata when only the previous media revision exists", function testOldOnlyRender() {
+    const wrapper = mount(MediaCompareViewer, {
+      props: {
+        kind: "audio",
+        oldMediaUrl: "/parent.wav",
+        oldPath: "media/parent.wav",
+        oldDownloadUrl: "/download/parent.wav",
+        oldLabel: "Parent"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    expect(wrapper.find("[data-testid='media-compare-grid']").exists()).toBe(false);
+    expect(wrapper.find("[data-testid='media-compare-single']").exists()).toBe(true);
+    expect(wrapper.find("audio").attributes("src")).toBe("/parent.wav");
+    expect(wrapper.text()).toContain("Parent");
+    expect(wrapper.findComponent(MediaPreviewCard).props("emptyText")).toBe("Not present in this commit.");
   });
 
   it("shows the unsupported preview state for avi compare entries", function testUnsupportedAviRender() {

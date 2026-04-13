@@ -279,8 +279,73 @@ describe("CommitChangeCard", function suite() {
     expect(metadata.text()).toContain("8.0 KB");
     expect(metadata.text()).toContain("After");
     expect(metadata.text()).toContain("Removed by this commit");
+    expect((wrapper.vm as any).fileSummary).toBe("8.0 KB · binary");
     expect(wrapper.html()).toContain("/api/v1/content/download/artifacts/legacy.bin?revision=commit-1");
     expect(wrapper.text()).toContain("deleted");
     expect(wrapper.find("[data-testid='media-compare-viewer-stub']").exists()).toBe(false);
+  });
+
+  it("passes deleted media through the comparison viewer without a new commit blob", function testDeletedAudioChange() {
+    const wrapper = mount(CommitChangeCard, {
+      props: {
+        commitId: "commit-2",
+        compareParentCommitId: "commit-1",
+        change: {
+          path: "media/outro.wav",
+          change_type: "deleted",
+          is_binary: true,
+          unified_diff: null,
+          old_file: {
+            path: "media/outro.wav",
+            size: 4096,
+            oid: "old-audio",
+            blob_id: "old-blob",
+            sha256: "old-audio-sha"
+          },
+          new_file: null
+        }
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    expect(wrapper.get("[data-testid='media-compare-viewer-stub']").text()).toContain(
+      "audio|/api/v1/content/blob/media/outro.wav?revision=commit-1|"
+    );
+    expect(wrapper.text()).toContain("4.0 KB · audio");
+  });
+
+  it("falls back empty text diffs when the server omits unified diff content", function testTextDiffFallback() {
+    const wrapper = mount(CommitChangeCard, {
+      props: {
+        change: {
+          path: "docs/guide.md",
+          change_type: "modified",
+          is_binary: false,
+          unified_diff: null,
+          old_file: {
+            path: "docs/guide.md",
+            size: 10,
+            oid: "old",
+            blob_id: "blob-old",
+            sha256: "old-sha"
+          },
+          new_file: {
+            path: "docs/guide.md",
+            size: 12,
+            oid: "new",
+            blob_id: "blob-new",
+            sha256: "new-sha"
+          }
+        }
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    expect(wrapper.get("[data-testid='html-diff-viewer-stub']").text()).toBe("");
+    expect(wrapper.find("a[href]").exists()).toBe(false);
   });
 });

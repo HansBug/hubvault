@@ -58,4 +58,14 @@ describe("router", function suite() {
     expect(router.currentRoute.value.name).toBe("file-detail");
     expect(router.currentRoute.value.query.token).toBeUndefined();
   });
+
+  it("falls back nameless token routes to the overview page", async function testTokenFallbackRouteName() {
+    routerState.hasSessionToken.mockReturnValue(true);
+
+    await router.push("/repo?token=secret-query-token");
+
+    expect(routerState.setSessionToken).toHaveBeenCalledWith("secret-query-token");
+    expect(router.currentRoute.value.name).toBe("overview");
+    expect(router.currentRoute.value.query.token).toBeUndefined();
+  });
 });

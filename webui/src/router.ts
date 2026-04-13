@@ -93,7 +93,7 @@ router.beforeEach(function guardRoute(to) {
   if (token) {
     setSessionToken(token);
     return {
-      name: String(to.name || "overview"),
+      name: to.name as string,
       params: to.params,
       query: sanitizeTokenQuery(to.query),
       hash: to.hash

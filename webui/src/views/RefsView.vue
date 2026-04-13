@@ -54,8 +54,8 @@ function handleSelect(revision) {
   });
 }
 
-async function refreshRefs(nextRevision) {
-  await bootstrapSession(nextRevision || props.revision, { force: true });
+async function refreshRefs(nextRevision = props.revision) {
+  await bootstrapSession(nextRevision, { force: true });
 }
 
 async function handleCreateBranch() {
@@ -112,9 +112,6 @@ async function handleDeleteCurrentRef() {
   const branchName = currentBranch.value;
   const tagName = currentTag.value;
   const label = branchName || tagName;
-  if (!label) {
-    return;
-  }
 
   try {
     await ElMessageBox.confirm("Delete " + label + " from the repository refs?", "Delete Ref", {
@@ -149,10 +146,6 @@ async function handleDeleteCurrentRef() {
 }
 
 async function handleMergeIntoCurrent() {
-  if (!currentBranch.value) {
-    return;
-  }
-
   try {
     const prompt = await ElMessageBox.prompt("Source revision", "Merge into " + currentBranch.value, {
       inputValue: "feature",
@@ -178,10 +171,6 @@ async function handleMergeIntoCurrent() {
 }
 
 async function handleResetCurrentBranch() {
-  if (!currentBranch.value) {
-    return;
-  }
-
   try {
     const prompt = await ElMessageBox.prompt("Revision to reset to", "Reset " + currentBranch.value, {
       inputValue: "",

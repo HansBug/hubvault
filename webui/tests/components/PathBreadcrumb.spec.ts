@@ -129,4 +129,27 @@ describe("PathBreadcrumb", function suite() {
 
     expect(breadcrumbMocks.push).not.toHaveBeenCalled();
   });
+
+  it("uses the generic aria label for unnamed breadcrumb items", async function testUnnamedBreadcrumb() {
+    const wrapper = mount(PathBreadcrumb, {
+      props: {
+        items: [
+          {
+            to: {
+              name: "files"
+            }
+          }
+        ]
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await findButtonByLabelOrText(wrapper, "Navigate path level").trigger("click");
+
+    expect(breadcrumbMocks.push).toHaveBeenCalledWith({
+      name: "files"
+    });
+  });
 });

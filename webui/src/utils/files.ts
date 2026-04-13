@@ -486,16 +486,10 @@ export function getFileVisualKind(path, entryType) {
   if (/^schema\.(graphql|gql)$/.test(name)) {
     return "graphql";
   }
-  if (/^docker-compose([._-].*)?\.(yaml|yml)$/.test(name) || /^compose([._-].*)?\.(yaml|yml)$/.test(name)) {
-    return "docker";
-  }
 
   const extension = pathExtension(path);
   if (extension === ".bin" && MODEL_NAME_PATTERN.test(name)) {
     return "pytorch";
-  }
-  if (SAFETENSORS_EXTENSIONS.indexOf(extension) >= 0) {
-    return "safetensors";
   }
   if (MODEL_EXTENSIONS.indexOf(extension) >= 0) {
     return "pytorch";
@@ -516,16 +510,13 @@ export function getFileVisualKind(path, entryType) {
     return EXTENSION_VISUALS[extension];
   }
   if (isImagePath(path)) {
-    return extension === ".svg" ? "svg" : "image";
+    return "image";
   }
   if (isAudioPath(path)) {
     return "audio";
   }
   if (isVideoPath(path)) {
     return "video";
-  }
-  if (isTextLikePath(path)) {
-    return "document";
   }
   return "binary";
 }

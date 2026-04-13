@@ -51,4 +51,38 @@ describe("MediaPreviewCard", function suite() {
       "This video could not be rendered inline."
     );
   });
+
+  it("renders audio empty and runtime failure states with the audio-specific fallback copy", async function testAudioFallbacks() {
+    const emptyWrapper = mount(MediaPreviewCard, {
+      props: {
+        kind: "audio",
+        src: "",
+        label: "media/clip.wav",
+        emptyText: "No audio yet."
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+    expect(emptyWrapper.text()).toContain("No audio yet.");
+
+    const errorWrapper = mount(MediaPreviewCard, {
+      props: {
+        kind: "audio",
+        src: "/api/v1/content/blob/media/clip.wav?revision=release%2Fv1",
+        path: "media/clip.wav",
+        label: "media/clip.wav"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await errorWrapper.get("audio").trigger("error");
+
+    expect(errorWrapper.find("audio").exists()).toBe(false);
+    expect(errorWrapper.get("[data-testid='media-preview-unavailable']").text()).toContain(
+      "This media file could not be rendered inline."
+    );
+  });
 });

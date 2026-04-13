@@ -150,8 +150,41 @@ describe("session store", function suite() {
     expect(useSessionStore().state.error).toBe("Failed to load session data.");
   });
 
+  it("allows an empty repo revision when neither service nor repo metadata exposes a default branch", async function testEmptyRevisionFallback() {
+    setSessionToken("rw-token");
+    clientMocks.getServiceMeta.mockReset();
+    clientMocks.getWhoAmI.mockReset();
+    clientMocks.getRepoRefs.mockReset();
+    clientMocks.getRepoInfo.mockReset();
+
+    clientMocks.getServiceMeta.mockResolvedValueOnce({
+      repo: {
+        default_branch: ""
+      }
+    });
+    clientMocks.getWhoAmI.mockResolvedValueOnce({
+      access: "ro",
+      can_write: false
+    });
+    clientMocks.getRepoRefs.mockResolvedValueOnce({
+      branches: [],
+      tags: []
+    });
+    clientMocks.getRepoInfo.mockResolvedValueOnce({
+      default_branch: "",
+      head: "head-empty"
+    });
+
+    await bootstrapSession("");
+
+    expect(useSessionStore().state.repoRevision).toBe("");
+  });
+
   it("trims stored tokens and tolerates missing sessionStorage during restoration", function testSessionStorageGuards() {
     const originalStorage = window.sessionStorage;
+
+    restoreSessionToken();
+    expect(hasSessionToken()).toBe(false);
 
     setSessionToken("  rw-token  ");
     expect(window.sessionStorage.getItem("hubvault.webui.token")).toBe("rw-token");
@@ -164,6 +197,10 @@ describe("session store", function suite() {
       value: null
     });
 
+    expect(function setWithoutStorage() {
+      setSessionToken("rw-token");
+    }).not.toThrow();
+    expect(hasSessionToken()).toBe(true);
     expect(function restoreWithoutStorage() {
       restoreSessionToken();
     }).not.toThrow();

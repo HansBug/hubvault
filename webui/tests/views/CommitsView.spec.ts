@@ -62,4 +62,21 @@ describe("CommitsView", function suite() {
     expect(commitsViewMocks.getCommits).toHaveBeenCalledWith("dev", false);
     expect(wrapper.text()).toContain("history failed");
   });
+
+  it("uses the default history error copy when the backend omits a message", async function testHistoryFallbackError() {
+    commitsViewMocks.getCommits.mockRejectedValueOnce({});
+
+    const wrapper = mount(CommitsView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        stubs: viewStubs
+      }
+    });
+
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Unable to load commit history.");
+  });
 });

@@ -24,9 +24,16 @@ const props = defineProps({
 let sliderSequence = 0;
 
 const container = ref<HTMLElement | null>(null);
+const fallbackMode = ref(false);
 
 const hasComparison = computed(function resolveHasComparison() {
   return Boolean(props.oldImageUrl && props.newImageUrl);
+});
+const singleImageUrl = computed(function resolveSingleImageUrl() {
+  return props.newImageUrl || props.oldImageUrl;
+});
+const singleImageLabel = computed(function resolveSingleImageLabel() {
+  return props.newImageUrl ? props.newLabel : props.oldLabel;
 });
 
 function nextSliderId() {
@@ -36,9 +43,11 @@ function nextSliderId() {
 
 async function renderComparison() {
   if (!hasComparison.value || !container.value || typeof window === "undefined") {
+    fallbackMode.value = false;
     return;
   }
 
+  fallbackMode.value = false;
   const juxtaposeModule = await import("juxtaposejs/build/js/juxtapose");
   await nextTick();
 
@@ -50,6 +59,7 @@ async function renderComparison() {
 
   const juxtapose = (window as any).juxtapose || (juxtaposeModule as any).default || juxtaposeModule;
   if (!juxtapose || !juxtapose.JXSlider) {
+    fallbackMode.value = true;
     return;
   }
 
@@ -89,14 +99,14 @@ onMounted(function mountComparison() {
 
 <template>
   <div class="image-compare-viewer" data-testid="image-compare-viewer">
-    <div v-if="hasComparison" ref="container" class="image-compare-viewer__frame" />
+    <div v-if="hasComparison && !fallbackMode" ref="container" class="image-compare-viewer__frame" />
     <div v-else class="image-compare-viewer__single">
       <div class="image-compare-viewer__label">
         <el-icon><Picture /></el-icon>
-        <span>{{ newImageUrl ? newLabel : oldLabel }}</span>
+        <span>{{ singleImageLabel }}</span>
       </div>
       <img
-        :src="newImageUrl || oldImageUrl"
+        :src="singleImageUrl"
         alt="Repository image preview"
       >
     </div>

@@ -290,4 +290,164 @@ describe("StorageView", function suite() {
       return item.text().trim() === "Preview GC" || item.text().trim() === "Run GC";
     })).toBe(false);
   });
+
+  it("shows live status hints for pending tasks and surfaces fallback task errors", async function testStatusHintsAndFallbackErrors() {
+    vi.useFakeTimers();
+    let resolveQuickVerify: (value: any) => void = function noop() {};
+
+    storageViewMocks.runQuickVerify.mockImplementationOnce(function pendingQuickVerify() {
+      return new Promise(function waitForResolution(resolve) {
+        resolveQuickVerify = resolve;
+      });
+    });
+
+    const wrapper = mount(StorageView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    await findButton(wrapper, "Run now", 0).trigger("click");
+    await flushPromises();
+    await vi.advanceTimersByTimeAsync(61000);
+
+    expect(wrapper.get("[data-testid='storage-status-title']").text()).toBe("Running quick verify");
+    expect(wrapper.get("[data-testid='storage-status-message']").text()).toContain("Elapsed 1m 01s.");
+    expect(wrapper.text()).toContain("Quick verify");
+
+    resolveQuickVerify({
+      ok: true,
+      checked_refs: [],
+      warnings: [],
+      errors: []
+    });
+    await flushPromises();
+
+    storageViewMocks.runFullVerify.mockRejectedValueOnce({});
+    await findButton(wrapper, "Run now").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Unable to run full verification.");
+    expect(wrapper.text()).toContain("Needs attention");
+
+    vi.useRealTimers();
+  });
+
+  it("treats close-and-cancel dialog exits as no-ops and accepts string task errors", async function testDialogExitBranches() {
+    resetSessionState();
+    sessionState.refs = null;
+    vi.spyOn(ElMessageBox, "confirm").mockRejectedValueOnce("close" as never);
+    vi.spyOn(ElMessageBox, "prompt").mockRejectedValueOnce("cancel" as never);
+    storageViewMocks.runQuickVerify.mockRejectedValueOnce("quick verify failed");
+
+    const wrapper = mount(StorageView, {
+      props: {
+        revision: "detached"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    await findButton(wrapper, "Run GC").trigger("click");
+    await flushPromises();
+    expect(storageViewMocks.runGc).not.toHaveBeenCalled();
+
+    await findButton(wrapper, "Run now", 0).trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("quick verify failed");
+
+    await findButton(wrapper, "Squash Current Branch").trigger("click");
+    await flushPromises();
+    expect(storageViewMocks.runSquashHistory).not.toHaveBeenCalled();
+  });
+
+  it("keeps overview and gc failure paths visible without success side effects", async function testTaskFailureBranches() {
+    storageViewMocks.getStorageOverview.mockRejectedValueOnce({});
+    storageViewMocks.runGc.mockRejectedValueOnce({});
+    const confirmSpy = vi.spyOn(ElMessageBox, "confirm").mockResolvedValue(undefined as never);
+
+    const successSpy = vi.spyOn(ElMessage, "success");
+
+    const overviewWrapper = mount(StorageView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    await findButton(overviewWrapper, "Load analysis").trigger("click");
+    await flushPromises();
+    expect(overviewWrapper.text()).toContain("Unable to load storage diagnostics.");
+    expect(overviewWrapper.text()).toContain("Needs attention");
+    expect((overviewWrapper.vm as any).statusPhaseLabel).toBe("Needs attention");
+    overviewWrapper.unmount();
+
+    const gcWrapper = mount(StorageView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+    await findButton(gcWrapper, "Run GC").trigger("click");
+    await flushPromises();
+    expect(confirmSpy).toHaveBeenCalled();
+    expect(gcWrapper.text()).toContain("Unable to run repository GC.");
+    gcWrapper.unmount();
+    expect(successSpy).not.toHaveBeenCalledWith("GC completed.");
+    expect(successSpy).not.toHaveBeenCalledWith("History squash completed.");
+  });
+
+  it("rethrows unexpected dialog failures for gc and squash prompts", async function testDialogThrowBranches() {
+    const confirmError = new Error("confirm failed");
+    vi.spyOn(ElMessageBox, "confirm").mockRejectedValueOnce(confirmError as never);
+
+    const gcWrapper = mount(StorageView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    await expect((gcWrapper.vm as any).handleRunGc(false)).rejects.toThrow("confirm failed");
+
+    const promptError = new Error("prompt failed");
+    const promptSpy = vi.spyOn(ElMessageBox, "prompt");
+    promptSpy.mockReset();
+    promptSpy.mockImplementationOnce(function rejectPrompt() {
+      return Promise.reject(promptError) as never;
+    });
+
+    const squashWrapper = mount(StorageView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    await expect((squashWrapper.vm as any).handleRunSquash()).rejects.toThrow("prompt failed");
+  });
 });

@@ -8,9 +8,10 @@ import StorageOverviewPanel from "@/components/StorageOverviewPanel.vue";
 import { bootstrapSession, useSessionStore } from "@/stores/session";
 
 type StorageOperation = "" | "summary" | "overview" | "quick-verify" | "full-verify" | "gc-preview" | "gc-run" | "squash";
+type ActiveStorageOperation = Exclude<StorageOperation, "">;
 type StorageStatusTone = "info" | "success" | "warning";
 
-const STORAGE_OPERATION_HINTS: Record<string, string[]> = {
+const STORAGE_OPERATION_HINTS: Record<ActiveStorageOperation, string[]> = {
   summary: [
     "Measuring repository footprint.",
     "Reading lightweight metadata.",
@@ -46,6 +47,20 @@ const STORAGE_OPERATION_HINTS: Record<string, string[]> = {
     "Publishing the rewritten branch head.",
     "Refreshing repository metadata."
   ]
+};
+const STORAGE_PHASE_LABELS: Record<ActiveStorageOperation, string> = {
+  summary: "Loading summary",
+  overview: "Loading analysis",
+  "quick-verify": "Quick verify",
+  "full-verify": "Full verify",
+  "gc-preview": "GC preview",
+  "gc-run": "GC",
+  squash: "Squashing"
+};
+const STORAGE_IDLE_LABELS: Record<StorageStatusTone, string> = {
+  info: "Idle",
+  success: "Completed",
+  warning: "Needs attention"
 };
 
 const props = defineProps({
@@ -107,47 +122,21 @@ const loadingSquash = computed(function resolveLoadingSquash() {
   return activeOperation.value === "squash";
 });
 const statusPhaseLabel = computed(function resolveStatusPhaseLabel() {
-  if (activeOperation.value === "summary") {
-    return "Loading summary";
+  const operation = activeOperation.value;
+  if (operation) {
+    return STORAGE_PHASE_LABELS[operation];
   }
-  if (activeOperation.value === "overview") {
-    return "Loading analysis";
-  }
-  if (activeOperation.value === "quick-verify") {
-    return "Quick verify";
-  }
-  if (activeOperation.value === "full-verify") {
-    return "Full verify";
-  }
-  if (activeOperation.value === "gc-preview") {
-    return "GC preview";
-  }
-  if (activeOperation.value === "gc-run") {
-    return "GC";
-  }
-  if (activeOperation.value === "squash") {
-    return "Squashing";
-  }
-  if (statusTone.value === "success") {
-    return "Completed";
-  }
-  if (statusTone.value === "warning") {
-    return "Needs attention";
-  }
-  return "Idle";
+  return STORAGE_IDLE_LABELS[statusTone.value];
 });
 const statusMessage = computed(function resolveStatusMessage() {
-  const base = String(statusBaseMessage.value || "").trim();
-  if (!activeOperation.value) {
+  const base = statusBaseMessage.value.trim();
+  const operation = activeOperation.value;
+  if (!operation) {
     return base;
   }
-  const hints = STORAGE_OPERATION_HINTS[activeOperation.value] || [];
-  const hint = hints.length ? hints[statusTick.value % hints.length] : "";
-  const parts = [base];
-  if (hint) {
-    parts.push(hint);
-  }
-  parts.push("Elapsed " + formatElapsed(statusElapsedSeconds.value) + ".");
+  const hints = STORAGE_OPERATION_HINTS[operation];
+  const hint = hints[statusTick.value % hints.length];
+  const parts = [base, hint, "Elapsed " + formatElapsed(statusElapsedSeconds.value) + "."];
   return parts.filter(Boolean).join(" ");
 });
 
@@ -242,71 +231,67 @@ async function runStorageTask<T>(
 }
 
 async function handleLoadSummary() {
-  const result = await runStorageTask(
+  await runStorageTask(
     "summary",
     "Loading quick storage summary",
     "Measuring the current repository footprint without running the heavier storage analysis.",
     "Quick storage summary ready",
     "Loaded immediate storage metrics from the live repository state.",
-    function fetchStorageSummary() {
-      return getStorageSummary();
+    async function fetchStorageSummary() {
+      const report = await getStorageSummary();
+      summary.value = report;
+      return report;
     },
     "Unable to load the quick storage summary."
   );
-  if (result) {
-    summary.value = result;
-  }
 }
 
 async function handleLoadOverview() {
-  const result = await runStorageTask(
+  await runStorageTask(
     "overview",
     "Loading storage analysis",
     "Reading repository storage metadata and reclaimable section sizes.",
     "Storage analysis ready",
     "Loaded the current repository storage analysis.",
-    function fetchStorageOverview() {
-      return getStorageOverview();
+    async function fetchStorageOverview() {
+      const report = await getStorageOverview();
+      overview.value = report;
+      return report;
     },
     "Unable to load storage diagnostics."
   );
-  if (result) {
-    overview.value = result;
-  }
 }
 
 async function handleRunQuickVerify() {
-  const result = await runStorageTask(
+  await runStorageTask(
     "quick-verify",
     "Running quick verify",
     "Checking repository structure without loading the heavier maintenance reports.",
     "Quick verify ready",
     "Finished the lightweight verification pass.",
-    function executeQuickVerify() {
-      return runQuickVerify();
+    async function executeQuickVerify() {
+      const report = await runQuickVerify();
+      quickVerify.value = report;
+      return report;
     },
     "Unable to run quick verification."
   );
-  if (result) {
-    quickVerify.value = result;
-  }
 }
 
 async function handleRunFullVerify() {
-  const result = await runStorageTask(
+  await runStorageTask(
     "full-verify",
     "Running full verify",
     "Performing the deeper repository graph and payload integrity scan.",
     "Full verify ready",
     "Finished the deeper verification pass.",
-    function executeFullVerify() {
-      return runFullVerify();
+    async function executeFullVerify() {
+      const report = await runFullVerify();
+      fullVerify.value = report;
+      return report;
     },
     "Unable to run full verification."
   );
-  if (result) {
-    fullVerify.value = result;
-  }
 }
 
 async function refreshSummary(message: string) {
@@ -347,7 +332,7 @@ async function handleRunGc(dryRun: boolean) {
     }
   }
 
-  const result = await runStorageTask(
+  await runStorageTask(
     dryRun ? "gc-preview" : "gc-run",
     dryRun ? "Previewing reclaimable storage" : "Running garbage collection",
     dryRun
@@ -369,21 +354,14 @@ async function handleRunGc(dryRun: boolean) {
       await refreshSummary("Refreshing the quick storage summary after the GC operation.");
       clearVerificationResults();
       await refreshOverviewIfLoaded("Refreshing the previously requested storage overview after GC.");
+      ElMessage.success(dryRun ? "GC dry-run completed." : "GC completed.");
       return report;
     },
     "Unable to run repository GC."
   );
-
-  if (result) {
-    ElMessage.success(dryRun ? "GC dry-run completed." : "GC completed.");
-  }
 }
 
 async function handleRunSquash() {
-  if (!currentBranch.value) {
-    return;
-  }
-
   let prompt;
   try {
     prompt = await ElMessageBox.prompt(
@@ -402,16 +380,17 @@ async function handleRunSquash() {
     throw promptError;
   }
 
-  const result = await runStorageTask(
+  await runStorageTask(
     "squash",
     "Squashing current branch",
     "Rebuilding the selected branch into a compact history root.",
     "History squash completed",
     "The current branch history was rewritten successfully.",
     async function executeSquash() {
+      const commitMessage = String(prompt.value).trim();
       const report = await runSquashHistory({
         ref_name: currentBranch.value,
-        commit_message: String(prompt?.value || "").trim() || null,
+        commit_message: commitMessage || null,
         run_gc: false,
         prune_cache: false
       });
@@ -424,14 +403,11 @@ async function handleRunSquash() {
       await refreshSummary("Refreshing the quick storage summary after the history rewrite.");
       clearVerificationResults();
       await refreshOverviewIfLoaded("Refreshing the previously requested storage overview after the squash operation.");
+      ElMessage.success("History squash completed.");
       return report;
     },
     "Unable to squash the current branch history."
   );
-
-  if (result) {
-    ElMessage.success("History squash completed.");
-  }
 }
 
 watch(

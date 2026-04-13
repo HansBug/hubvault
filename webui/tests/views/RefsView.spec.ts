@@ -393,4 +393,94 @@ describe("RefsView", function suite() {
       }
     });
   });
+
+  it("renders empty ref collections safely and leaves branch-only actions disabled when nothing matches", function testEmptyRefCollections() {
+    sessionState.refs = null;
+
+    const wrapper = mount(RefsView, {
+      props: {
+        revision: "detached"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    expect(wrapper.get("[data-testid='refs-action-merge']").attributes("disabled")).toBeDefined();
+    expect(wrapper.get("[data-testid='refs-action-reset']").attributes("disabled")).toBeDefined();
+    expect(wrapper.get("[data-testid='refs-action-delete']").attributes("disabled")).toBeDefined();
+    expect(wrapper.text()).toContain("Current: detached");
+  });
+
+  it("passes through blank prompt payloads and treats cancel-or-close prompt exits as no-ops", async function testPromptBranches() {
+    vi.spyOn(ElMessageBox, "prompt")
+      .mockResolvedValueOnce({ value: "" } as never)
+      .mockResolvedValueOnce({ value: "" } as never)
+      .mockResolvedValueOnce({ value: "" } as never)
+      .mockResolvedValueOnce({ value: "" } as never);
+
+    const wrapper = mount(RefsView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await findButton(wrapper, "New Branch").trigger("click");
+    await flushPromises();
+    await findButton(wrapper, "New Tag").trigger("click");
+    await flushPromises();
+    await findButton(wrapper, "Merge Into Current").trigger("click");
+    await flushPromises();
+    await findButton(wrapper, "Reset Current").trigger("click");
+    await flushPromises();
+
+    expect(refsViewMocks.createBranchRef).toHaveBeenCalledWith({
+      branch: "",
+      revision: "release/v1"
+    });
+    expect(refsViewMocks.createTagRef).toHaveBeenCalledWith({
+      tag: "",
+      revision: "release/v1"
+    });
+    expect(refsViewMocks.mergeRevision).toHaveBeenCalledWith({
+      source_revision: "",
+      target_revision: "release/v1"
+    });
+    expect(refsViewMocks.resetBranchRef).toHaveBeenCalledWith({
+      ref_name: "release/v1",
+      to_revision: ""
+    });
+
+    vi.spyOn(ElMessageBox, "prompt")
+      .mockRejectedValueOnce("close" as never)
+      .mockRejectedValueOnce("cancel" as never)
+      .mockRejectedValueOnce("close" as never)
+      .mockRejectedValueOnce("cancel" as never);
+
+    const silentWrapper = mount(RefsView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await findButton(silentWrapper, "New Tag").trigger("click");
+    await flushPromises();
+    await findButton(silentWrapper, "Merge Into Current").trigger("click");
+    await flushPromises();
+    await findButton(silentWrapper, "Reset Current").trigger("click");
+    await flushPromises();
+    await findButton(silentWrapper, "New Branch").trigger("click");
+    await flushPromises();
+
+    expect(refsViewMocks.createTagRef).toHaveBeenCalledTimes(1);
+    expect(refsViewMocks.mergeRevision).toHaveBeenCalledTimes(1);
+    expect(refsViewMocks.resetBranchRef).toHaveBeenCalledTimes(1);
+    expect(refsViewMocks.createBranchRef).toHaveBeenCalledTimes(1);
+  });
 });

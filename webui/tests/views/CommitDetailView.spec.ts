@@ -101,4 +101,108 @@ describe("CommitDetailView", function suite() {
       }
     });
   });
+
+  it("summarizes added, modified, and deleted changes while hiding optional commit fields", async function testCommitSummaryBranches() {
+    commitDetailMocks.getCommitDetail.mockResolvedValueOnce({
+      commit: {
+        commit_id: "commit-3",
+        title: "reshape tree",
+        message: "",
+        created_at: "2026-04-12T00:00:00Z"
+      },
+      parent_commit_ids: [],
+      compare_parent_commit_id: "",
+      changes: [
+        { path: "docs/new.md", change_type: "added", is_binary: false },
+        { path: "docs/guide.md", change_type: "modified", is_binary: false },
+        { path: "docs/old.md", change_type: "deleted", is_binary: false }
+      ]
+    });
+
+    const wrapper = mount(CommitDetailView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Added");
+    expect(wrapper.text()).toContain("Modified");
+    expect(wrapper.text()).toContain("Deleted");
+    expect(wrapper.find(".detail-hero__message").exists()).toBe(false);
+    expect(wrapper.findAll(".commit-detail-pill")).toHaveLength(2);
+    expect(wrapper.findAll("[data-testid='commit-change-card-stub']")).toHaveLength(3);
+  });
+
+  it("shows empty and error states for missing or unreadable commit details", async function testCommitDetailErrors() {
+    commitDetailMocks.route.params.commitId = 42 as any;
+
+    const missingWrapper = mount(CommitDetailView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    expect(commitDetailMocks.getCommitDetail).not.toHaveBeenCalled();
+    expect(missingWrapper.text()).toContain("Missing commit identifier.");
+    expect((missingWrapper.vm as any).changeSummary).toEqual({
+      added: 0,
+      deleted: 0,
+      modified: 0
+    });
+
+    commitDetailMocks.route.params.commitId = "commit-4";
+    commitDetailMocks.getCommitDetail.mockRejectedValueOnce({});
+
+    const errorWrapper = mount(CommitDetailView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    expect(errorWrapper.text()).toContain("Unable to load commit detail.");
+  });
+
+  it("renders the empty reachable-files state when a commit has no visible changes", async function testEmptyChangeState() {
+    commitDetailMocks.route.params.commitId = "commit-5";
+    commitDetailMocks.getCommitDetail.mockResolvedValueOnce({
+      commit: {
+        commit_id: "commit-5",
+        title: "metadata only",
+        message: "no file changes",
+        created_at: "2026-04-12T00:00:00Z"
+      },
+      parent_commit_ids: ["commit-4"],
+      compare_parent_commit_id: "commit-4",
+      changes: []
+    });
+
+    const wrapper = mount(CommitDetailView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("This commit does not change any reachable files.");
+    expect(wrapper.find("[data-testid='commit-change-card-stub']").exists()).toBe(false);
+  });
 });

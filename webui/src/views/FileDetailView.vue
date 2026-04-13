@@ -112,7 +112,7 @@ async function loadFileDetail() {
   error.value = "";
   try {
     const results = await getPathsInfo(props.revision, [pathInRepo.value]);
-    const nextEntry = Array.isArray(results) ? results[0] : null;
+    const nextEntry = results[0];
     if (!nextEntry || nextEntry.entry_type !== "file") {
       throw new Error("Selected path is not a file.");
     }
@@ -169,9 +169,6 @@ function backToDirectory() {
 }
 
 function openLastCommit() {
-  if (!entry.value || !entry.value.last_commit || !entry.value.last_commit.oid) {
-    return;
-  }
   router.push({
     name: "commit-detail",
     params: {

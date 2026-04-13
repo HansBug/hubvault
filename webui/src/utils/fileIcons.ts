@@ -96,6 +96,6 @@ export const FILE_ICON_META: Record<string, FileIconMeta> = {
 };
 
 export function getFileIconMeta(path: string, entryType?: string): FileIconMeta {
-  const kind = getFileVisualKind(path, entryType);
-  return FILE_ICON_META[kind] || FILE_ICON_META.document;
+  const kind = getFileVisualKind(path, entryType) as keyof typeof FILE_ICON_META;
+  return FILE_ICON_META[kind];
 }

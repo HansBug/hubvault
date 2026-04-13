@@ -76,4 +76,39 @@ describe("CommitTimeline", function suite() {
       }
     });
   });
+
+  it("routes from the diff action and falls back author labels when commit metadata is sparse", async function testTimelineFallbacks() {
+    const wrapper = mount(CommitTimeline, {
+      props: {
+        revision: "release/v1",
+        commits: [
+          {
+            commit_id: "abcdefabcdefabcdefabcdefabcdefabcdefabcd",
+            title: "bootstrap repo",
+            message: "",
+            authors: [],
+            created_at: "2026-04-12T00:00:00Z"
+          }
+        ]
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    expect(wrapper.find(".timeline-card__message").exists()).toBe(false);
+    expect(wrapper.text()).toContain("HubVault");
+
+    await findButtonByText(wrapper, "View Diff").trigger("click");
+
+    expect(commitTimelineMocks.push).toHaveBeenCalledWith({
+      name: "commit-detail",
+      params: {
+        commitId: "abcdefabcdefabcdefabcdefabcdefabcdefabcd"
+      },
+      query: {
+        revision: "release/v1"
+      }
+    });
+  });
 });

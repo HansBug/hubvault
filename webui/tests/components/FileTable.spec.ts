@@ -225,7 +225,12 @@ describe('FileTable', function suite() {
           {
             path: 'opaque/payload.bin',
             entry_type: 'file',
-            size: 8192
+            size: 8192,
+            last_commit: {
+              oid: 'commit-unknown',
+              title: '',
+              date: '2026-04-12T00:00:00Z'
+            }
           }
         ]
       },
@@ -254,12 +259,13 @@ describe('FileTable', function suite() {
 
     expect(findButtonByLabelOrText(wrapper, 'payload.bin').attributes('data-file-kind')).toBe('binary');
     expect(wrapper.text()).toContain('Unknown');
+    await findButtonByLabelOrText(wrapper, 'Unknown').trigger('click');
+    expect(wrapper.emitted('open-commit')).toContainEqual(['commit-unknown']);
     expect(wrapper.html()).toContain('Download opaque/payload.bin');
     expect(wrapper.html()).not.toContain('Delete opaque/payload.bin');
     expect(wrapper.html()).not.toContain('Download artifacts');
     expect(wrapper.findAll('button').some(function hasUnknownCommitButton(item) {
       return item.text().trim() === 'Unknown';
-    })).toBe(false);
-    expect(wrapper.emitted('open-commit')).toBeFalsy();
+    })).toBe(true);
   });
 });
