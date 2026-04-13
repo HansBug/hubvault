@@ -25,4 +25,18 @@ describe("HtmlDiffViewer", function suite() {
     expect(wrapper.get("[data-testid='html-diff-viewer']").html()).toContain("d2h-wrapper");
     expect(wrapper.get("[data-testid='html-diff-viewer']").text()).toContain("demo.txt");
   });
+
+  it("renders an empty-state message when no diff text is available", function testHtmlDiffViewerEmptyState() {
+    const wrapper = mount(HtmlDiffViewer, {
+      props: {
+        diffText: ""
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    expect(wrapper.text()).toContain("No inline text diff is available for this change.");
+    expect(wrapper.find("[data-testid='html-diff-viewer']").exists()).toBe(false);
+  });
 });

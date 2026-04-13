@@ -384,6 +384,88 @@ class TestApi:
         assert changes["assets/logo.bin"].is_binary is True
         assert changes["assets/logo.bin"].unified_diff is None
 
+    def test_get_commit_detail_reports_deleted_text_files(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        first_commit = api.create_commit(
+            operations=[
+                CommitOperationAdd("README.md", b"# hubvault\n"),
+                CommitOperationAdd("docs/demo.py", b"print('v1')\n"),
+            ],
+            commit_message="seed docs",
+        )
+        delete_commit = api.create_commit(
+            operations=[CommitOperationDelete("README.md")],
+            commit_message="remove readme",
+        )
+
+        detail = api.get_commit_detail(delete_commit.oid)
+        changes = {item.path: item for item in detail.changes}
+
+        assert detail.compare_parent_commit_id == first_commit.oid
+        assert changes["README.md"].change_type == "deleted"
+        assert changes["README.md"].is_binary is False
+        assert "deleted file mode 100644" in changes["README.md"].unified_diff
+        assert "--- a/README.md" in changes["README.md"].unified_diff
+        assert "+++ /dev/null" in changes["README.md"].unified_diff
+        assert "-# hubvault" in changes["README.md"].unified_diff
+
+    def test_get_commit_detail_marks_oversized_text_and_nul_payloads_as_binary(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        api.create_commit(
+            operations=[CommitOperationAdd("docs/demo.txt", b"print('v1')\n")],
+            commit_message="seed docs",
+        )
+        modified_commit = api.create_commit(
+            operations=[CommitOperationAdd("docs/demo.txt", b"print('v2')\n")],
+            commit_message="update docs",
+        )
+
+        limited_detail = api.get_commit_detail(modified_commit.oid, diff_max_text_size=1)
+        limited_change = {item.path: item for item in limited_detail.changes}["docs/demo.txt"]
+
+        assert limited_change.change_type == "modified"
+        assert limited_change.is_binary is True
+        assert limited_change.unified_diff is None
+        assert limited_change.old_file is not None
+        assert limited_change.new_file is not None
+
+        binary_commit = api.create_commit(
+            operations=[CommitOperationAdd("assets/raw.bin", b"abc\x00def")],
+            commit_message="add binary payload",
+        )
+        binary_detail = api.get_commit_detail(binary_commit.oid)
+        binary_change = {item.path: item for item in binary_detail.changes}["assets/raw.bin"]
+
+        assert binary_change.change_type == "added"
+        assert binary_change.is_binary is True
+        assert binary_change.unified_diff is None
+
+    def test_public_git_oid_revisions_work_for_repo_reads(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo(default_branch="release/v1")
+        commit = api.create_commit(
+            operations=[
+                CommitOperationAdd("README.md", b"# hubvault\n"),
+                CommitOperationAdd("docs/demo.py", b"print('v1')\n"),
+            ],
+            commit_message="seed docs",
+            revision="release/v1",
+        )
+
+        assert api.list_repo_files(revision=commit.oid) == ["README.md", "docs/demo.py"]
+        assert api.read_bytes("README.md", revision=commit.oid) == b"# hubvault\n"
+        assert [item.path for item in api.list_repo_tree(revision=commit.oid)] == ["README.md", "docs"]
+        assert [item.path for item in api.get_paths_info(["README.md", "docs"], revision=commit.oid)] == [
+            "README.md",
+            "docs",
+        ]
+        assert api.get_commit_detail(commit.oid).commit.commit_id == commit.oid
+
+        with pytest.raises(RevisionNotFoundError, match="revision not found"):
+            api.list_repo_files(revision="0" * 40)
+
     def test_merge_public_api_supports_fast_forward_and_merge_commit_results(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")
         api.create_repo(large_file_threshold=64)
@@ -651,6 +733,113 @@ class TestApi:
         assert len(result.conflicts) == 1
         assert result.conflicts[0].conflict_type == "delete/modify"
         assert result.conflicts[0].path == "shared.txt"
+
+    def test_merge_public_api_auto_merges_matching_deletions(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        _ = api.create_commit(
+            operations=[CommitOperationAdd("shared.txt", b"seed")],
+            commit_message="seed",
+        )
+        api.create_branch(branch="feature")
+        api.create_commit(
+            operations=[CommitOperationDelete("shared.txt")],
+            commit_message="main delete",
+        )
+        api.create_commit(
+            revision="feature",
+            operations=[CommitOperationDelete("shared.txt")],
+            commit_message="feature delete",
+        )
+
+        result = api.merge("feature")
+
+        assert result.status == "merged"
+        assert result.commit is not None
+        assert result.conflicts == []
+        assert api.list_repo_files() == []
+
+    def test_merge_public_api_prefers_deleted_path_when_target_kept_base_version(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        _ = api.create_commit(
+            operations=[CommitOperationAdd("shared.txt", b"seed")],
+            commit_message="seed",
+        )
+        api.create_branch(branch="feature")
+        api.create_commit(
+            operations=[CommitOperationAdd("main.txt", b"main")],
+            commit_message="main work",
+        )
+        api.create_commit(
+            revision="feature",
+            operations=[CommitOperationDelete("shared.txt")],
+            commit_message="feature delete",
+        )
+
+        result = api.merge("feature")
+
+        assert result.status == "merged"
+        assert result.commit is not None
+        assert result.conflicts == []
+        assert api.list_repo_files() == ["main.txt"]
+        with pytest.raises(EntryNotFoundError):
+            api.read_bytes("shared.txt")
+
+    def test_merge_public_api_prefers_deleted_path_when_source_kept_base_version(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        _ = api.create_commit(
+            operations=[CommitOperationAdd("shared.txt", b"seed")],
+            commit_message="seed",
+        )
+        api.create_branch(branch="feature")
+        api.create_commit(
+            operations=[CommitOperationDelete("shared.txt")],
+            commit_message="main delete",
+        )
+        api.create_commit(
+            revision="feature",
+            operations=[CommitOperationAdd("feature.txt", b"feature")],
+            commit_message="feature work",
+        )
+
+        result = api.merge("feature")
+
+        assert result.status == "merged"
+        assert result.commit is not None
+        assert result.conflicts == []
+        assert api.list_repo_files() == ["feature.txt"]
+        with pytest.raises(EntryNotFoundError):
+            api.read_bytes("shared.txt")
+
+    def test_merge_public_api_handles_ancestor_revisions_through_existing_merge_history(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        base_commit = api.create_commit(
+            operations=[CommitOperationAdd("shared.txt", b"seed")],
+            commit_message="seed",
+        )
+        api.create_branch(branch="feature")
+        api.create_commit(
+            operations=[CommitOperationAdd("main.txt", b"main")],
+            commit_message="main work",
+        )
+        api.create_commit(
+            revision="feature",
+            operations=[CommitOperationAdd("feature.txt", b"feature")],
+            commit_message="feature work",
+        )
+
+        merged = api.merge("feature")
+        assert merged.status == "merged"
+        assert merged.created_commit is True
+
+        result = api.merge(base_commit.oid)
+
+        assert result.status == "already-up-to-date"
+        assert result.base_commit == base_commit.oid
+        assert result.head_after == api.repo_info().head
 
     def test_merge_public_api_rejects_invalid_target_revision_and_empty_message(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")

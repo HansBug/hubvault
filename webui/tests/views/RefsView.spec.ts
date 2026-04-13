@@ -320,4 +320,77 @@ describe("RefsView", function suite() {
     expect(tagWrapper.get("[data-testid='refs-action-reset']").attributes("disabled")).toBeDefined();
     expect(tagWrapper.get("[data-testid='refs-action-delete']").attributes("disabled")).toBeUndefined();
   });
+
+  it("surfaces default write failure messages and falls back tag deletion to main when no default branch exists", async function testRefFallbackBranches() {
+    vi.spyOn(ElMessageBox, "prompt")
+      .mockResolvedValueOnce({ value: "feature/no-message" } as never)
+      .mockResolvedValueOnce({ value: "v3.0" } as never)
+      .mockResolvedValueOnce({ value: "dev" } as never)
+      .mockResolvedValueOnce({ value: "base-commit" } as never);
+    vi.spyOn(ElMessageBox, "confirm").mockResolvedValue(undefined as never);
+
+    refsViewMocks.createBranchRef.mockRejectedValueOnce({});
+    refsViewMocks.createTagRef.mockRejectedValueOnce({});
+    refsViewMocks.mergeRevision.mockRejectedValueOnce({});
+    refsViewMocks.resetBranchRef.mockRejectedValueOnce({});
+    refsViewMocks.deleteBranchRef.mockRejectedValueOnce({});
+
+    const wrapper = mount(RefsView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await findButton(wrapper, "New Branch").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("Unable to create the branch.");
+
+    await findButton(wrapper, "New Tag").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("Unable to create the tag.");
+
+    await findButton(wrapper, "Merge Into Current").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("Unable to merge the source revision.");
+
+    await findButton(wrapper, "Reset Current").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("Unable to reset the current branch.");
+
+    await findButton(wrapper, "Delete Current").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("Unable to delete the current reference.");
+
+    resetSessionState();
+    sessionState.service = {
+      repo: {
+        default_branch: ""
+      }
+    };
+    vi.spyOn(ElMessageBox, "confirm").mockResolvedValue(undefined as never);
+
+    const tagWrapper = mount(RefsView, {
+      props: {
+        revision: "v1.0"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await findButton(tagWrapper, "Delete Current").trigger("click");
+    await flushPromises();
+
+    expect(refsViewMocks.deleteTagRef).toHaveBeenCalledWith("v1.0");
+    expect(refsViewMocks.bootstrapSession).toHaveBeenCalledWith("main", { force: true });
+    expect(refsViewMocks.push).toHaveBeenLastCalledWith({
+      name: "refs",
+      query: {
+        revision: "main"
+      }
+    });
+  });
 });

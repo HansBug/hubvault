@@ -19,6 +19,7 @@ from hubvault import (
 )
 from hubvault.repo.sqlite import SQLITE_METADATA_FILENAME
 from hubvault.storage.chunk import DEFAULT_CHUNK_SIZE
+from hubvault.storage.pack import PACK_MAGIC
 
 
 def _only_path(root, pattern):
@@ -31,11 +32,55 @@ def _read_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
-def _write_json(path, payload):
-    Path(path).write_text(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")),
-        encoding="utf-8",
-    )
+def _insert_tx_log(
+    repo_dir,
+    txid,
+    tx_kind="ref_update",
+    state="COMMITTED",
+    ref_kind="branch",
+    ref_name="main",
+    old_head=None,
+    new_head=None,
+    message="stale tx",
+    ref_existed_before=True,
+    payload=None,
+    metadata=None,
+):
+    with sqlite3.connect(str(_repo_db_path(repo_dir))) as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO txn_log (
+                txid,
+                tx_kind,
+                state,
+                ref_kind,
+                ref_name,
+                old_head,
+                new_head,
+                message,
+                ref_existed_before,
+                payload_json,
+                metadata_json,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(txid),
+                str(tx_kind),
+                str(state),
+                None if ref_kind is None else str(ref_kind),
+                None if ref_name is None else str(ref_name),
+                old_head,
+                new_head,
+                str(message),
+                1 if ref_existed_before else 0,
+                json.dumps(payload or {}, sort_keys=True, separators=(",", ":")),
+                json.dumps(metadata or {}, sort_keys=True, separators=(",", ":")),
+                "2026-04-13T00:00:00Z",
+            ),
+        )
+        conn.commit()
 
 
 def _chunked_repo(tmp_path, repo_name):
@@ -377,6 +422,41 @@ class TestRepoBackendPackage:
             api.read_bytes("artifacts/large.bin")
 
     @pytest.mark.parametrize(
+        ("case_name", "expected_message"),
+        [
+            ("missing-index", "chunk missing from index"),
+            ("logical-size", "chunk logical size mismatch"),
+            ("file-logical-size", "file logical size mismatch"),
+        ],
+    )
+    def test_backend_chunked_read_bytes_detects_index_and_size_mismatches(
+        self,
+        tmp_path,
+        case_name,
+        expected_message,
+    ):
+        api, repo_dir, payload = _chunked_repo(tmp_path, "read-bytes-" + case_name)
+
+        if case_name == "missing-index":
+            _mutate_file_payload(
+                repo_dir,
+                lambda file_payload: file_payload["chunks"][0].__setitem__("chunk_id", "sha256:" + ("0" * 64)),
+            )
+        elif case_name == "logical-size":
+            _mutate_first_index_record(
+                repo_dir,
+                lambda record: record.__setitem__("logical_size", int(record["logical_size"]) - 1),
+            )
+        else:
+            _mutate_file_payload(
+                repo_dir,
+                lambda file_payload: file_payload.__setitem__("logical_size", len(payload) + 1),
+            )
+
+        with pytest.raises(IntegrityError, match=expected_message):
+            api.read_bytes("artifacts/large.bin")
+
+    @pytest.mark.parametrize(
         ("field_name", "field_mutator", "expected_message"),
         [
             ("logical_size", lambda payload, data_length: payload.__setitem__("logical_size", data_length + 1), "file logical size mismatch"),
@@ -400,6 +480,92 @@ class TestRepoBackendPackage:
         report = api.quick_verify()
         assert report.ok is False
         assert any(expected_message in item for item in report.errors)
+
+    @pytest.mark.parametrize(
+        ("case_name", "expected_message"),
+        [
+            ("missing-index", "chunk missing from index"),
+            ("logical-size", "chunk logical size mismatch"),
+            ("sha256", "file sha256 mismatch"),
+            ("oid", "file oid mismatch"),
+            ("etag", "file etag mismatch"),
+        ],
+    )
+    def test_backend_quick_verify_reports_chunked_index_and_file_corruption(
+        self,
+        tmp_path,
+        case_name,
+        expected_message,
+    ):
+        api, repo_dir, _ = _chunked_repo(tmp_path, "quick-verify-" + case_name)
+
+        if case_name == "missing-index":
+            _mutate_file_payload(
+                repo_dir,
+                lambda payload: payload["chunks"][0].__setitem__("chunk_id", "sha256:" + ("0" * 64)),
+            )
+        elif case_name == "logical-size":
+            _mutate_first_index_record(
+                repo_dir,
+                lambda record: record.__setitem__("logical_size", int(record["logical_size"]) - 1),
+            )
+        else:
+            _mutate_file_payload(
+                repo_dir,
+                lambda payload: payload.__setitem__(
+                    case_name,
+                    {
+                        "sha256": "0" * 64,
+                        "oid": "0" * 40,
+                        "etag": "1" * 64,
+                    }[case_name],
+                ),
+            )
+
+        report = api.quick_verify()
+        assert report.ok is False
+        assert any(expected_message in item for item in report.errors)
+
+    @pytest.mark.parametrize(
+        ("case_name", "expected_message"),
+        [
+            ("missing-index", "chunk missing from index"),
+            ("unsupported-compression", "unsupported chunk compression"),
+            ("stored-size", "chunk size mismatch"),
+            ("chunk-checksum", "chunk checksum mismatch"),
+        ],
+    )
+    def test_backend_storage_overview_rejects_chunk_plan_corruption(
+        self,
+        tmp_path,
+        case_name,
+        expected_message,
+    ):
+        api, repo_dir, _ = _chunked_repo(tmp_path, "overview-" + case_name)
+
+        if case_name == "missing-index":
+            _mutate_file_payload(
+                repo_dir,
+                lambda payload: payload["chunks"][0].__setitem__("chunk_id", "sha256:" + ("0" * 64)),
+            )
+        elif case_name == "unsupported-compression":
+            _mutate_first_index_record(
+                repo_dir,
+                lambda record: record.__setitem__("compression", "gzip"),
+            )
+        elif case_name == "stored-size":
+            _mutate_first_index_record(
+                repo_dir,
+                lambda record: record.__setitem__("stored_size", int(record["stored_size"]) - 1),
+            )
+        else:
+            _mutate_first_index_record(
+                repo_dir,
+                lambda record: record.__setitem__("checksum", "sha256:" + ("2" * 64)),
+            )
+
+        with pytest.raises(IntegrityError, match=expected_message):
+            api.get_storage_overview()
 
     def test_backend_snapshot_metadata_warning_and_gitattributes_preservation(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")
@@ -442,52 +608,6 @@ class TestRepoBackendPackage:
 
         assert api.list_repo_files() == [".gitattributes", "new.txt"]
 
-    @pytest.mark.parametrize(
-        ("ref_kind", "ref_name", "ref_path_parts"),
-        [
-            ("branch", "temp", ("refs", "heads", "temp")),
-            ("tag", "release", ("refs", "tags", "release")),
-        ],
-    )
-    def test_backend_ref_recovery_removes_created_branch_and_tag_refs(
-        self,
-        tmp_path,
-        ref_kind,
-        ref_name,
-        ref_path_parts,
-    ):
-        api = HubVaultApi(tmp_path / "repo")
-        api.create_repo()
-        api.upload_file(path_or_fileobj=b"payload-v1", path_in_repo="bundle/file.bin")
-
-        repo_dir = tmp_path / "repo"
-        internal_head = _internal_ref_value(repo_dir, "branch", "main")
-        ref_path = repo_dir.joinpath(*ref_path_parts)
-        ref_path.parent.mkdir(parents=True, exist_ok=True)
-        ref_path.write_text(internal_head + "\n", encoding="utf-8")
-
-        txdir = repo_dir / "txn" / ("recover-" + ref_kind)
-        txdir.mkdir(parents=True)
-        _write_json(
-            txdir / "REF_UPDATE.json",
-            {
-                "ref_kind": ref_kind,
-                "ref_name": ref_name,
-                "old_head": None,
-                "new_head": internal_head,
-                "message": "create %s" % ref_kind,
-                "ref_existed_before": False,
-            },
-        )
-
-        assert api.read_bytes("bundle/file.bin") == b"payload-v1"
-        refs = api.list_repo_refs()
-        if ref_kind == "tag":
-            assert refs.tags == []
-        else:
-            assert [item.name for item in refs.branches] == ["main"]
-        assert not txdir.exists()
-
     def test_backend_write_paths_clean_empty_transaction_directory(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")
         api.create_repo()
@@ -502,89 +622,46 @@ class TestRepoBackendPackage:
         api.upload_file(path_or_fileobj=b"payload-v2", path_in_repo="bundle/second.bin")
         assert not txdir.exists()
 
-    @pytest.mark.parametrize(
-        ("journal_payload", "expected_message"),
-        [
-            ([], "expected JSON object"),
-            ({"ref_kind": "branch"}, "missing ref_name"),
-            (
-                {
-                    "ref_kind": "branch",
-                    "ref_name": "main",
-                    "old_head": 1,
-                    "ref_existed_before": True,
-                },
-                "old_head must be a string or null",
-            ),
-            (
-                {
-                    "ref_kind": "branch",
-                    "ref_name": "main",
-                    "old_head": None,
-                    "ref_existed_before": "yes",
-                },
-                "ref_existed_before must be a boolean",
-            ),
-            (
-                {
-                    "ref_kind": "weird",
-                    "ref_name": "main",
-                    "old_head": None,
-                    "ref_existed_before": False,
-                },
-                "ref_kind must be 'branch' or 'tag'",
-            ),
-        ],
-    )
-    def test_backend_ref_recovery_rejects_malformed_journals(
-        self,
-        tmp_path,
-        journal_payload,
-        expected_message,
-    ):
-        api = HubVaultApi(tmp_path / "repo")
+    def test_backend_reads_cleanup_sqlite_tracked_txdir_and_orphan_tx_log_leftovers(self, tmp_path):
+        repo_dir = tmp_path / "repo"
+        api = HubVaultApi(repo_dir)
         api.create_repo()
         api.upload_file(path_or_fileobj=b"payload-v1", path_in_repo="bundle/file.bin")
 
-        txdir = tmp_path / "repo" / "txn" / "broken"
-        txdir.mkdir(parents=True)
-        _write_json(txdir / "REF_UPDATE.json", journal_payload)
+        tracked_txdir = repo_dir / "txn" / "tracked-leftover"
+        tracked_txdir.mkdir(parents=True)
+        _insert_tx_log(repo_dir, "tracked-leftover")
+        manual_note = repo_dir / "txn" / "manual-note.txt"
+        manual_note.write_text("keep", encoding="utf-8")
+
+        orphan_txid = "orphan-leftover"
+        _insert_tx_log(repo_dir, orphan_txid)
 
         assert api.read_bytes("bundle/file.bin") == b"payload-v1"
-        assert not txdir.exists()
+        assert not tracked_txdir.exists()
+        assert manual_note.is_file()
 
-    @pytest.mark.parametrize("state_text", ["{bad json", "[]"])
-    def test_backend_ref_recovery_rolls_back_when_state_file_is_not_usable(self, tmp_path, state_text):
-        api = HubVaultApi(tmp_path / "repo")
-        api.create_repo()
-        first_commit = api.upload_file(path_or_fileobj=b"v1", path_in_repo="bundle/file.bin")
-        second_commit = api.upload_file(path_or_fileobj=b"v2", path_in_repo="bundle/file.bin")
+        with sqlite3.connect(str(_repo_db_path(repo_dir))) as conn:
+            remaining = conn.execute("SELECT txid FROM txn_log ORDER BY txid").fetchall()
+        assert remaining == []
 
+    def test_backend_write_paths_clear_tx_logs_but_preserve_non_directory_txn_artifacts(self, tmp_path):
         repo_dir = tmp_path / "repo"
-        api.reset_ref("main", to_revision=first_commit.oid)
-        first_internal_head = _internal_ref_value(repo_dir, "branch", "main")
-        api.reset_ref("main", to_revision=second_commit.oid)
-        second_internal_head = _internal_ref_value(repo_dir, "branch", "main")
-        api.reset_ref("main", to_revision=first_commit.oid)
+        api = HubVaultApi(repo_dir)
+        api.create_repo()
+        api.upload_file(path_or_fileobj=b"payload-v1", path_in_repo="bundle/file.bin")
 
-        txdir = repo_dir / "txn" / "broken-state"
-        txdir.mkdir(parents=True)
-        _write_json(
-            txdir / "REF_UPDATE.json",
-            {
-                "ref_kind": "branch",
-                "ref_name": "main",
-                "old_head": first_internal_head,
-                "new_head": second_internal_head,
-                "message": "advance with broken state",
-                "ref_existed_before": True,
-            },
-        )
-        (txdir / "STATE.json").write_text(state_text, encoding="utf-8")
+        manual_note = repo_dir / "txn" / "manual-note.txt"
+        manual_note.write_text("keep", encoding="utf-8")
+        _insert_tx_log(repo_dir, "orphan-write-leftover")
 
-        assert api.repo_info().head == first_commit.oid
-        assert api.read_bytes("bundle/file.bin") == b"v1"
-        assert not txdir.exists()
+        api.upload_file(path_or_fileobj=b"payload-v2", path_in_repo="bundle/second.bin")
+
+        assert manual_note.is_file()
+        assert api.read_bytes("bundle/second.bin") == b"payload-v2"
+        with sqlite3.connect(str(_repo_db_path(repo_dir))) as conn:
+            remaining = conn.execute("SELECT txid FROM txn_log ORDER BY txid").fetchall()
+        assert remaining == []
 
     def test_backend_full_verify_surfaces_corruption_recovery_and_view_warnings(self, tmp_path):
         api, repo_dir, _ = _chunked_repo(tmp_path, "full-verify")
@@ -594,20 +671,6 @@ class TestRepoBackendPackage:
         snapshot_dir = Path(api.snapshot_download())
         download_path.write_bytes(b"corrupted detached view")
         (snapshot_dir / "artifacts" / "large.bin").unlink()
-
-        broken_txdir = repo_dir / "txn" / "broken-recovery"
-        broken_txdir.mkdir(parents=True)
-        _write_json(
-            broken_txdir / "REF_UPDATE.json",
-            {
-                "ref_kind": "branch",
-                "ref_name": "main",
-                "old_head": 1,
-                "new_head": None,
-                "message": "broken recovery journal",
-                "ref_existed_before": True,
-            },
-        )
 
         pending_txdir = repo_dir / "txn" / "pending-dir"
         pending_txdir.mkdir(parents=True)
@@ -644,9 +707,10 @@ class TestRepoBackendPackage:
         assert any("chunk storage: unsupported chunk compression: gzip" in item for item in report.errors)
         assert any("stale file view:" in item for item in report.warnings)
         assert any("stale snapshot view:" in item for item in report.warnings)
+        assert any("pending transaction directory: pending-dir" in item for item in report.warnings)
         assert any("unexpected txn entry: manual-note.txt" in item for item in report.warnings)
         assert any("unexpected lock artifact: unexpected.lock" in item for item in report.warnings)
-        assert not pending_txdir.exists()
+        assert pending_txdir.exists()
 
     def test_backend_storage_overview_and_gc_cover_blob_only_and_manual_areas(self, tmp_path):
         repo_dir = tmp_path / "repo"
@@ -678,6 +742,86 @@ class TestRepoBackendPackage:
         assert actual.reclaimed_temporary_size > 0
         assert (repo_dir / "txn" / "manual-note.txt").exists()
         assert api.full_verify().ok is True
+
+    def test_backend_storage_overview_and_gc_reclaim_orphan_blob_branch_objects(self, tmp_path):
+        repo_dir = tmp_path / "repo"
+        api = HubVaultApi(repo_dir)
+        api.create_repo()
+        base_commit = api.create_commit(
+            operations=[CommitOperationAdd("bundle/main.bin", b"main")],
+            commit_message="seed main",
+        )
+        api.create_branch(branch="orphan", revision=base_commit.oid)
+        api.create_commit(
+            revision="orphan",
+            operations=[CommitOperationAdd("bundle/orphan.bin", b"orphan payload")],
+            commit_message="orphan branch payload",
+        )
+        api.delete_branch(branch="orphan")
+
+        overview = api.get_storage_overview()
+        assert overview.reclaimable_gc_size > 0
+
+        preview = api.gc(dry_run=True, prune_cache=False)
+        assert preview.dry_run is True
+        assert preview.reclaimed_object_size > 0
+        assert preview.removed_file_count >= 2
+
+        actual = api.gc(dry_run=False, prune_cache=False)
+        assert actual.dry_run is False
+        assert actual.reclaimed_object_size > 0
+        assert api.list_repo_files() == ["bundle/main.bin"]
+        assert api.full_verify().ok is True
+
+    def test_backend_storage_overview_and_gc_reclaim_legacy_chunk_index_residue(self, tmp_path):
+        api, repo_dir, _ = _chunked_repo(tmp_path, "legacy-index-residue")
+
+        legacy_index_root = repo_dir / "chunks" / "index"
+        (legacy_index_root / "L0").mkdir(parents=True)
+        (legacy_index_root / "MANIFEST").write_text('{"levels":{"L0":["stale.idx"],"L1":[],"L2":[]}}', encoding="utf-8")
+        (legacy_index_root / "L0" / "stale.idx").write_text("stale\n", encoding="utf-8")
+
+        overview = api.get_storage_overview()
+        index_section = next(section for section in overview.sections if section.name == "chunks.index")
+        assert index_section.total_size > 0
+        assert index_section.reclaimable_size == index_section.total_size
+        assert "Legacy on-disk chunk index residue" in index_section.notes
+
+        preview = api.gc(dry_run=True, prune_cache=False)
+        assert preview.reclaimed_chunk_size >= index_section.total_size
+
+        actual = api.gc(dry_run=False, prune_cache=False)
+        assert actual.reclaimed_chunk_size >= index_section.total_size
+        assert legacy_index_root.exists()
+        assert list(legacy_index_root.iterdir()) == []
+        assert api.full_verify().ok is True
+
+    def test_backend_full_verify_accepts_invalid_cached_size_fields_when_content_still_matches(self, tmp_path):
+        api, repo_dir, payload = _chunked_repo(tmp_path, "full-verify-invalid-cache-size")
+
+        view_path = Path(api.hf_hub_download("artifacts/large.bin"))
+        snapshot_dir = Path(api.snapshot_download())
+        file_meta_path = _only_path(repo_dir / "cache" / "views" / "files", "*.json")
+        snapshot_meta_path = _only_path(repo_dir / "cache" / "views" / "snapshots", "*.json")
+
+        file_meta = _read_json(file_meta_path)
+        file_meta["size"] = "invalid"
+        file_meta_path.write_text(json.dumps(file_meta, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+
+        snapshot_meta = _read_json(snapshot_meta_path)
+        snapshot_meta["files"][0]["size"] = "invalid"
+        snapshot_meta_path.write_text(
+            json.dumps(snapshot_meta, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+
+        report = api.full_verify()
+
+        assert report.ok is True
+        assert view_path.read_bytes() == payload
+        assert (snapshot_dir / "artifacts" / "large.bin").read_bytes() == payload
+        assert not any("stale file view:" in item for item in report.warnings)
+        assert not any("stale snapshot view:" in item for item in report.warnings)
 
     def test_backend_gc_rejects_corrupted_repositories_before_reclaiming(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")
@@ -768,35 +912,6 @@ class TestRepoBackendPackage:
         with pytest.raises(RevisionNotFoundError, match="reflog not found: refs/tags/missing"):
             api.list_repo_reflog("refs/tags/missing")
 
-    def test_backend_tag_recovery_restores_previous_tag_head(self, tmp_path):
-        api = HubVaultApi(tmp_path / "repo")
-        api.create_repo()
-        first = api.upload_file(path_or_fileobj=b"v1", path_in_repo="bundle/file.bin")
-        api.create_tag(tag="release", revision=first.oid)
-        second = api.upload_file(path_or_fileobj=b"v2", path_in_repo="bundle/file.bin")
-
-        repo_dir = tmp_path / "repo"
-        first_tag_internal = _internal_ref_value(repo_dir, "tag", "release")
-        second_internal_head = _internal_ref_value(repo_dir, "branch", "main")
-        _set_internal_ref_value(repo_dir, "tag", "release", second_internal_head)
-        txdir = repo_dir / "txn" / "tag-rollback"
-        txdir.mkdir(parents=True)
-        _write_json(
-            txdir / "REF_UPDATE.json",
-            {
-                "ref_kind": "tag",
-                "ref_name": "release",
-                "old_head": first_tag_internal,
-                "new_head": second_internal_head,
-                "message": "retag release",
-                "ref_existed_before": True,
-            },
-        )
-
-        assert api.read_bytes("bundle/file.bin") == b"v2"
-        assert api.list_repo_refs().tags[0].target_commit == second.oid
-        assert not txdir.exists()
-
     def test_backend_public_pattern_filters_and_blank_reflog_lines_work(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")
         api.create_repo()
@@ -839,12 +954,69 @@ class TestRepoBackendPackage:
         assert stale_report.ok is True
         assert any("stale snapshot view:" in item for item in stale_report.warnings)
 
+    def test_backend_chunk_reads_detect_missing_pack_after_cache_warmup(self, tmp_path):
+        api, repo_dir, payload = _chunked_repo(tmp_path, "missing-pack-after-cache")
+        pack_path = _only_path(repo_dir / "chunks" / "packs", "*.pack")
+
+        assert api.read_bytes("artifacts/large.bin") == payload
+        pack_path.unlink()
+
+        with pytest.raises(IntegrityError, match="pack not found"):
+            api.read_bytes("artifacts/large.bin")
+
+    def test_backend_full_verify_reports_invalid_pack_header_and_header_overlap(self, tmp_path):
+        api, repo_dir, _ = _chunked_repo(tmp_path, "invalid-pack-header")
+        pack_path = _only_path(repo_dir / "chunks" / "packs", "*.pack")
+        original = pack_path.read_bytes()
+        pack_path.write_bytes((b"x" * len(PACK_MAGIC)) + original[len(PACK_MAGIC):])
+
+        invalid_header_report = api.full_verify()
+
+        assert invalid_header_report.ok is False
+        assert any("invalid pack header" in item for item in invalid_header_report.errors)
+
+        api, repo_dir, _ = _chunked_repo(tmp_path, "pack-header-overlap")
+        _mutate_first_index_record(repo_dir, lambda record: record.__setitem__("offset", 0))
+
+        overlap_report = api.full_verify()
+
+        assert overlap_report.ok is False
+        assert any("range overlaps pack header" in item for item in overlap_report.errors)
+
+    def test_backend_chunk_reads_cover_pack_reader_fallbacks(self, tmp_path, monkeypatch):
+        api, repo_dir, payload = _chunked_repo(tmp_path, "pack-reader-fallback")
+        api = HubVaultApi(repo_dir)
+
+        def _raise_mmap(*args, **kwargs):
+            raise OSError("disable mmap for fallback coverage")
+
+        monkeypatch.setattr("hubvault.repo.backend.mmap.mmap", _raise_mmap)
+        monkeypatch.delattr("hubvault.repo.backend.os.pread", raising=False)
+
+        assert api.read_bytes("artifacts/large.bin") == payload
+
+    def test_backend_chunk_reads_detect_truncated_pread_results(self, tmp_path, monkeypatch):
+        api, repo_dir, _ = _chunked_repo(tmp_path, "short-pread")
+        api = HubVaultApi(repo_dir)
+
+        def _raise_mmap(*args, **kwargs):
+            raise OSError("disable mmap for short pread coverage")
+
+        def _short_pread(_fd, stored_size, _offset):
+            return b"x" * max(0, stored_size - 1)
+
+        _mutate_first_index_record(repo_dir, lambda record: record.__setitem__("offset", len(PACK_MAGIC)))
+        monkeypatch.setattr("hubvault.repo.backend.mmap.mmap", _raise_mmap)
+        monkeypatch.setattr("hubvault.repo.backend.os.pread", _short_pread, raising=False)
+
+        with pytest.raises(IntegrityError, match="pack truncated"):
+            api.read_bytes("artifacts/large.bin")
+
     def test_backend_missing_ref_and_txn_roots_do_not_break_public_operations(self, tmp_path):
         empty_repo_dir = tmp_path / "empty-repo"
         empty_api = HubVaultApi(empty_repo_dir)
         empty_api.create_repo()
-        _remove_tree(empty_repo_dir / "refs" / "heads")
-        _remove_tree(empty_repo_dir / "refs" / "tags")
+        assert not (empty_repo_dir / "refs").exists()
 
         refs = empty_api.list_repo_refs()
         assert [item.name for item in refs.branches] == ["main"]

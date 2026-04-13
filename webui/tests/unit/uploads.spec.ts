@@ -7,7 +7,9 @@ describe("upload helpers", function suite() {
     expect(joinRepoPath("", "demo.txt")).toBe("demo.txt");
     expect(joinRepoPath("nested", "demo.txt")).toBe("nested/demo.txt");
     expect(joinRepoPath("/nested/", "/deep/demo.txt")).toBe("nested/deep/demo.txt");
+    expect(joinRepoPath("/nested/", "")).toBe("nested");
     expect(basename("nested/deep/demo.txt")).toBe("demo.txt");
+    expect(basename("")).toBe("");
   });
 
   it("builds exact upload manifests from browser files and reports progress", async function testBuildExactUploadManifest() {
@@ -85,11 +87,26 @@ describe("upload helpers", function suite() {
       }
     }
 
+    class NullErrorFileReader {
+      result = null;
+      error = null;
+      onload = null;
+      onerror = null;
+      onprogress = null;
+
+      readAsArrayBuffer() {
+        this.onerror({});
+      }
+    }
+
     vi.stubGlobal("FileReader", ResultMismatchFileReader as unknown as typeof FileReader);
     await expect(readBlobAsArrayBuffer(new Blob(["demo"]))).rejects.toThrow("Unable to read file bytes.");
 
     vi.stubGlobal("FileReader", ErrorFileReader as unknown as typeof FileReader);
     await expect(readBlobAsArrayBuffer(new Blob(["demo"]))).rejects.toThrow("reader failed");
+
+    vi.stubGlobal("FileReader", NullErrorFileReader as unknown as typeof FileReader);
+    await expect(readBlobAsArrayBuffer(new Blob(["demo"]))).rejects.toThrow("Unable to read file bytes.");
 
     vi.stubGlobal("FileReader", originalFileReader);
   });
@@ -123,5 +140,62 @@ describe("upload helpers", function suite() {
     expect(progressSpy).toHaveBeenCalledWith(4, 4);
 
     vi.stubGlobal("FileReader", originalFileReader);
+  });
+
+  it("ignores non-computable browser progress events and supports empty upload batches", async function testProgressGuards() {
+    const originalFileReader = globalThis.FileReader;
+    const progressSpy = vi.fn();
+
+    class SilentProgressFileReader {
+      result = new ArrayBuffer(2);
+      error = null;
+      onload = null;
+      onerror = null;
+      onprogress = null;
+
+      readAsArrayBuffer() {
+        this.onprogress({
+          lengthComputable: false,
+          loaded: 1,
+          total: 2
+        });
+        this.onload({});
+      }
+    }
+
+    vi.stubGlobal("FileReader", SilentProgressFileReader as unknown as typeof FileReader);
+
+    const buffer = await readBlobAsArrayBuffer(new Blob(["ok"]), progressSpy);
+    const manifest = await buildExactUploadManifest([]);
+
+    expect(buffer.byteLength).toBe(2);
+    expect(progressSpy).not.toHaveBeenCalled();
+    expect(manifest).toEqual({
+      operations: [],
+      uploads: []
+    });
+
+    vi.stubGlobal("FileReader", originalFileReader);
+  });
+
+  it("builds manifests without a progress callback and normalizes invalid entry lists", async function testManifestWithoutProgress() {
+    const file = new File(["abc"], "demo.txt", {
+      type: "text/plain"
+    });
+
+    const manifest = await buildExactUploadManifest([
+      {
+        pathInRepo: "demo.txt",
+        file: file
+      }
+    ]);
+    const normalized = await buildExactUploadManifest(null as any);
+
+    expect(manifest.operations).toHaveLength(1);
+    expect(manifest.uploads).toHaveLength(1);
+    expect(normalized).toEqual({
+      operations: [],
+      uploads: []
+    });
   });
 });

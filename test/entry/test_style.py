@@ -40,3 +40,50 @@ class TestEntryStyle:
         assert plain.exit_code == 0
         assert "\x1b[" not in plain.output
         assert "styled output" in plain.output
+
+    def test_public_echo_helper_allows_none_messages_without_a_click_context(self, monkeypatch):
+        recorded = {}
+
+        def _fake_echo(message=None, file=None, err=False, nl=True, color=None):
+            recorded["message"] = message
+            recorded["color"] = color
+            recorded["err"] = err
+            recorded["nl"] = nl
+
+        monkeypatch.setattr(click, "get_current_context", lambda silent=True: None)
+        monkeypatch.setattr(click, "echo", _fake_echo)
+
+        echo(None, env={})
+
+        assert recorded == {"message": None, "color": None, "err": False, "nl": True}
+
+    def test_public_echo_helper_uses_click_context_color_when_available(self, monkeypatch):
+        recorded = {}
+
+        class _Context(object):
+            color = False
+
+        def _fake_echo(message=None, file=None, err=False, nl=True, color=None):
+            recorded["message"] = message
+            recorded["color"] = color
+
+        monkeypatch.setattr(click, "get_current_context", lambda silent=True: _Context())
+        monkeypatch.setattr(click, "echo", _fake_echo)
+
+        echo("styled output", tone="success", env={})
+
+        assert "styled output" in recorded["message"]
+        assert recorded["color"] is False
+
+    def test_public_echo_helper_preserves_explicit_color_flags(self, monkeypatch):
+        recorded = {}
+
+        def _fake_echo(message=None, file=None, err=False, nl=True, color=None):
+            recorded["message"] = message
+            recorded["color"] = color
+
+        monkeypatch.setattr(click, "echo", _fake_echo)
+
+        echo("plain", color=False, env={})
+
+        assert recorded == {"message": "plain", "color": False}

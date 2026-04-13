@@ -151,6 +151,7 @@ class TestIndexStore:
 
     def test_index_store_tolerates_directory_fsync_failures(self, tmp_path, monkeypatch):
         entry = _entry("sha256:dir-fsync", "pack-dir", 16)
+        index_module._fsync_directory(tmp_path / "missing-index-dir")
 
         open_failure_store = IndexStore(tmp_path / "open-failure-index")
         original_open = index_module.os.open

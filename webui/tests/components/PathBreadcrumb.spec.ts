@@ -1,6 +1,6 @@
 import ElementPlus from "element-plus";
 import { mount } from "@vue/test-utils";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const breadcrumbMocks = vi.hoisted(function buildBreadcrumbMocks() {
   return {
@@ -29,6 +29,10 @@ function findButtonByLabelOrText(wrapper, value: string) {
 }
 
 describe("PathBreadcrumb", function suite() {
+  beforeEach(function resetBreadcrumbMocks() {
+    breadcrumbMocks.push.mockReset();
+  });
+
   it("renders a hf-style text breadcrumb and routes across levels", async function testPathBreadcrumb() {
     const wrapper = mount(PathBreadcrumb, {
       props: {
@@ -95,5 +99,32 @@ describe("PathBreadcrumb", function suite() {
         path: "src"
       }
     });
+  });
+
+  it("falls back to default labels and ignores breadcrumb clicks without routes", async function testPathBreadcrumbFallbacks() {
+    const wrapper = mount(PathBreadcrumb, {
+      props: {
+        items: [
+          {
+            home: true,
+            ariaLabel: "Repository root"
+          },
+          {
+            current: true,
+            ariaLabel: "Current path"
+          }
+        ]
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    expect(wrapper.text()).toContain("<home>");
+
+    await findButtonByLabelOrText(wrapper, "Repository root").trigger("click");
+    await findButtonByLabelOrText(wrapper, "Current path").trigger("click");
+
+    expect(breadcrumbMocks.push).not.toHaveBeenCalled();
   });
 });

@@ -47,9 +47,7 @@ def _fsync_directory(path: Path) -> None:
 
     if not path.exists():
         return
-    flags = os.O_RDONLY
-    if hasattr(os, "O_DIRECTORY"):
-        flags |= os.O_DIRECTORY
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
     try:
         fd = os.open(str(path), flags)
     except OSError:

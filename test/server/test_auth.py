@@ -23,8 +23,11 @@ class TestServerAuth:
     def test_parse_request_token_accepts_bearer_authorization_and_query_fallback(self):
         assert parse_request_token(authorization="Bearer abc123") == "abc123"
         assert parse_request_token(authorization="Basic abc123", query_token="query-token") == "query-token"
+        assert parse_request_token(authorization="Basic abc123") is None
         assert parse_request_token(authorization=None, query_token="query-token") == "query-token"
         assert parse_request_token(authorization=None, query_token="   ") is None
+        assert parse_request_token(authorization="Bearer   ", query_token="query-token") == "query-token"
+        assert parse_request_token(authorization="Bearer   ") is None
         assert parse_request_token(authorization=None) is None
 
     def test_authorizer_distinguishes_read_and_write_tokens(self):

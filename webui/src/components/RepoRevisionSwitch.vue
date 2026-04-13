@@ -52,7 +52,7 @@ function handleChange(value) {
   >
     <el-option-group label="Branches">
       <el-option
-        v-for="branch in refs.branches || []"
+        v-for="branch in refs?.branches || []"
         :key="'branch-' + branch.name"
         :label="branch.name"
         :value="branch.name"
@@ -60,7 +60,7 @@ function handleChange(value) {
     </el-option-group>
     <el-option-group label="Tags">
       <el-option
-        v-for="tag in refs.tags || []"
+        v-for="tag in refs?.tags || []"
         :key="'tag-' + tag.name"
         :label="tag.name"
         :value="tag.name"

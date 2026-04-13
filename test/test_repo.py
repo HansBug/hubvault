@@ -183,28 +183,6 @@ def _write_json(path, payload):
     path.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")), encoding="utf-8")
 
 
-def _create_empty_legacy_repo(repo_dir):
-    repo_dir = Path(repo_dir)
-    (repo_dir / "refs" / "heads").mkdir(parents=True, exist_ok=True)
-    (repo_dir / "FORMAT").write_text("hubvault-repo/v1\n", encoding="utf-8")
-    (repo_dir / "repo.json").write_text(
-        json.dumps(
-            {
-                "default_branch": "main",
-                "file_mode": "whole-blob-first",
-                "format_version": 1,
-                "large_file_threshold": 16777216,
-                "metadata": {},
-                "object_hash": "sha256",
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ),
-        encoding="utf-8",
-    )
-    (repo_dir / "refs" / "heads" / "main").write_text("", encoding="utf-8")
-
-
 def _wait_for_path(path, timeout=10.0):
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -216,6 +194,20 @@ def _wait_for_path(path, timeout=10.0):
 
 def _repo_root():
     return Path(__file__).resolve().parents[1]
+
+
+def _run_api_subprocess(repo_dir, code, extra_env=None):
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.run(
+        [sys.executable, "-c", dedent(code), str(repo_dir)],
+        cwd=str(_repo_root()),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
 
 
 def _is_git_oid(value):
@@ -420,32 +412,6 @@ class TestRepoSemantics:
 
         assert_rebuilt()
 
-    def test_legacy_repo_reopen_repairs_incomplete_sqlite_bootstrap(self, tmp_path):
-        repo_dir = tmp_path / "legacy-repo"
-        _create_empty_legacy_repo(repo_dir)
-
-        sqlite_path = repo_dir / SQLITE_METADATA_FILENAME
-        with sqlite3.connect(str(sqlite_path)) as conn:
-            conn.execute("CREATE TABLE IF NOT EXISTS schema_info (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-            conn.execute("INSERT OR REPLACE INTO schema_info (key, value) VALUES (?, ?)", ("schema_version", "1"))
-            conn.execute("CREATE TABLE IF NOT EXISTS repo_meta (key TEXT PRIMARY KEY, value_json TEXT NOT NULL)")
-            conn.commit()
-
-        api = HubVaultApi(repo_dir)
-        info = api.repo_info()
-
-        assert info.default_branch == "main"
-        assert info.head is None
-        assert api.list_repo_tree() == []
-        assert api.quick_verify().ok is True
-
-        created = api.create_commit(
-            operations=[CommitOperationAdd("notes.txt", b"legacy repaired\n")],
-            commit_message="repair legacy sqlite bootstrap",
-        )
-        assert api.repo_info().head == created.oid
-        assert api.read_bytes("notes.txt") == b"legacy repaired\n"
-
     def test_repo_raises_integrity_error_for_incomplete_sqlite_truth_without_legacy_fallback(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")
         api.create_repo()
@@ -584,7 +550,7 @@ class TestRepoSemantics:
 
         assert api.list_repo_reflog("refs/heads/temp") == []
 
-    def test_branch_reflog_updates_survive_blank_and_malformed_last_records(self, tmp_path):
+    def test_branch_reflog_ignores_legacy_log_files_and_stays_sqlite_backed(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")
         api.create_repo()
         api.create_commit(
@@ -595,24 +561,21 @@ class TestRepoSemantics:
         reflog_path = tmp_path / "repo" / "logs" / "refs" / "heads" / "temp.log"
         reflog_path.parent.mkdir(parents=True, exist_ok=True)
 
-        def recreate_temp_branch():
-            if "temp" not in [item.name for item in api.list_repo_refs().branches]:
-                api.create_branch(branch="temp")
+        api.create_branch(branch="temp")
+        sqlite_reflog_before = api.list_repo_reflog("refs/heads/temp")
+        assert [item.message for item in sqlite_reflog_before] == ["create branch"]
 
-        recreate_temp_branch()
-        reflog_path.write_text("\n\n", encoding="utf-8")
-        api.delete_branch(branch="temp")
-        assert "temp" not in [item.name for item in api.list_repo_refs().branches]
+        for legacy_text in ("\n\n", "[]\n", "{bad json\n"):
+            reflog_path.write_text(legacy_text, encoding="utf-8")
+            assert [item.message for item in api.list_repo_reflog("refs/heads/temp")] == ["create branch"]
 
-        recreate_temp_branch()
-        reflog_path.write_text("[]\n", encoding="utf-8")
         api.delete_branch(branch="temp")
-        assert "temp" not in [item.name for item in api.list_repo_refs().branches]
 
-        recreate_temp_branch()
-        reflog_path.write_text("{bad json\n", encoding="utf-8")
-        api.delete_branch(branch="temp")
         assert "temp" not in [item.name for item in api.list_repo_refs().branches]
+        assert [item.message for item in api.list_repo_reflog("refs/heads/temp")] == [
+            "delete branch",
+            "create branch",
+        ]
 
     def test_repo_supports_explicit_commit_description_and_hf_style_commit_fallbacks(self, tmp_path):
         api, repo_dir = _single_file_repo(tmp_path, repo_name="commit-fallbacks", payload=b"payload")
@@ -651,6 +614,36 @@ class TestRepoSemantics:
         )
         assert third_commit.commit_message == "empty description"
         assert third_commit.commit_description == ""
+
+        fourth_commit = api.create_commit(
+            operations=[CommitOperationAdd("title-only.bin", b"payload-v4")],
+            parent_commit=third_commit.oid,
+            commit_message="title only fallback",
+            commit_description="body kept",
+        )
+        fourth_commit_object_id = _head_commit_id(repo_dir)
+        commit_payload = _object_payload(repo_dir, "commits", fourth_commit_object_id)
+        del commit_payload["title"]
+        _set_object_payload(repo_dir, "commits", fourth_commit_object_id, commit_payload)
+
+        title_fallback_history = api.list_repo_commits(revision=fourth_commit.oid)
+        assert title_fallback_history[0].title == "title only fallback"
+        assert title_fallback_history[0].message == "body kept"
+
+        fifth_commit = api.create_commit(
+            operations=[CommitOperationAdd("description-only.bin", b"payload-v5")],
+            parent_commit=fourth_commit.oid,
+            commit_message="title kept",
+            commit_description="description only fallback",
+        )
+        fifth_commit_object_id = _head_commit_id(repo_dir)
+        commit_payload = _object_payload(repo_dir, "commits", fifth_commit_object_id)
+        del commit_payload["description"]
+        _set_object_payload(repo_dir, "commits", fifth_commit_object_id, commit_payload)
+
+        description_fallback_history = api.list_repo_commits(revision=fifth_commit.oid)
+        assert description_fallback_history[0].title == "title kept"
+        assert description_fallback_history[0].message == "description only fallback"
 
         commit_payload = _object_payload(repo_dir, "commits", commit_object_id)
         commit_payload["message"] = ""
@@ -704,6 +697,14 @@ class TestRepoSemantics:
         assert any("unexpected txn entry: note.txt" in warning for warning in report.warnings)
         assert any("pending transaction directory: stale" in warning for warning in report.warnings)
         assert any("unexpected lock artifact: orphaned.lock" in warning for warning in report.warnings)
+        full_report = api.full_verify()
+        assert any("unexpected txn entry: note.txt" in warning for warning in full_report.warnings)
+        assert any("pending transaction directory: stale" in warning for warning in full_report.warnings)
+        assert any("unexpected lock artifact: orphaned.lock" in warning for warning in full_report.warnings)
+        overview = api.get_storage_overview()
+        txn_section = next(section for section in overview.sections if section.name == "txn")
+        assert txn_section.file_count >= 2
+        assert any("txn/ area still contains" in recommendation for recommendation in overview.recommendations)
 
         api.create_commit(
             operations=[CommitOperationAdd("recovered.bin", b"x")],
@@ -713,7 +714,7 @@ class TestRepoSemantics:
         assert stray_file.is_file()
         assert not stale_dir.exists()
 
-    def test_repo_rolls_back_interrupted_ref_updates_before_serving_reads(self, tmp_path):
+    def test_repo_keeps_reads_consistent_after_crashed_ref_update_and_next_write_cleans_txdir(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")
         api.create_repo()
         first_commit = api.create_commit(
@@ -725,39 +726,40 @@ class TestRepoSemantics:
             parent_commit=first_commit.oid,
             commit_message="advance",
         )
-        api.reset_ref("main", to_revision=first_commit.oid)
-
         repo_dir = tmp_path / "repo"
-        first_internal_head = _internal_ref_value(repo_dir, "branch", "main")
-        api.reset_ref("main", to_revision=second_commit.oid)
-        second_internal_head = _internal_ref_value(repo_dir, "branch", "main")
-        api.reset_ref("main", to_revision=first_commit.oid)
-        txdir = repo_dir / "txn" / "interrupted"
-        txdir.mkdir(parents=True)
-        _write_json(
-            txdir / "REF_UPDATE.json",
-            {
-                "ref_kind": "branch",
-                "ref_name": "main",
-                "old_head": first_internal_head,
-                "new_head": second_internal_head,
-                "message": "interrupted advance",
-                "ref_existed_before": True,
-                "updated_at": "2026-04-07T00:00:00Z",
-            },
-        )
-        _write_json(
-            txdir / "STATE.json",
-            {
-                "state": "UPDATED_REF",
-                "updated_at": "2026-04-07T00:00:00Z",
-            },
-        )
+        proc = _run_api_subprocess(
+            repo_dir,
+            """
+            import os
+            import sys
+            from pathlib import Path
 
-        info = api.repo_info()
-        assert info.head == first_commit.oid
-        assert api.read_bytes("file.bin") == b"v1"
-        assert not txdir.exists()
+            from hubvault import HubVaultApi
+
+            repo = Path(sys.argv[1])
+            api = HubVaultApi(repo)
+            first_commit_id = api.list_repo_commits()[-1].commit_id
+            os.environ["HUBVAULT_FAILPOINT"] = "reset_ref.after_ref_write"
+            os.environ["HUBVAULT_FAIL_ACTION"] = "exit"
+            api.reset_ref("main", to_revision=first_commit_id)
+            """,
+        )
+        assert proc.returncode == 86
+
+        txdirs = sorted(path for path in (repo_dir / "txn").iterdir() if path.is_dir())
+        assert txdirs
+
+        reopened_api = HubVaultApi(repo_dir)
+        info = reopened_api.repo_info()
+        assert info.head == second_commit.oid
+        assert reopened_api.read_bytes("file.bin") == b"v2"
+        assert any(path.exists() for path in txdirs)
+
+        reopened_api.create_commit(
+            operations=[CommitOperationAdd("cleanup.txt", b"ok\n")],
+            commit_message="clean orphan txdir",
+        )
+        assert not any(path.exists() for path in txdirs)
 
     def test_public_runtime_failpoints_roll_back_ref_updates_and_history_rewrites(self, tmp_path, monkeypatch):
         api = HubVaultApi(tmp_path / "repo")
@@ -790,6 +792,15 @@ class TestRepoSemantics:
             assert failpoint in str(excinfo.value)
 
         merge_reflog_before = list(api.list_repo_reflog("main"))
+        assert_runtime_failpoint("create_branch.after_ref_write", lambda: api.create_branch(branch="broken-branch-early"))
+        assert "broken-branch-early" not in [item.name for item in api.list_repo_refs().branches]
+
+        assert_runtime_failpoint("create_tag.after_ref_write", lambda: api.create_tag(tag="broken-tag-early", revision="main"))
+        assert "broken-tag-early" not in [item.name for item in api.list_repo_refs().tags]
+
+        assert_runtime_failpoint("reset_ref.after_ref_write", lambda: api.reset_ref("main", to_revision=base_commit.oid))
+        assert api.repo_info().head == main_commit.oid
+
         assert_runtime_failpoint("merge.after_reflog_append", lambda: api.merge("feature"))
         assert api.repo_info().head == main_commit.oid
         assert "feature.txt" not in api.list_repo_files()
@@ -833,6 +844,36 @@ class TestRepoSemantics:
         assert [item.commit_id for item in api.list_repo_commits()] == history_before_squash
         assert api.quick_verify().ok is True
 
+        create_history_before = [item.commit_id for item in api.list_repo_commits()]
+        assert_runtime_failpoint(
+            "create_commit.after_publish",
+            lambda: api.create_commit(
+                operations=[CommitOperationAdd("broken-published.txt", b"nope\n")],
+                commit_message="broken published create",
+            ),
+        )
+        assert api.repo_info().head == main_commit.oid
+        assert "broken-published.txt" not in api.list_repo_files()
+        assert [item.commit_id for item in api.list_repo_commits()] == create_history_before
+
+        merge_history_before = [item.commit_id for item in api.list_repo_commits()]
+        merge_reflog_before = list(api.list_repo_reflog("main"))
+        assert_runtime_failpoint("merge.after_publish", lambda: api.merge("feature"))
+        assert api.repo_info().head == main_commit.oid
+        assert "feature.txt" not in api.list_repo_files()
+        assert [item.commit_id for item in api.list_repo_commits()] == merge_history_before
+        assert api.list_repo_reflog("main") == merge_reflog_before
+
+        assert_runtime_failpoint("squash_history.after_publish", lambda: api.squash_history("main", run_gc=False))
+        assert [item.commit_id for item in api.list_repo_commits()] == history_before_squash
+        assert api.quick_verify().ok is True
+
+        gc_history_before = [item.commit_id for item in api.list_repo_commits()]
+        assert_runtime_failpoint("gc.after_publish", lambda: api.gc())
+        assert [item.commit_id for item in api.list_repo_commits()] == gc_history_before
+        assert api.read_bytes("file.bin") == b"base\n"
+        assert api.quick_verify().ok is True
+
     def test_public_failpoints_support_non_runtime_actions_and_still_roll_back(self, tmp_path, monkeypatch):
         api = HubVaultApi(tmp_path / "repo")
         api.create_repo()
@@ -853,6 +894,18 @@ class TestRepoSemantics:
         assert_failpoint("raise-oserror", OSError, "broken-oserror")
         assert_failpoint("raise-keyboard", KeyboardInterrupt, "broken-keyboard")
         assert_failpoint("unknown-action", ValueError, "broken-valueerror")
+
+        def _raise_exit(code):
+            raise SystemExit(code)
+
+        monkeypatch.setattr("hubvault.repo.backend.os._exit", _raise_exit)
+        with monkeypatch.context() as env:
+            env.setenv("HUBVAULT_FAILPOINT", "create_branch.after_reflog_append")
+            env.setenv("HUBVAULT_FAIL_ACTION", "exit")
+            with pytest.raises(SystemExit) as excinfo:
+                api.create_branch(branch="broken-exit")
+        assert excinfo.value.code == 86
+        assert "broken-exit" not in [item.name for item in api.list_repo_refs().branches]
 
     def test_repo_write_lock_blocks_other_process_readers_and_writers(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")
@@ -1040,6 +1093,224 @@ class TestRepoSemantics:
         assert report.ok is False
         assert any(item.startswith("refs/heads/main:") for item in report.errors)
 
+    def test_repo_rebuilds_public_git_oids_from_sqlite_truth_when_cached_git_oids_are_missing(self, tmp_path):
+        repo_dir = tmp_path / "repo"
+        api = HubVaultApi(repo_dir)
+        api.create_repo()
+        api.create_commit(
+            operations=[
+                CommitOperationAdd("root.txt", b"root\n"),
+                CommitOperationAdd("alpha/leaf.txt", b"leaf\n"),
+                CommitOperationAdd("beta/leaf.txt", b"leaf\n"),
+            ],
+            commit_message="seed nested tree",
+        )
+
+        internal_head = _head_commit_id(repo_dir)
+        commit_payload = _object_payload(repo_dir, "commits", internal_head)
+        root_tree_id = commit_payload["tree_id"]
+        nested_tree_ids = [
+            entry["object_id"]
+            for entry in _object_payload(repo_dir, "trees", root_tree_id)["entries"]
+            if entry["entry_type"] == "tree"
+        ]
+
+        _mutate_object_payload(repo_dir, "commits", internal_head, lambda payload: payload.pop("git_oid", None))
+        _mutate_object_payload(repo_dir, "trees", root_tree_id, lambda payload: payload.pop("git_oid", None))
+        _mutate_object_payload(repo_dir, "trees", nested_tree_ids[0], lambda payload: payload.pop("git_oid", None))
+
+        info = api.repo_info()
+        commits = api.list_repo_commits()
+
+        assert len(set(nested_tree_ids)) == 1
+        assert _is_git_oid(info.head)
+        assert commits[0].commit_id == info.head
+        assert sorted(api.list_repo_files()) == ["alpha/leaf.txt", "beta/leaf.txt", "root.txt"]
+
+    def test_repo_info_rejects_invalid_stored_public_git_oids_and_payloads(self, tmp_path):
+        api, repo_dir = _single_file_repo(tmp_path, repo_name="invalid-tree-git-oid", payload=b"payload")
+        internal_head = _head_commit_id(repo_dir)
+        tree_object_id = _head_tree_id(repo_dir)
+        _mutate_object_payload(repo_dir, "commits", internal_head, lambda payload: payload.pop("git_oid", None))
+        _mutate_object_payload(
+            repo_dir,
+            "trees",
+            tree_object_id,
+            lambda payload: payload.__setitem__("git_oid", "broken-tree-oid"),
+        )
+        with pytest.raises(IntegrityError, match="invalid stored git tree oid"):
+            api.repo_info()
+
+        api, repo_dir = _single_file_repo(tmp_path, repo_name="invalid-commit-git-oid", payload=b"payload")
+        internal_head = _head_commit_id(repo_dir)
+        _mutate_object_payload(
+            repo_dir,
+            "commits",
+            internal_head,
+            lambda payload: payload.__setitem__("git_oid", "broken-commit-oid"),
+        )
+        with pytest.raises(IntegrityError, match="invalid stored git commit oid"):
+            api.repo_info()
+
+        api, repo_dir = _single_file_repo(tmp_path, repo_name="invalid-tree-payload", payload=b"payload")
+        internal_head = _head_commit_id(repo_dir)
+        tree_object_id = _head_tree_id(repo_dir)
+        _mutate_object_payload(repo_dir, "commits", internal_head, lambda payload: payload.pop("git_oid", None))
+        _mutate_object_payload(repo_dir, "trees", tree_object_id, lambda payload: payload.pop("git_oid", None))
+        _mutate_object_payload(repo_dir, "trees", tree_object_id, lambda payload: payload.__setitem__("entries", [{}]))
+        with pytest.raises(IntegrityError, match="invalid tree"):
+            api.repo_info()
+
+        api, repo_dir = _single_file_repo(tmp_path, repo_name="unknown-tree-entry-type", payload=b"payload")
+        internal_head = _head_commit_id(repo_dir)
+        tree_object_id = _head_tree_id(repo_dir)
+        _mutate_object_payload(repo_dir, "commits", internal_head, lambda payload: payload.pop("git_oid", None))
+        _mutate_object_payload(repo_dir, "trees", tree_object_id, lambda payload: payload.pop("git_oid", None))
+        _mutate_object_payload(
+            repo_dir,
+            "trees",
+            tree_object_id,
+            lambda payload: payload["entries"][0].__setitem__("entry_type", "weird"),
+        )
+        with pytest.raises(IntegrityError, match="unknown tree entry type"):
+            api.repo_info()
+
+        api, repo_dir = _single_file_repo(tmp_path, repo_name="duplicate-public-parent", payload=b"payload")
+        first_head = _head_commit_id(repo_dir)
+        api.create_commit(
+            operations=[CommitOperationAdd("file.bin", b"payload-v2")],
+            parent_commit=first_head,
+            commit_message="second",
+        )
+        branch_head = _head_commit_id(repo_dir)
+
+        def _duplicate_parents(payload):
+            payload.pop("git_oid", None)
+            payload["parents"] = [payload["parents"][0], payload["parents"][0]]
+
+        _mutate_object_payload(repo_dir, "commits", branch_head, _duplicate_parents)
+        assert _is_git_oid(api.repo_info().head)
+
+        api, repo_dir = _single_file_repo(tmp_path, repo_name="invalid-commit-payload", payload=b"payload")
+        internal_head = _head_commit_id(repo_dir)
+        _mutate_object_payload(repo_dir, "commits", internal_head, lambda payload: payload.pop("git_oid", None))
+        _mutate_object_payload(repo_dir, "commits", internal_head, lambda payload: payload.pop("created_at", None))
+        with pytest.raises(IntegrityError, match="invalid commit"):
+            api.repo_info()
+
+    def test_repo_detects_public_git_oid_tree_and_commit_cycles(self, tmp_path):
+        tree_repo_dir = tmp_path / "tree-cycle"
+        tree_api = HubVaultApi(tree_repo_dir)
+        tree_api.create_repo()
+        tree_api.create_commit(
+            operations=[CommitOperationAdd("nested/leaf.txt", b"leaf\n")],
+            commit_message="seed tree cycle",
+        )
+
+        tree_head = _head_commit_id(tree_repo_dir)
+        tree_root_id = _object_payload(tree_repo_dir, "commits", tree_head)["tree_id"]
+
+        def _force_tree_cycle(payload):
+            payload.pop("git_oid", None)
+            payload["entries"] = [
+                {
+                    "entry_type": "tree",
+                    "name": "loop",
+                    "mode": "040000",
+                    "object_id": tree_root_id,
+                }
+            ]
+
+        _mutate_object_payload(tree_repo_dir, "trees", tree_root_id, _force_tree_cycle)
+        _mutate_object_payload(tree_repo_dir, "commits", tree_head, lambda payload: payload.pop("git_oid", None))
+
+        with pytest.raises(IntegrityError, match="tree cycle detected"):
+            tree_api.repo_info()
+
+        commit_repo_dir = tmp_path / "commit-cycle"
+        commit_api = HubVaultApi(commit_repo_dir)
+        commit_api.create_repo()
+        commit_api.create_commit(
+            operations=[CommitOperationAdd("file.txt", b"v1\n")],
+            commit_message="seed commit cycle",
+        )
+
+        commit_head = _head_commit_id(commit_repo_dir)
+
+        def _force_commit_cycle(payload):
+            payload.pop("git_oid", None)
+            payload["parents"] = [commit_head]
+
+        _mutate_object_payload(commit_repo_dir, "commits", commit_head, _force_commit_cycle)
+
+        with pytest.raises(IntegrityError, match="commit cycle detected"):
+            commit_api.repo_info()
+
+    def test_repo_read_bytes_rejects_non_file_paths_and_unknown_tree_kinds(self, tmp_path):
+        empty_api = HubVaultApi(tmp_path / "empty-repo")
+        empty_api.create_repo()
+
+        with pytest.raises(EntryNotFoundError, match="path not found: missing.txt"):
+            empty_api.read_bytes("missing.txt")
+
+        repo_dir = tmp_path / "repo"
+        api = HubVaultApi(repo_dir)
+        api.create_repo()
+        api.create_commit(
+            operations=[
+                CommitOperationAdd("root.txt", b"root\n"),
+                CommitOperationAdd("nested/leaf.txt", b"leaf\n"),
+            ],
+            commit_message="seed paths",
+        )
+
+        with pytest.raises(EntryNotFoundError, match="path not found: nested"):
+            api.read_bytes("nested")
+        with pytest.raises(EntryNotFoundError, match="path not found: root.txt/child"):
+            api.read_bytes("root.txt/child")
+
+        tree_object_id = _head_tree_id(repo_dir)
+
+        def _mutate_unknown_tree_kind(payload):
+            for entry in payload["entries"]:
+                if entry["name"] == "nested":
+                    entry["entry_type"] = "weird"
+                    break
+
+        _mutate_object_payload(repo_dir, "trees", tree_object_id, _mutate_unknown_tree_kind)
+
+        with pytest.raises(IntegrityError, match="unknown tree entry type"):
+            api.read_bytes("nested/leaf.txt")
+
+    def test_repo_path_info_deduplicates_requested_paths_and_falls_back_to_commit_message_title(self, tmp_path):
+        repo_dir = tmp_path / "repo"
+        api = HubVaultApi(repo_dir)
+        api.create_repo()
+        api.create_commit(
+            operations=[
+                CommitOperationAdd("README.md", b"# hubvault\n"),
+                CommitOperationAdd("docs/demo.py", b"print('v1')\n"),
+            ],
+            commit_message="seed docs\n\nbody text",
+        )
+
+        head_commit_id = _head_commit_id(repo_dir)
+
+        def _drop_commit_title(payload):
+            payload["title"] = ""
+
+        _mutate_object_payload(repo_dir, "commits", head_commit_id, _drop_commit_title)
+
+        infos = api.get_paths_info(["README.md", "README.md", "docs", "docs"])
+
+        assert [item.path for item in infos] == ["README.md", "README.md", "docs", "docs"]
+        assert [item.last_commit.title for item in infos] == [
+            "seed docs",
+            "seed docs",
+            "seed docs",
+            "seed docs",
+        ]
+
     def test_repo_detects_verify_corruption_cases(self, tmp_path):
         api, repo_dir = _single_file_repo(tmp_path, repo_name="legacy-prefixed-public-sha", payload=b"payload")
         file_object_id = _first_object_id(repo_dir, "files")
@@ -1088,6 +1359,40 @@ class TestRepoSemantics:
         _set_object_payload(repo_dir, "files", file_object_id, file_payload)
         report = api.quick_verify()
         assert report.ok is False
+
+        api, repo_dir = _single_file_repo(tmp_path, repo_name="invalid-object-id-format", payload=b"payload")
+        file_object_id = _first_object_id(repo_dir, "files")
+        file_payload = _object_payload(repo_dir, "files", file_object_id)
+        file_payload["content_object_id"] = "broken-object-id"
+        _set_object_payload(repo_dir, "files", file_object_id, file_payload)
+        with sqlite3.connect(str(_repo_db_path(repo_dir))) as conn:
+            conn.execute(
+                "INSERT INTO objects_blobs (object_id, payload_json) VALUES (?, ?)",
+                (
+                    "broken-object-id",
+                    json.dumps({"payload_sha256": "sha256:" + ("1" * 64)}, sort_keys=True, separators=(",", ":")),
+                ),
+            )
+            conn.commit()
+        with pytest.raises(IntegrityError, match="invalid object id format"):
+            api.read_bytes("file.bin")
+
+        api, repo_dir = _single_file_repo(tmp_path, repo_name="unsupported-object-id", payload=b"payload")
+        file_object_id = _first_object_id(repo_dir, "files")
+        file_payload = _object_payload(repo_dir, "files", file_object_id)
+        file_payload["content_object_id"] = "md5:abc"
+        _set_object_payload(repo_dir, "files", file_object_id, file_payload)
+        with sqlite3.connect(str(_repo_db_path(repo_dir))) as conn:
+            conn.execute(
+                "INSERT INTO objects_blobs (object_id, payload_json) VALUES (?, ?)",
+                (
+                    "md5:abc",
+                    json.dumps({"payload_sha256": "sha256:" + ("1" * 64)}, sort_keys=True, separators=(",", ":")),
+                ),
+            )
+            conn.commit()
+        with pytest.raises(IntegrityError, match="unsupported object id"):
+            api.read_bytes("file.bin")
 
         api, repo_dir = _single_file_repo(tmp_path, repo_name="duplicate-parent", payload=b"payload")
         first_head = _head_commit_id(repo_dir)
@@ -1281,18 +1586,34 @@ class TestRepoSemantics:
         assert (exported / "bundle" / "file.bin").read_bytes() == b"payload-v1"
         assert any("Ignoring malformed detached snapshot metadata" in str(item.message) for item in records)
 
-    def test_repo_rejects_malformed_ref_update_journal_during_recovery(self, tmp_path):
+    def test_repo_keeps_ref_visibility_consistent_after_crashed_branch_creation(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")
         api.create_repo()
         api.upload_file(path_or_fileobj=b"payload-v1", path_in_repo="bundle/file.bin")
 
-        txdir = tmp_path / "repo" / "txn" / "broken"
-        txdir.mkdir(parents=True)
-        (txdir / "REF_UPDATE.json").write_text("{bad json", encoding="utf-8")
+        repo_dir = tmp_path / "repo"
+        proc = _run_api_subprocess(
+            repo_dir,
+            """
+            import os
+            import sys
+            from pathlib import Path
 
-        assert api.read_bytes("bundle/file.bin") == b"payload-v1"
-        assert not txdir.exists()
-        assert api.quick_verify().ok is True
+            from hubvault import HubVaultApi
+
+            repo = Path(sys.argv[1])
+            api = HubVaultApi(repo)
+            os.environ["HUBVAULT_FAILPOINT"] = "create_branch.after_ref_write"
+            os.environ["HUBVAULT_FAIL_ACTION"] = "exit"
+            api.create_branch(branch="broken-branch")
+            """,
+        )
+        assert proc.returncode == 86
+
+        reopened_api = HubVaultApi(repo_dir)
+        assert [item.name for item in reopened_api.list_repo_refs().branches] == ["main"]
+        assert reopened_api.read_bytes("bundle/file.bin") == b"payload-v1"
+        assert reopened_api.quick_verify().ok is True
 
     def test_upload_folder_delete_patterns_and_deleted_ref_reflogs_work_via_public_api(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")

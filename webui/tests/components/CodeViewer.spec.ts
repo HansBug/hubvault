@@ -21,4 +21,23 @@ describe("CodeViewer", function suite() {
     expect(wrapper.html()).toContain("language-python");
     expect(wrapper.html()).toContain("line-numbers");
   });
+
+  it("shows loading state and zero lines for empty content while honoring explicit languages", function testCodeViewerLoadingState() {
+    const wrapper = mount(CodeViewer, {
+      props: {
+        path: "docs/config.txt",
+        language: "json",
+        content: "",
+        loading: true
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    expect(wrapper.text()).toContain("json");
+    expect(wrapper.text()).toContain("0 lines");
+    expect(wrapper.find(".el-skeleton").exists()).toBe(true);
+    expect(wrapper.find("pre.code-viewer__pre").exists()).toBe(false);
+  });
 });

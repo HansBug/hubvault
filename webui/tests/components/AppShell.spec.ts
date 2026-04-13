@@ -1,6 +1,6 @@
 import ElementPlus from "element-plus";
 import { mount } from "@vue/test-utils";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const appShellMocks = vi.hoisted(function buildAppShellMocks() {
   return {
@@ -35,6 +35,11 @@ function findButtonByText(wrapper, text: string) {
 }
 
 describe("AppShell", function suite() {
+  beforeEach(function resetAppShellMocks() {
+    appShellMocks.route.name = "overview";
+    appShellMocks.push.mockReset();
+  });
+
   it("renders shell metadata, routes menu selections, and emits revision/logout actions", async function testAppShell() {
     const wrapper = mount(AppShell, {
       props: {
@@ -87,5 +92,68 @@ describe("AppShell", function suite() {
     expect(wrapper.text()).toContain("Read / Write");
     expect(wrapper.text()).toContain("/tmp/repo");
     expect(wrapper.text()).toContain("child");
+  });
+
+  it("maps detail routes onto top-level navigation items and resolves head fallbacks", function testShellRouteMapping() {
+    appShellMocks.route.name = "file-detail";
+    const fileDetailWrapper = mount(AppShell, {
+      props: {
+        service: {
+          mode: "frontend",
+          repo: {
+            default_branch: "main",
+            head: "fedcba0987654321fedcba0987654321fedcba09"
+          }
+        },
+        auth: {
+          access: "ro"
+        },
+        currentRevision: "main"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    expect(fileDetailWrapper.find(".el-menu-item.is-active").text()).toContain("Files");
+    expect(fileDetailWrapper.text()).toContain("Read Only");
+    expect(fileDetailWrapper.text()).toContain("fedcba0987");
+
+    appShellMocks.route.name = "commit-detail";
+    const commitDetailWrapper = mount(AppShell, {
+      props: {
+        currentRevision: "main"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    expect(commitDetailWrapper.find(".el-menu-item.is-active").text()).toContain("Commits");
+    expect(commitDetailWrapper.text()).toContain("head: empty");
+  });
+
+  it("maps upload routes back to files and defaults unknown routes to overview", function testShellDefaultRouteMapping() {
+    appShellMocks.route.name = "upload";
+    const uploadWrapper = mount(AppShell, {
+      props: {
+        currentRevision: "main"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+    expect(uploadWrapper.find(".el-menu-item.is-active").text()).toContain("Files");
+
+    appShellMocks.route.name = null as any;
+    const overviewWrapper = mount(AppShell, {
+      props: {
+        currentRevision: "main"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+    expect(overviewWrapper.find(".el-menu-item.is-active").text()).toContain("Overview");
   });
 });
