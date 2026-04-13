@@ -139,7 +139,7 @@ def _normalize_required_string(value, field_name: str) -> str:
     return normalized
 
 
-def _normalize_bool(value, field_name: str, default: Optional[bool] = None) -> bool:
+def _normalize_bool(value, field_name: str, default: bool) -> bool:
     """
     Normalize one boolean field.
 
@@ -147,16 +147,14 @@ def _normalize_bool(value, field_name: str, default: Optional[bool] = None) -> b
     :type value: object
     :param field_name: Field name used in validation messages
     :type field_name: str
-    :param default: Optional default value when the field is missing
-    :type default: Optional[bool]
+    :param default: Default value when the field is missing
+    :type default: bool
     :return: Normalized boolean value
     :rtype: bool
     :raises HubVaultValidationError: Raised when the field is not boolean.
     """
 
     if value is None:
-        if default is None:
-            raise HubVaultValidationError("%s must be a boolean." % (field_name,))
         return bool(default)
     if not isinstance(value, bool):
         raise HubVaultValidationError("%s must be a boolean." % (field_name,))

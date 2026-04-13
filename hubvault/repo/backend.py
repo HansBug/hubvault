@@ -1,9 +1,9 @@
 """
-Repository backend for the :mod:`hubvault` MVP.
+Repository backend for the :mod:`hubvault` embedded repository runtime.
 
-This module implements the local on-disk repository format used by the MVP.
-The backend is intentionally embedded and file-based so the repository remains
-self-contained and movable as a normal directory tree.
+The backend keeps repository truth in repo-local SQLite metadata plus
+filesystem payload bytes so repositories remain self-contained, movable
+directory trees without external services.
 
 The module contains:
 
@@ -1446,7 +1446,7 @@ class RepositoryBackend(object):
 
         The selected revision is only used to resolve the visible ``head`` in
         the returned :class:`RepoInfo`; repository-wide settings still come from
-        ``repo.json``.
+        the SQLite repo metadata store.
 
         :param revision: Revision whose head should be resolved, defaults to the
             configured default branch
@@ -2573,53 +2573,29 @@ class RepositoryBackend(object):
             if limit is not None and limit < 0:
                 raise ValueError("limit must be >= 0")
 
-            reflog_path, normalized_ref = self._resolve_reflog_query(ref_name)
-            if self._metadata_store.exists():
-                if normalized_ref.startswith("refs/heads/"):
-                    ref_kind = "branch"
-                    short_name = normalized_ref[len("refs/heads/"):]
-                else:
-                    ref_kind = "tag"
-                    short_name = normalized_ref[len("refs/tags/"):]
-                return [
-                    ReflogEntry(
-                        timestamp=_parse_utc_timestamp(str(payload["timestamp"])),
-                        ref_name=normalized_ref,
-                        old_head=self._public_commit_oid_or_none(payload.get("old_head")),
-                        new_head=self._public_commit_oid_or_none(payload.get("new_head")),
-                        message=str(payload.get("message", "")),
-                        checksum=str(payload["checksum"]),
-                    )
-                    for payload in self._metadata_store.list_reflog(
-                        self._metadata_connection(),
-                        ref_kind,
-                        short_name,
-                        limit=limit,
-                    )
-                ]
-            if not reflog_path.exists():
-                return []
-
-            entries = []
-            for line in reflog_path.read_text(encoding="utf-8").splitlines():
-                if not line.strip():
-                    continue
-                payload = json.loads(line)
-                entries.append(
-                    ReflogEntry(
-                        timestamp=_parse_utc_timestamp(str(payload["timestamp"])),
-                        ref_name=str(payload["ref_name"]),
-                        old_head=self._public_commit_oid_or_none(payload.get("old_head")),
-                        new_head=self._public_commit_oid_or_none(payload.get("new_head")),
-                        message=str(payload.get("message", "")),
-                        checksum=str(payload["checksum"]),
-                    )
+            _reflog_path, normalized_ref = self._resolve_reflog_query(ref_name)
+            if normalized_ref.startswith("refs/heads/"):
+                ref_kind = "branch"
+                short_name = normalized_ref[len("refs/heads/"):]
+            else:
+                ref_kind = "tag"
+                short_name = normalized_ref[len("refs/tags/"):]
+            return [
+                ReflogEntry(
+                    timestamp=_parse_utc_timestamp(str(payload["timestamp"])),
+                    ref_name=normalized_ref,
+                    old_head=self._public_commit_oid_or_none(payload.get("old_head")),
+                    new_head=self._public_commit_oid_or_none(payload.get("new_head")),
+                    message=str(payload.get("message", "")),
+                    checksum=str(payload["checksum"]),
                 )
-
-            entries.reverse()
-            if limit is not None:
-                return entries[:limit]
-            return entries
+                for payload in self._metadata_store.list_reflog(
+                    self._metadata_connection(),
+                    ref_kind,
+                    short_name,
+                    limit=limit,
+                )
+            ]
 
     def open_file(self, path_in_repo: str, revision: str = DEFAULT_BRANCH) -> io.BufferedReader:
         """
@@ -2824,13 +2800,10 @@ class RepositoryBackend(object):
         :rtype: Dict[str, IndexEntry]
         """
 
-        if self._metadata_store.exists():
-            return dict(
-                (str(entry.chunk_id), entry)
-                for entry in self._metadata_store.list_chunk_entries(self._metadata_connection())
-            )
-        index_store = IndexStore(self._repo_path / "chunks" / "index")
-        return index_store.visible_entries()
+        return dict(
+            (str(entry.chunk_id), entry)
+            for entry in self._metadata_store.list_chunk_entries(self._metadata_connection())
+        )
 
     @staticmethod
     def _chunk_cache_entry_signature(entry: IndexEntry) -> Tuple[str, int, int, int, str, str]:
@@ -4528,38 +4501,19 @@ class RepositoryBackend(object):
     def _metadata_storage_metrics_unlocked(self) -> Dict[str, object]:
         """Build metadata-section size details while a repo lock is already held."""
 
-        if self._metadata_store.exists():
-            return {
-                "size": (
-                    _path_metrics(self._format_path)[0]
-                    + _path_metrics(self._metadata_db_path)[0]
-                    + _path_metrics(self._repo_path / "locks")[0]
-                ),
-                "path": "FORMAT + metadata.sqlite3 + locks/",
-                "file_count": (
-                    _path_metrics(self._format_path)[1]
-                    + _path_metrics(self._metadata_db_path)[1]
-                    + _path_metrics(self._repo_path / "locks")[1]
-                ),
-                "notes": "Core repository metadata now lives in repo-local SQLite plus the shared repo lock.",
-            }
         return {
             "size": (
                 _path_metrics(self._format_path)[0]
-                + _path_metrics(self._repo_config_path)[0]
-                + _path_metrics(self._repo_path / "refs")[0]
-                + _path_metrics(self._repo_path / "logs" / "refs")[0]
+                + _path_metrics(self._metadata_db_path)[0]
                 + _path_metrics(self._repo_path / "locks")[0]
             ),
-            "path": "FORMAT + repo.json + refs/ + logs/refs/ + locks/",
+            "path": "FORMAT + metadata.sqlite3 + locks/",
             "file_count": (
                 _path_metrics(self._format_path)[1]
-                + _path_metrics(self._repo_config_path)[1]
-                + _path_metrics(self._repo_path / "refs")[1]
-                + _path_metrics(self._repo_path / "logs" / "refs")[1]
+                + _path_metrics(self._metadata_db_path)[1]
                 + _path_metrics(self._repo_path / "locks")[1]
             ),
-            "notes": "Core repository metadata and lock files required for normal operation.",
+            "notes": "Core repository metadata now lives in repo-local SQLite plus the shared repo lock.",
         }
 
     def _storage_summary_unlocked(self) -> Dict[str, int]:
@@ -4921,53 +4875,31 @@ class RepositoryBackend(object):
         reclaimed_object_size = 0
         reclaimed_chunk_size = 0
 
-        if self._metadata_store.exists():
-            for object_type in ("commits", "trees", "files"):
-                for object_id in sorted(unreachable_object_ids[object_type]):
-                    reclaimed_object_size += object_sizes[object_type].get(object_id, 0)
-                    self._metadata_store.delete_object(self._metadata_connection(), object_type, object_id)
-                    self._recent_object_payload_cache.pop("%s:%s" % (object_type, object_id), None)
-                    self._quarantine_move_file_unlocked(
-                        source_path=self._object_json_path(object_type, object_id),
-                        quarantine_root=q_objects_root,
-                        relative_root=self._repo_path / "objects",
-                    )
-
-            for object_id in sorted(unreachable_object_ids["blobs"]):
-                reclaimed_object_size += object_sizes["blobs"].get(object_id, 0)
-                self._metadata_store.delete_object(self._metadata_connection(), "blobs", object_id)
-                self._recent_object_payload_cache.pop("blobs:%s" % object_id, None)
+        for object_type in ("commits", "trees", "files"):
+            for object_id in sorted(unreachable_object_ids[object_type]):
+                reclaimed_object_size += object_sizes[object_type].get(object_id, 0)
+                self._metadata_store.delete_object(self._metadata_connection(), object_type, object_id)
+                self._recent_object_payload_cache.pop("%s:%s" % (object_type, object_id), None)
                 self._quarantine_move_file_unlocked(
-                    source_path=self._blob_meta_path(object_id),
+                    source_path=self._object_json_path(object_type, object_id),
                     quarantine_root=q_objects_root,
                     relative_root=self._repo_path / "objects",
                 )
-                self._quarantine_move_file_unlocked(
-                    source_path=self._blob_data_path(object_id),
-                    quarantine_root=q_objects_root,
-                    relative_root=self._repo_path / "objects",
-                )
-        else:
-            for object_type in ("commits", "trees", "files"):
-                for object_id in sorted(unreachable_object_ids[object_type]):
-                    path = self._object_json_path(object_type, object_id)
-                    reclaimed_object_size += self._quarantine_move_file_unlocked(
-                        source_path=path,
-                        quarantine_root=q_objects_root,
-                        relative_root=self._repo_path / "objects",
-                    )
 
-            for object_id in sorted(unreachable_object_ids["blobs"]):
-                reclaimed_object_size += self._quarantine_move_file_unlocked(
-                    source_path=self._blob_meta_path(object_id),
-                    quarantine_root=q_objects_root,
-                    relative_root=self._repo_path / "objects",
-                )
-                reclaimed_object_size += self._quarantine_move_file_unlocked(
-                    source_path=self._blob_data_path(object_id),
-                    quarantine_root=q_objects_root,
-                    relative_root=self._repo_path / "objects",
-                )
+        for object_id in sorted(unreachable_object_ids["blobs"]):
+            reclaimed_object_size += object_sizes["blobs"].get(object_id, 0)
+            self._metadata_store.delete_object(self._metadata_connection(), "blobs", object_id)
+            self._recent_object_payload_cache.pop("blobs:%s" % object_id, None)
+            self._quarantine_move_file_unlocked(
+                source_path=self._blob_meta_path(object_id),
+                quarantine_root=q_objects_root,
+                relative_root=self._repo_path / "objects",
+            )
+            self._quarantine_move_file_unlocked(
+                source_path=self._blob_data_path(object_id),
+                quarantine_root=q_objects_root,
+                relative_root=self._repo_path / "objects",
+            )
 
         live_pack_name = None
         live_segment_name = None
@@ -5354,61 +5286,26 @@ class RepositoryBackend(object):
     def _iter_object_ids_unlocked(self, object_type: str) -> List[str]:
         """List published object identifiers for a logical object type."""
 
-        if self._metadata_store.exists():
-            return self._run_metadata_read(
-                lambda connection: self._metadata_store.list_object_ids(connection, object_type)
-            )
-        return self._legacy_iter_object_ids_unlocked(object_type)
+        return self._run_metadata_read(
+            lambda connection: self._metadata_store.list_object_ids(connection, object_type)
+        )
 
     def _object_disk_size_unlocked(self, object_type: str, object_id: str) -> int:
         """Return the current on-disk byte size for one published object."""
 
-        if self._metadata_store.exists():
-            payload_bytes = len(_stable_json_bytes(self._read_object_payload(object_type, object_id)))
-            if object_type == "blobs":
-                data_path = self._blob_data_path(object_id)
-                if data_path.exists():
-                    payload_bytes += data_path.stat().st_size
-            return payload_bytes
+        payload_bytes = len(_stable_json_bytes(self._read_object_payload(object_type, object_id)))
         if object_type == "blobs":
-            size = 0
-            meta_path = self._blob_meta_path(object_id)
             data_path = self._blob_data_path(object_id)
-            if meta_path.exists():
-                size += meta_path.stat().st_size
             if data_path.exists():
-                size += data_path.stat().st_size
-            return size
-        path = self._object_json_path(object_type, object_id)
-        if not path.exists():
-            return 0
-        return path.stat().st_size
+                payload_bytes += data_path.stat().st_size
+        return payload_bytes
 
     def _verify_object_container_unlocked(self, object_type: str, object_id: str) -> None:
         """Verify a published object container and its canonical checksum."""
 
         expected_type = "blob" if object_type == "blobs" else object_type[:-1]
-        if self._metadata_store.exists():
-            payload = self._read_object_payload(object_type, object_id)
-            computed_object_id, _container_bytes = _build_object_container(expected_type, payload)
-            if computed_object_id != object_id:
-                raise IntegrityError("object id mismatch")
-            return
-        if object_type == "blobs":
-            path = self._blob_meta_path(object_id)
-        else:
-            path = self._object_json_path(object_type, object_id)
-        container = _read_json(path)
-        if not isinstance(container, dict) or "payload" not in container:
-            raise IntegrityError("invalid object container")
-        if int(container.get("format_version", 0)) != FORMAT_VERSION:
-            raise IntegrityError("unsupported object format version")
-        if str(container.get("object_type")) != expected_type:
-            raise IntegrityError("unexpected object type")
-        payload_checksum = OBJECT_HASH + ":" + _sha256_hex(_stable_json_bytes(container["payload"]))
-        if str(container.get("payload_sha256")) != payload_checksum:
-            raise IntegrityError("payload checksum mismatch")
-        computed_object_id, _ = _object_id_from_container(container)
+        payload = self._read_object_payload(object_type, object_id)
+        computed_object_id, _container_bytes = _build_object_container(expected_type, payload)
         if computed_object_id != object_id:
             raise IntegrityError("object id mismatch")
 
@@ -5545,23 +5442,6 @@ class RepositoryBackend(object):
 
         return self._repo_path / "FORMAT"
 
-    @property
-    def _repo_config_path(self) -> Path:
-        """
-        Return the repository configuration file path.
-
-        :return: Absolute path to ``repo.json``
-        :rtype: pathlib.Path
-
-        Example::
-
-            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
-            >>> backend._repo_config_path.name
-            'repo.json'
-        """
-
-        return self._repo_path / "repo.json"
-
     def _is_repo(self) -> bool:
         """
         Check whether the configured root already looks like a repository.
@@ -5576,7 +5456,7 @@ class RepositoryBackend(object):
             False
         """
 
-        return self._format_path.is_file() and (self._metadata_db_path.is_file() or self._repo_config_path.is_file())
+        return self._format_path.is_file() and self._metadata_db_path.is_file()
 
     def _ensure_layout(self) -> None:
         """
@@ -5595,10 +5475,6 @@ class RepositoryBackend(object):
         if self._layout_ensured and self._repo_lock_path.parent.is_dir() and manifest_path.is_file():
             return
         for relative in [
-            "refs/heads",
-            "refs/tags",
-            "logs/refs/heads",
-            "logs/refs/tags",
             "objects/commits/sha256",
             "objects/trees/sha256",
             "objects/files/sha256",
@@ -5640,224 +5516,8 @@ class RepositoryBackend(object):
         if not self._is_repo():
             raise RepositoryNotFoundError("repository not found")
         self._ensure_layout()
-        needs_sqlite_migration = (not self._metadata_store.exists()) or (
-            self._repo_config_path.is_file() and not self._sqlite_metadata_is_bootstrapped()
-        )
-        if needs_sqlite_migration:
-            with self._write_locked():
-                needs_sqlite_migration = (not self._metadata_store.exists()) or (
-                    self._repo_config_path.is_file() and not self._sqlite_metadata_is_bootstrapped()
-                )
-                if needs_sqlite_migration:
-                    self._recover_transactions()
-                    self._migrate_legacy_repo_to_sqlite_unlocked()
-        if self._metadata_store.exists() and not self._sqlite_metadata_is_bootstrapped():
+        if not self._sqlite_metadata_is_bootstrapped():
             raise IntegrityError("sqlite metadata store is incomplete")
-
-    def _legacy_repo_config(self) -> Dict[str, object]:
-        """
-        Load repository metadata from the legacy file-based config.
-
-        :return: Legacy repository configuration payload
-        :rtype: Dict[str, object]
-        """
-
-        return dict(_read_json(self._repo_config_path))
-
-    def _legacy_read_ref_value(self, path: Path, missing_message: str) -> Optional[str]:
-        """
-        Read one legacy file-backed ref value.
-
-        :param path: Ref file path
-        :type path: pathlib.Path
-        :param missing_message: Error message prefix when the ref is absent
-        :type missing_message: str
-        :return: Commit ID or ``None`` for an empty ref
-        :rtype: Optional[str]
-        :raises RevisionNotFoundError: Raised when the ref file is absent.
-        """
-
-        if not path.exists():
-            raise RevisionNotFoundError(missing_message)
-        content = _read_text(path).strip()
-        return content or None
-
-    def _legacy_iter_object_ids_unlocked(self, object_type: str) -> List[str]:
-        """
-        List object IDs from the legacy file-backed object store.
-
-        :param object_type: Stored object collection name
-        :type object_type: str
-        :return: Object identifiers ordered lexicographically
-        :rtype: List[str]
-        """
-
-        root = self._repo_path / "objects" / object_type / OBJECT_HASH
-        if not root.exists():
-            return []
-        suffix = ".meta.json" if object_type == "blobs" else ".json"
-        object_ids = []
-        for prefix_root in sorted(root.iterdir()):
-            if not prefix_root.is_dir():
-                continue
-            for path in sorted(prefix_root.glob("*" + suffix)):
-                digest = prefix_root.name + path.name[:-len(suffix)]
-                object_ids.append(OBJECT_HASH + ":" + digest)
-        return object_ids
-
-    def _legacy_read_object_payload(self, object_type: str, object_id: str) -> Dict[str, object]:
-        """
-        Load one object payload from the legacy file-backed store.
-
-        :param object_type: Stored object collection name
-        :type object_type: str
-        :param object_id: Object identifier
-        :type object_id: str
-        :return: Logical object payload
-        :rtype: Dict[str, object]
-        :raises RevisionNotFoundError: Raised when the object is absent.
-        :raises IntegrityError: Raised when the object container is malformed.
-        """
-
-        if object_type == "blobs":
-            path = self._blob_meta_path(object_id)
-        else:
-            path = self._object_json_path(object_type, object_id)
-        if not path.exists():
-            raise RevisionNotFoundError("object not found: %s" % object_id)
-        container = _read_json(path)
-        if not isinstance(container, dict) or "payload" not in container:
-            raise IntegrityError("invalid object container")
-        return dict(container["payload"])
-
-    def _legacy_visible_chunk_entries_unlocked(self) -> List[IndexEntry]:
-        """
-        Load visible chunk entries from the legacy manifest/segment index.
-
-        :return: Visible chunk entries
-        :rtype: List[IndexEntry]
-        """
-
-        index_store = IndexStore(self._repo_path / "chunks" / "index")
-        return sorted(index_store.visible_entries().values(), key=lambda entry: str(entry.chunk_id))
-
-    def _legacy_reflog_rows(self, ref_kind: str, ref_name: str) -> List[Dict[str, object]]:
-        """
-        Load legacy reflog rows from a file-backed JSONL log.
-
-        :param ref_kind: ``"branch"`` or ``"tag"``
-        :type ref_kind: str
-        :param ref_name: Normalized ref name
-        :type ref_name: str
-        :return: Decoded reflog rows in on-disk order
-        :rtype: List[Dict[str, object]]
-        """
-
-        if ref_kind == "branch":
-            path = self._reflog_path(ref_name)
-        else:
-            path = self._tag_reflog_path(ref_name)
-        if not path.exists():
-            return []
-        rows = []
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            payload = json.loads(line)
-            rows.append(dict(payload))
-        return rows
-
-    def _migrate_legacy_repo_to_sqlite_unlocked(self) -> None:
-        """
-        Import legacy file-backed repository truth into SQLite.
-
-        :return: ``None``.
-        :rtype: None
-        """
-
-        if self._metadata_store.exists() and self._sqlite_metadata_is_bootstrapped():
-            return
-        if not self._repo_config_path.is_file():
-            raise IntegrityError("sqlite metadata store is incomplete")
-        legacy_config = self._legacy_repo_config()
-        branch_names = self._list_ref_names_under(self._repo_path / "refs" / "heads")
-        tag_names = self._list_ref_names_under(self._repo_path / "refs" / "tags")
-        branch_targets = dict(
-            (name, self._legacy_read_ref_value(self._ref_path(name), "branch not found: %s" % name))
-            for name in branch_names
-        )
-        tag_targets = dict(
-            (name, self._legacy_read_ref_value(self._tag_ref_path(name), "tag not found: %s" % name))
-            for name in tag_names
-        )
-        object_payloads = {}
-        for object_type in ("commits", "trees", "files", "blobs"):
-            object_payloads[object_type] = dict(
-                (object_id, self._legacy_read_object_payload(object_type, object_id))
-                for object_id in self._legacy_iter_object_ids_unlocked(object_type)
-            )
-        chunk_entries = self._legacy_visible_chunk_entries_unlocked()
-
-        owns_connection = False
-        if self._active_metadata_connection is not None:
-            connection = self._metadata_connection()
-        else:
-            self._metadata_store.initialize_empty()
-            connection = self._metadata_store.open_connection(readonly=False)
-            owns_connection = True
-        try:
-            with self._temporary_active_metadata_connection(connection, readonly=False):
-                self._metadata_store.ensure_schema(connection)
-                self._metadata_store.clear_truth_tables(connection)
-                self._metadata_store.set_repo_meta(connection, legacy_config)
-                timestamp = _utc_now()
-                for branch_name in branch_names:
-                    self._metadata_store.set_ref(
-                        connection,
-                        "branch",
-                        branch_name,
-                        branch_targets[branch_name],
-                        timestamp,
-                    )
-                    for row in self._legacy_reflog_rows("branch", branch_name):
-                        self._metadata_store.append_reflog(
-                            connection,
-                            "branch",
-                            branch_name,
-                            str(row["timestamp"]),
-                            row.get("old_head"),
-                            row.get("new_head"),
-                            str(row.get("message", "")),
-                            str(row["checksum"]),
-                        )
-                for tag_name in tag_names:
-                    self._metadata_store.set_ref(
-                        connection,
-                        "tag",
-                        tag_name,
-                        tag_targets[tag_name],
-                        timestamp,
-                    )
-                    for row in self._legacy_reflog_rows("tag", tag_name):
-                        self._metadata_store.append_reflog(
-                            connection,
-                            "tag",
-                            tag_name,
-                            str(row["timestamp"]),
-                            row.get("old_head"),
-                            row.get("new_head"),
-                            str(row.get("message", "")),
-                            str(row["checksum"]),
-                        )
-                for object_type in ("commits", "trees", "files", "blobs"):
-                    for object_id, payload in object_payloads[object_type].items():
-                        self._metadata_store.set_object_payload(connection, object_type, object_id, payload)
-                self._metadata_store.set_chunk_entries(connection, chunk_entries)
-                if owns_connection:
-                    connection.commit()
-        finally:
-            if owns_connection:
-                connection.close()
 
     def _repo_config(self) -> Dict[str, object]:
         """
@@ -5873,8 +5533,6 @@ class RepositoryBackend(object):
             ['default_branch', 'file_mode', 'format_version', 'large_file_threshold', 'metadata', 'object_hash']
         """
 
-        if not self._metadata_store.exists():
-            return self._legacy_repo_config()
         return self._run_metadata_read(lambda connection: self._metadata_store.get_repo_meta(connection))
 
     def _list_refs(self) -> List[str]:
@@ -5910,16 +5568,11 @@ class RepositoryBackend(object):
             []
         """
 
-        if self._metadata_store.exists():
-            return self._run_metadata_read(
-                lambda connection: [
-                    name for _kind, name, _commit_id in self._metadata_store.list_refs(connection, "branch")
-                ]
-            )
-        heads_dir = self._repo_path / "refs" / "heads"
-        if not heads_dir.exists():
-            return []
-        return self._list_ref_names_under(heads_dir)
+        return self._run_metadata_read(
+            lambda connection: [
+                name for _kind, name, _commit_id in self._metadata_store.list_refs(connection, "branch")
+            ]
+        )
 
     def _list_tag_names(self) -> List[str]:
         """
@@ -5935,16 +5588,11 @@ class RepositoryBackend(object):
             []
         """
 
-        if self._metadata_store.exists():
-            return self._run_metadata_read(
-                lambda connection: [
-                    name for _kind, name, _commit_id in self._metadata_store.list_refs(connection, "tag")
-                ]
-            )
-        tags_dir = self._repo_path / "refs" / "tags"
-        if not tags_dir.exists():
-            return []
-        return self._list_ref_names_under(tags_dir)
+        return self._run_metadata_read(
+            lambda connection: [
+                name for _kind, name, _commit_id in self._metadata_store.list_refs(connection, "tag")
+            ]
+        )
 
     def _list_ref_names_under(self, root: Path) -> List[str]:
         """
@@ -6058,18 +5706,13 @@ class RepositoryBackend(object):
             >>> backend._write_ref("main", None)  # doctest: +SKIP
         """
 
-        if self._metadata_store.exists():
-            self._metadata_store.set_ref(
-                self._metadata_connection(),
-                "branch",
-                name,
-                commit_id,
-                _utc_now(),
-            )
-            return
-        path = self._ref_path(name)
-        content = "" if commit_id is None else commit_id + "\n"
-        _write_text_atomic(path, content)
+        self._metadata_store.set_ref(
+            self._metadata_connection(),
+            "branch",
+            name,
+            commit_id,
+            _utc_now(),
+        )
 
     def _write_tag_ref(self, name: str, commit_id: str) -> None:
         """
@@ -6088,17 +5731,13 @@ class RepositoryBackend(object):
             >>> backend._write_tag_ref("v1", "sha256:" + "a" * 64)  # doctest: +SKIP
         """
 
-        if self._metadata_store.exists():
-            self._metadata_store.set_ref(
-                self._metadata_connection(),
-                "tag",
-                name,
-                commit_id,
-                _utc_now(),
-            )
-            return
-        path = self._tag_ref_path(name)
-        _write_text_atomic(path, commit_id + "\n")
+        self._metadata_store.set_ref(
+            self._metadata_connection(),
+            "tag",
+            name,
+            commit_id,
+            _utc_now(),
+        )
 
     def _delete_ref_file(self, path: Path, stop_root: Path) -> None:
         """
@@ -6117,32 +5756,20 @@ class RepositoryBackend(object):
             >>> backend._delete_ref_file(Path("/tmp/demo-repo/refs/heads/dev"), Path("/tmp/demo-repo/refs/heads"))  # doctest: +SKIP
         """
 
-        if self._metadata_store.exists():
-            if stop_root == self._repo_path / "refs" / "heads":
-                self._metadata_store.delete_ref(
-                    self._metadata_connection(),
-                    "branch",
-                    path.relative_to(stop_root).as_posix(),
-                )
-                return
-            if stop_root == self._repo_path / "refs" / "tags":
-                self._metadata_store.delete_ref(
-                    self._metadata_connection(),
-                    "tag",
-                    path.relative_to(stop_root).as_posix(),
-                )
-                return
+        if stop_root == self._repo_path / "refs" / "heads":
+            self._metadata_store.delete_ref(
+                self._metadata_connection(),
+                "branch",
+                path.relative_to(stop_root).as_posix(),
+            )
             return
-        path.unlink()
-        _fsync_directory(path.parent)
-        parent = path.parent
-        while parent != stop_root and parent.exists():
-            try:
-                parent.rmdir()
-                _fsync_directory(parent.parent)
-            except OSError:
-                break
-            parent = parent.parent
+        if stop_root == self._repo_path / "refs" / "tags":
+            self._metadata_store.delete_ref(
+                self._metadata_connection(),
+                "tag",
+                path.relative_to(stop_root).as_posix(),
+            )
+            return
 
     def _read_ref(self, name: str) -> Optional[str]:
         """
@@ -6161,14 +5788,12 @@ class RepositoryBackend(object):
             >>> backend._read_ref("main")  # doctest: +SKIP
         """
 
-        if self._metadata_store.exists():
-            try:
-                return self._run_metadata_read(
-                    lambda connection: self._metadata_store.get_ref(connection, "branch", name)
-                )
-            except RevisionNotFoundError:
-                raise RevisionNotFoundError("branch not found: %s" % name)
-        return self._legacy_read_ref_value(self._ref_path(name), "branch not found: %s" % name)
+        try:
+            return self._run_metadata_read(
+                lambda connection: self._metadata_store.get_ref(connection, "branch", name)
+            )
+        except RevisionNotFoundError:
+            raise RevisionNotFoundError("branch not found: %s" % name)
 
     def _read_tag_ref(self, name: str) -> Optional[str]:
         """
@@ -6186,14 +5811,12 @@ class RepositoryBackend(object):
             >>> backend._read_tag_ref("v1")  # doctest: +SKIP
         """
 
-        if self._metadata_store.exists():
-            try:
-                return self._run_metadata_read(
-                    lambda connection: self._metadata_store.get_ref(connection, "tag", name)
-                )
-            except RevisionNotFoundError:
-                raise RevisionNotFoundError("tag not found: %s" % name)
-        return self._legacy_read_ref_value(self._tag_ref_path(name), "tag not found: %s" % name)
+        try:
+            return self._run_metadata_read(
+                lambda connection: self._metadata_store.get_ref(connection, "tag", name)
+            )
+        except RevisionNotFoundError:
+            raise RevisionNotFoundError("tag not found: %s" % name)
 
     def _resolve_revision(self, revision: str, allow_empty_ref: bool = False) -> Optional[str]:
         """
@@ -6223,8 +5846,8 @@ class RepositoryBackend(object):
         elif revision.startswith("refs/tags/"):
             head = self._read_tag_ref(revision.split("/", 2)[-1])
         else:
-            branch_exists = revision in self._list_branch_names() if self._metadata_store.exists() else self._ref_path(revision).exists()
-            tag_exists = revision in self._list_tag_names() if self._metadata_store.exists() else self._tag_ref_path(revision).exists()
+            branch_exists = revision in self._list_branch_names()
+            tag_exists = revision in self._list_tag_names()
             if branch_exists:
                 head = self._read_ref(revision)
             elif tag_exists:
@@ -6323,16 +5946,12 @@ class RepositoryBackend(object):
             False
         """
 
-        if self._metadata_store.exists():
-            exists = self._metadata_store.object_exists(self._metadata_connection(), object_type, object_id)
-            if not exists:
-                return False
-            if object_type == "blobs":
-                return self._blob_data_path(object_id).exists()
-            return True
+        exists = self._metadata_store.object_exists(self._metadata_connection(), object_type, object_id)
+        if not exists:
+            return False
         if object_type == "blobs":
-            return self._blob_meta_path(object_id).exists() and self._blob_data_path(object_id).exists()
-        return self._object_json_path(object_type, object_id).exists()
+            return self._blob_data_path(object_id).exists()
+        return True
 
     def _stage_json_object(self, txdir: Path, object_type: str, payload: object) -> str:
         """
@@ -6478,26 +6097,13 @@ class RepositoryBackend(object):
             >>> backend._read_object_payload("trees", "sha256:" + "a" * 64)  # doctest: +SKIP
         """
 
-        if self._metadata_store.exists():
-            cached_payload = self._recent_object_payload(object_type, object_id)
-            if cached_payload is not None:
-                return cached_payload
-            payload = self._run_metadata_read(
-                lambda connection: self._metadata_store.get_object_payload(connection, object_type, object_id)
-            )
-            self._remember_recent_object_payload(object_type, object_id, payload)
-            return payload
-        path = self._blob_meta_path(object_id) if object_type == "blobs" else self._object_json_path(object_type, object_id)
-        if not path.exists():
-            raise RevisionNotFoundError("object not found: %s" % object_id)
-        cached_payload = self._recent_object_payload(object_type, object_id, path)
+        cached_payload = self._recent_object_payload(object_type, object_id)
         if cached_payload is not None:
             return cached_payload
-        container = _read_json(path)
-        if not isinstance(container, dict) or "payload" not in container:
-            raise IntegrityError("invalid object container")
-        payload = dict(container["payload"])
-        self._remember_recent_object_payload(object_type, object_id, payload, path)
+        payload = self._run_metadata_read(
+            lambda connection: self._metadata_store.get_object_payload(connection, object_type, object_id)
+        )
+        self._remember_recent_object_payload(object_type, object_id, payload)
         return payload
 
     def _snapshot_for_revision(self, revision: str) -> Dict[str, str]:
@@ -7287,24 +6893,7 @@ class RepositoryBackend(object):
         :rtype: None
         """
 
-        if self._metadata_store.exists():
-            return
-        staged_index = IndexStore(txdir / "chunks" / "index")
-        discovered = []
-        for level in ("L0", "L1", "L2"):
-            level_root = staged_index.segment_path(level, "placeholder").parent
-            if not level_root.exists():
-                continue
-            for path in sorted(level_root.glob("*.idx")):
-                discovered.append((level, path.name))
-
-        if not discovered:
-            return
-
-        manifest = IndexStore(self._repo_path / "chunks" / "index").read_manifest()
-        for level, segment_name in discovered:
-            manifest = manifest.add_segment(level, segment_name)
-        staged_index.write_manifest(manifest)
+        return
 
     def _apply_delete(self, snapshot: Dict[str, str], path_in_repo: str, is_folder: bool) -> None:
         """
@@ -7563,52 +7152,40 @@ class RepositoryBackend(object):
             for path in sorted(staged_root.rglob("*")):
                 if path.is_dir():
                     continue
-                if self._metadata_store.exists():
-                    relative = path.relative_to(staged_root)
-                    object_type = str(relative.parts[0])
-                    if path.name.endswith(".data"):
-                        target = self._repo_path / "objects" / relative
-                        target.parent.mkdir(parents=True, exist_ok=True)
-                        if target.exists():
-                            if path.read_bytes() != target.read_bytes():
-                                raise IntegrityError("staged blob payload does not match existing payload")
-                            path.unlink()
-                            _fsync_directory(path.parent)
-                            continue
-                        os.replace(str(path), str(target))
-                        _fsync_directory(target.parent)
+                relative = path.relative_to(staged_root)
+                object_type = str(relative.parts[0])
+                if path.name.endswith(".data"):
+                    target = self._repo_path / "objects" / relative
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    if target.exists():
+                        if path.read_bytes() != target.read_bytes():
+                            raise IntegrityError("staged blob payload does not match existing payload")
+                        path.unlink()
+                        _fsync_directory(path.parent)
                         continue
-
-                    container = _read_json(path)
-                    if not isinstance(container, dict) or "payload" not in container:
-                        raise IntegrityError("invalid object container")
-                    object_id = OBJECT_HASH + ":" + relative.parts[2] + path.name.split(".", 1)[0]
-                    payload = dict(container["payload"])
-                    if self._metadata_store.object_exists(self._metadata_connection(), object_type, object_id):
-                        if self._metadata_store.get_object_payload(self._metadata_connection(), object_type, object_id) != payload:
-                            raise IntegrityError("staged object does not match existing object")
-                    else:
-                        self._metadata_store.set_object_payload(
-                            self._metadata_connection(),
-                            object_type,
-                            object_id,
-                            payload,
-                        )
-                    path.unlink()
-                    _fsync_directory(path.parent)
+                    os.replace(str(path), str(target))
+                    _fsync_directory(target.parent)
                     continue
 
-                relative = path.relative_to(staged_root)
-                target = self._repo_path / "objects" / relative
-                target.parent.mkdir(parents=True, exist_ok=True)
-                if target.exists():
-                    if path.read_bytes() != target.read_bytes():
+                container = _read_json(path)
+                if not isinstance(container, dict) or "payload" not in container:
+                    raise IntegrityError("invalid object container")
+                object_id = OBJECT_HASH + ":" + relative.parts[2] + path.name.split(".", 1)[0]
+                payload = dict(container["payload"])
+                if self._metadata_store.object_exists(self._metadata_connection(), object_type, object_id):
+                    if self._metadata_store.get_object_payload(self._metadata_connection(), object_type, object_id) != payload:
                         raise IntegrityError("staged object does not match existing object")
                     path.unlink()
                     _fsync_directory(path.parent)
                     continue
-                os.replace(str(path), str(target))
-                _fsync_directory(target.parent)
+                self._metadata_store.set_object_payload(
+                    self._metadata_connection(),
+                    object_type,
+                    object_id,
+                    payload,
+                )
+                path.unlink()
+                _fsync_directory(path.parent)
 
         staged_packs = txdir / "chunks" / "packs"
         if staged_packs.exists():
@@ -7626,48 +7203,24 @@ class RepositoryBackend(object):
 
         staged_index = txdir / "chunks" / "index"
         if staged_index.exists():
-            if self._metadata_store.exists():
-                index_store = IndexStore(staged_index)
-                if index_store.manifest_path.exists():
-                    replacement_entries = sorted(staged_chunk_entries.values(), key=lambda entry: str(entry.chunk_id))
-                    self._metadata_store.set_chunk_entries(
-                        self._metadata_connection(),
-                        replacement_entries,
-                    )
-                elif staged_chunk_entries:
-                    merged_entries = self._visible_chunk_entries_unlocked()
-                    merged_entries.update(staged_chunk_entries)
-                    self._metadata_store.set_chunk_entries(
-                        self._metadata_connection(),
-                        sorted(merged_entries.values(), key=lambda entry: str(entry.chunk_id)),
-                    )
-                for path in sorted(staged_index.rglob("*")):
-                    if path.is_file():
-                        path.unlink()
-                        _fsync_directory(path.parent)
-                return
-            for level in ("L0", "L1", "L2"):
-                staged_level_root = staged_index / level
-                if not staged_level_root.exists():
-                    continue
-                for path in sorted(staged_level_root.glob("*.idx")):
-                    target = self._repo_path / "chunks" / "index" / level / path.name
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    if target.exists():
-                        if path.read_bytes() != target.read_bytes():
-                            raise IntegrityError("staged index segment does not match existing segment")
-                        path.unlink()
-                        _fsync_directory(path.parent)
-                        continue
-                    os.replace(str(path), str(target))
-                    _fsync_directory(target.parent)
-
-            manifest_path = staged_index / "MANIFEST"
-            if manifest_path.exists():
-                target_manifest = self._repo_path / "chunks" / "index" / "MANIFEST"
-                target_manifest.parent.mkdir(parents=True, exist_ok=True)
-                os.replace(str(manifest_path), str(target_manifest))
-                _fsync_directory(target_manifest.parent)
+            index_store = IndexStore(staged_index)
+            if index_store.manifest_path.exists():
+                replacement_entries = sorted(staged_chunk_entries.values(), key=lambda entry: str(entry.chunk_id))
+                self._metadata_store.set_chunk_entries(
+                    self._metadata_connection(),
+                    replacement_entries,
+                )
+            elif staged_chunk_entries:
+                merged_entries = self._visible_chunk_entries_unlocked()
+                merged_entries.update(staged_chunk_entries)
+                self._metadata_store.set_chunk_entries(
+                    self._metadata_connection(),
+                    sorted(merged_entries.values(), key=lambda entry: str(entry.chunk_id)),
+                )
+            for path in sorted(staged_index.rglob("*")):
+                if path.is_file():
+                    path.unlink()
+                    _fsync_directory(path.parent)
 
     def _commit_info(self, commit_id: str, revision: str) -> CommitInfo:
         """
@@ -8044,34 +7597,22 @@ class RepositoryBackend(object):
         if ref_name.startswith("refs/heads/"):
             name = _validate_ref_name(ref_name[len("refs/heads/"):])
             path = self._reflog_path(name)
-            if self._metadata_store.exists():
-                if not self._sqlite_ref_or_reflog_exists("branch", name):
-                    raise RevisionNotFoundError("reflog not found: %s" % ref_name)
-                return path, "refs/heads/" + name
-            if not path.exists() and not self._ref_path(name).exists():
+            if not self._sqlite_ref_or_reflog_exists("branch", name):
                 raise RevisionNotFoundError("reflog not found: %s" % ref_name)
             return path, "refs/heads/" + name
 
         if ref_name.startswith("refs/tags/"):
             name = _validate_ref_name(ref_name[len("refs/tags/"):])
             path = self._tag_reflog_path(name)
-            if self._metadata_store.exists():
-                if not self._sqlite_ref_or_reflog_exists("tag", name):
-                    raise RevisionNotFoundError("reflog not found: %s" % ref_name)
-                return path, "refs/tags/" + name
-            if not path.exists() and not self._tag_ref_path(name).exists():
+            if not self._sqlite_ref_or_reflog_exists("tag", name):
                 raise RevisionNotFoundError("reflog not found: %s" % ref_name)
             return path, "refs/tags/" + name
 
         short_name = _validate_ref_name(ref_name)
         branch_path = self._reflog_path(short_name)
         tag_path = self._tag_reflog_path(short_name)
-        if self._metadata_store.exists():
-            branch_visible = self._sqlite_ref_or_reflog_exists("branch", short_name)
-            tag_visible = self._sqlite_ref_or_reflog_exists("tag", short_name)
-        else:
-            branch_visible = branch_path.exists() or self._ref_path(short_name).exists()
-            tag_visible = tag_path.exists() or self._tag_ref_path(short_name).exists()
+        branch_visible = self._sqlite_ref_or_reflog_exists("branch", short_name)
+        tag_visible = self._sqlite_ref_or_reflog_exists("tag", short_name)
 
         if branch_visible and tag_visible:
             raise ConflictError("ambiguous ref name: %s" % short_name)
@@ -8390,54 +7931,26 @@ class RepositoryBackend(object):
             >>> backend._write_tx_ref_update(Path("/tmp/demo-repo/txn/demo"), "branch", "main", None, None, "seed", True)  # doctest: +SKIP
         """
 
-        if self._metadata_store.exists():
-            existing = self._metadata_store.get_tx_log(self._metadata_connection(), txdir.name)
-            metadata = {}
-            if existing is not None:
-                metadata = dict(existing.get("metadata", {}))
-            last_reflog = self._metadata_store.last_reflog_entry(self._metadata_connection(), ref_kind, ref_name)
-            metadata["reflog_seq_before"] = int(last_reflog["seq"]) if last_reflog is not None else 0
-            self._metadata_store.replace_tx_log(
-                self._metadata_connection(),
-                {
-                    "txid": txdir.name,
-                    "tx_kind": "ref_update",
-                    "state": existing["state"] if existing is not None else "PREPARING",
-                    "ref_kind": ref_kind,
-                    "ref_name": ref_name,
-                    "old_head": old_head,
-                    "new_head": new_head,
-                    "message": message,
-                    "ref_existed_before": ref_existed_before,
-                    "payload": existing.get("payload", {}) if existing is not None else {},
-                    "metadata": metadata,
-                    "updated_at": _utc_now(),
-                },
-            )
-            return
-
-        reflog_path, _ = self._reflog_record(
-            revision=ref_name,
-            old_head=old_head,
-            new_head=new_head,
-            message=message,
-            ref_kind=ref_kind,
-        )
-        reflog_existed_before = reflog_path.exists()
-        reflog_size_before = reflog_path.stat().st_size if reflog_existed_before else 0
-
-        _write_json_atomic(
-            txdir / "REF_UPDATE.json",
+        existing = self._metadata_store.get_tx_log(self._metadata_connection(), txdir.name)
+        metadata = {}
+        if existing is not None:
+            metadata = dict(existing.get("metadata", {}))
+        last_reflog = self._metadata_store.last_reflog_entry(self._metadata_connection(), ref_kind, ref_name)
+        metadata["reflog_seq_before"] = int(last_reflog["seq"]) if last_reflog is not None else 0
+        self._metadata_store.replace_tx_log(
+            self._metadata_connection(),
             {
+                "txid": txdir.name,
+                "tx_kind": "ref_update",
+                "state": existing["state"] if existing is not None else "PREPARING",
                 "ref_kind": ref_kind,
                 "ref_name": ref_name,
                 "old_head": old_head,
                 "new_head": new_head,
                 "message": message,
-                "ref_existed_before": bool(ref_existed_before),
-                "reflog_path": str(reflog_path.relative_to(self._repo_path)),
-                "reflog_existed_before": reflog_existed_before,
-                "reflog_size_before": reflog_size_before,
+                "ref_existed_before": ref_existed_before,
+                "payload": existing.get("payload", {}) if existing is not None else {},
+                "metadata": metadata,
                 "updated_at": _utc_now(),
             },
         )
@@ -8459,27 +7972,24 @@ class RepositoryBackend(object):
             >>> backend._write_tx_state(Path("/tmp/demo-repo/txn/demo"), "PREPARING")  # doctest: +SKIP
         """
 
-        if self._metadata_store.exists():
-            existing = self._metadata_store.get_tx_log(self._metadata_connection(), txdir.name)
-            self._metadata_store.replace_tx_log(
-                self._metadata_connection(),
-                {
-                    "txid": txdir.name,
-                    "tx_kind": existing["tx_kind"] if existing is not None else "transaction",
-                    "state": state,
-                    "ref_kind": existing.get("ref_kind") if existing is not None else None,
-                    "ref_name": existing.get("ref_name") if existing is not None else None,
-                    "old_head": existing.get("old_head") if existing is not None else None,
-                    "new_head": existing.get("new_head") if existing is not None else None,
-                    "message": existing.get("message", "") if existing is not None else "",
-                    "ref_existed_before": existing.get("ref_existed_before", True) if existing is not None else True,
-                    "payload": existing.get("payload", {}) if existing is not None else {},
-                    "metadata": existing.get("metadata", {}) if existing is not None else {},
-                    "updated_at": _utc_now(),
-                },
-            )
-            return
-        _write_json_atomic(txdir / "STATE.json", {"state": state, "updated_at": _utc_now()})
+        existing = self._metadata_store.get_tx_log(self._metadata_connection(), txdir.name)
+        self._metadata_store.replace_tx_log(
+            self._metadata_connection(),
+            {
+                "txid": txdir.name,
+                "tx_kind": existing["tx_kind"] if existing is not None else "transaction",
+                "state": state,
+                "ref_kind": existing.get("ref_kind") if existing is not None else None,
+                "ref_name": existing.get("ref_name") if existing is not None else None,
+                "old_head": existing.get("old_head") if existing is not None else None,
+                "new_head": existing.get("new_head") if existing is not None else None,
+                "message": existing.get("message", "") if existing is not None else "",
+                "ref_existed_before": existing.get("ref_existed_before", True) if existing is not None else True,
+                "payload": existing.get("payload", {}) if existing is not None else {},
+                "metadata": existing.get("metadata", {}) if existing is not None else {},
+                "updated_at": _utc_now(),
+            },
+        )
 
     def _commit_branch_ref_update_unlocked(
         self,
@@ -8594,16 +8104,9 @@ class RepositoryBackend(object):
         """
 
         if not txdir.exists():
-            if self._sqlite_metadata_is_bootstrapped():
-                self._metadata_store.delete_tx_log(self._metadata_connection(), txdir.name)
+            self._metadata_store.delete_tx_log(self._metadata_connection(), txdir.name)
             return
-        if self._sqlite_metadata_is_bootstrapped():
-            self._recover_sqlite_transaction_unlocked(txdir)
-            return
-        if (txdir / "REF_UPDATE.json").exists():
-            self._recover_ref_update_transaction(txdir)
-        else:
-            self._cleanup_txdir(txdir)
+        self._recover_sqlite_transaction_unlocked(txdir)
 
     def _recover_sqlite_transaction_unlocked(self, txdir: Path) -> None:
         """
@@ -8618,48 +8121,6 @@ class RepositoryBackend(object):
         if self._sqlite_metadata_is_bootstrapped():
             self._metadata_store.delete_tx_log(self._metadata_connection(), txdir.name)
         self._cleanup_txdir(txdir)
-
-    def _restore_reflog_state(
-        self,
-        ref_kind: str,
-        reflog_path: Path,
-        reflog_existed_before: bool,
-        reflog_size_before: int,
-    ) -> None:
-        """
-        Restore reflog bytes to their pre-transaction state.
-
-        :param ref_kind: Ref collection kind, either ``"branch"`` or ``"tag"``
-        :type ref_kind: str
-        :param reflog_path: Absolute reflog file path
-        :type reflog_path: pathlib.Path
-        :param reflog_existed_before: Whether the reflog existed before the
-            interrupted write
-        :type reflog_existed_before: bool
-        :param reflog_size_before: Previous reflog byte size
-        :type reflog_size_before: int
-        :return: ``None``.
-        :rtype: None
-        """
-
-        if self._sqlite_metadata_is_bootstrapped():
-            return
-        if reflog_existed_before:
-            reflog_path.parent.mkdir(parents=True, exist_ok=True)
-            with reflog_path.open("ab") as file_:
-                file_.truncate(reflog_size_before)
-                file_.flush()
-                os.fsync(file_.fileno())
-            _fsync_directory(reflog_path.parent)
-            return
-
-        if reflog_path.exists():
-            if ref_kind == "branch":
-                self._delete_ref_file(reflog_path, self._repo_path / "logs" / "refs" / "heads")
-            elif ref_kind == "tag":
-                self._delete_ref_file(reflog_path, self._repo_path / "logs" / "refs" / "tags")
-            else:
-                raise ValueError("ref_kind must be 'branch' or 'tag'")
 
     def _finalize_ref_update_unlocked(
         self,
@@ -8721,166 +8182,6 @@ class RepositoryBackend(object):
         self._maybe_failpoint(failpoint_prefix + ".after_reflog_append")
         self._write_tx_state(txdir, "COMMITTED")
 
-    def _read_tx_state(self, txdir: Path) -> Optional[str]:
-        """
-        Read the persisted transaction state marker if available.
-
-        :param txdir: Transaction working directory
-        :type txdir: pathlib.Path
-        :return: State label, or ``None`` when missing/unreadable
-        :rtype: Optional[str]
-        """
-
-        if self._sqlite_metadata_is_bootstrapped():
-            row = self._metadata_store.get_tx_log(self._metadata_connection(), txdir.name)
-            if row is None:
-                return None
-            return str(row.get("state", ""))
-        state_path = txdir / "STATE.json"
-        if not state_path.exists():
-            return None
-        try:
-            payload = _read_json(state_path)
-        except (OSError, TypeError, ValueError):
-            # Treat unreadable state as not committed so recovery chooses rollback.
-            return None
-        if not isinstance(payload, dict):
-            return None
-        return str(payload.get("state", ""))
-
-    def _restore_ref_value(
-        self,
-        ref_kind: str,
-        ref_name: str,
-        old_head: Optional[str],
-        ref_existed_before: bool,
-    ) -> None:
-        """
-        Restore a branch or tag to its pre-transaction value.
-
-        :param ref_kind: Ref collection kind, either ``"branch"`` or ``"tag"``
-        :type ref_kind: str
-        :param ref_name: Normalized branch or tag name
-        :type ref_name: str
-        :param old_head: Previous ref target
-        :type old_head: Optional[str]
-        :param ref_existed_before: Whether the ref existed before the write began
-        :type ref_existed_before: bool
-        :return: ``None``.
-        :rtype: None
-        """
-
-        if ref_kind == "branch":
-            path = self._ref_path(ref_name)
-            if ref_existed_before:
-                self._write_ref(ref_name, old_head)
-            elif self._sqlite_metadata_is_bootstrapped():
-                self._metadata_store.delete_ref(self._metadata_connection(), "branch", ref_name)
-            elif path.exists():
-                self._delete_ref_file(path, self._repo_path / "refs" / "heads")
-            return
-
-        if ref_kind == "tag":
-            path = self._tag_ref_path(ref_name)
-            if ref_existed_before and old_head is not None:
-                self._write_tag_ref(ref_name, old_head)
-            elif self._sqlite_metadata_is_bootstrapped():
-                self._metadata_store.delete_ref(self._metadata_connection(), "tag", ref_name)
-            elif path.exists():
-                self._delete_ref_file(path, self._repo_path / "refs" / "tags")
-            return
-
-        raise ValueError("ref_kind must be 'branch' or 'tag'")
-
-    def _recover_ref_update_transaction(self, txdir: Path) -> None:
-        """
-        Resolve a ref-changing transaction by cleanup or rollback.
-
-        :param txdir: Transaction working directory
-        :type txdir: pathlib.Path
-        :return: ``None``.
-        :rtype: None
-
-        Example::
-
-            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
-            >>> backend._recover_ref_update_transaction(Path("/tmp/demo-repo/txn/demo"))  # doctest: +SKIP
-        """
-
-        if self._sqlite_metadata_is_bootstrapped():
-            self._recover_sqlite_transaction_unlocked(txdir)
-            return
-
-        ref_update_path = txdir / "REF_UPDATE.json"
-        if not ref_update_path.exists():
-            self._cleanup_txdir(txdir)
-            return
-
-        try:
-            payload = _read_json(ref_update_path)
-        except (OSError, TypeError, ValueError) as err:
-            raise IntegrityError("invalid ref update journal %s: %s" % (txdir.name, err))
-        if not isinstance(payload, dict):
-            raise IntegrityError("invalid ref update journal %s: expected JSON object" % txdir.name)
-        try:
-            ref_kind = str(payload["ref_kind"])
-            ref_name = str(payload["ref_name"])
-        except KeyError as err:
-            raise IntegrityError("invalid ref update journal %s: missing %s" % (txdir.name, err.args[0]))
-        old_head = payload.get("old_head")
-        ref_existed_before = payload.get("ref_existed_before", True)
-        new_head = payload.get("new_head")
-        message = str(payload.get("message", ""))
-        reflog_raw_path = payload.get("reflog_path")
-        reflog_existed_before = payload.get("reflog_existed_before")
-        reflog_size_before = payload.get("reflog_size_before")
-        if old_head is not None and not isinstance(old_head, str):
-            raise IntegrityError("invalid ref update journal %s: old_head must be a string or null" % txdir.name)
-        if new_head is not None and not isinstance(new_head, str):
-            raise IntegrityError("invalid ref update journal %s: new_head must be a string or null" % txdir.name)
-        if not isinstance(ref_existed_before, bool):
-            raise IntegrityError("invalid ref update journal %s: ref_existed_before must be a boolean" % txdir.name)
-
-        if reflog_raw_path is None:
-            try:
-                reflog_path, _ = self._reflog_record(
-                    revision=ref_name,
-                    old_head=old_head,
-                    new_head=new_head,
-                    message=message,
-                    ref_kind=ref_kind,
-                )
-            except ValueError as err:
-                raise IntegrityError("invalid ref update journal %s: %s" % (txdir.name, err))
-            reflog_existed_before = reflog_path.exists()
-            reflog_size_before = reflog_path.stat().st_size if reflog_existed_before else 0
-        else:
-            if not isinstance(reflog_raw_path, str):
-                raise IntegrityError("invalid ref update journal %s: reflog_path must be a string" % txdir.name)
-            if not isinstance(reflog_existed_before, bool):
-                raise IntegrityError("invalid ref update journal %s: reflog_existed_before must be a boolean" % txdir.name)
-            if not isinstance(reflog_size_before, int) or reflog_size_before < 0:
-                raise IntegrityError("invalid ref update journal %s: reflog_size_before must be a non-negative integer" % txdir.name)
-            reflog_path = self._repo_path / reflog_raw_path
-
-        if self._read_tx_state(txdir) != "COMMITTED":
-            try:
-                self._restore_ref_value(
-                    ref_kind=ref_kind,
-                    ref_name=ref_name,
-                    old_head=old_head,
-                    ref_existed_before=ref_existed_before,
-                )
-                self._restore_reflog_state(
-                    ref_kind=ref_kind,
-                    reflog_path=reflog_path,
-                    reflog_existed_before=reflog_existed_before,
-                    reflog_size_before=reflog_size_before,
-                )
-            except ValueError as err:
-                raise IntegrityError("invalid ref update journal %s: %s" % (txdir.name, err))
-        self._cleanup_txdir(txdir)
-
     def _cleanup_txdir(self, txdir: Path) -> None:
         """
         Remove a transaction directory if it still exists.
@@ -8904,30 +8205,19 @@ class RepositoryBackend(object):
 
     def _has_ref_update_transactions(self) -> bool:
         """
-        Check whether the transaction area contains ref-changing leftovers.
+        Check whether the transaction area contains unfinished SQLite tx-log rows.
 
-        :return: Whether any transaction still carries ``REF_UPDATE.json``
+        :return: Whether any transaction still carries unfinished SQLite journal state
         :rtype: bool
         """
 
-        if self._sqlite_metadata_is_bootstrapped():
-            if self._active_metadata_connection is not None:
-                if self._metadata_store.list_tx_logs(self._metadata_connection()):
-                    return True
-            else:
-                connection = self._metadata_store.open_connection(readonly=True)
-                try:
-                    if self._metadata_store.list_tx_logs(connection):
-                        return True
-                finally:
-                    connection.close()
-        txn_root = self._repo_path / "txn"
-        if not txn_root.exists():
-            return False
-        for txdir in txn_root.iterdir():
-            if txdir.is_dir() and (txdir / "REF_UPDATE.json").exists():
-                return True
-        return False
+        if self._active_metadata_connection is not None:
+            return bool(self._metadata_store.list_tx_logs(self._metadata_connection()))
+        connection = self._metadata_store.open_connection(readonly=True)
+        try:
+            return bool(self._metadata_store.list_tx_logs(connection))
+        finally:
+            connection.close()
 
     def _rollback_interrupted_ref_updates_if_needed(self) -> None:
         """
@@ -8941,19 +8231,12 @@ class RepositoryBackend(object):
             return
         with self._write_locked():
             txn_root = self._repo_path / "txn"
-            if self._sqlite_metadata_is_bootstrapped():
-                if txn_root.exists():
-                    for txdir in sorted(txn_root.iterdir()):
-                        if txdir.is_dir():
-                            self._recover_sqlite_transaction_unlocked(txdir)
-                for row in self._metadata_store.list_tx_logs(self._metadata_connection()):
-                    self._metadata_store.delete_tx_log(self._metadata_connection(), str(row["txid"]))
-                return
-            if not txn_root.exists():
-                return
-            for txdir in sorted(txn_root.iterdir()):
-                if txdir.is_dir() and (txdir / "REF_UPDATE.json").exists():
-                    self._recover_ref_update_transaction(txdir)
+            if txn_root.exists():
+                for txdir in sorted(txn_root.iterdir()):
+                    if txdir.is_dir():
+                        self._recover_sqlite_transaction_unlocked(txdir)
+            for row in self._metadata_store.list_tx_logs(self._metadata_connection()):
+                self._metadata_store.delete_tx_log(self._metadata_connection(), str(row["txid"]))
 
     def _recover_transactions(self) -> None:
         """
@@ -8969,24 +8252,12 @@ class RepositoryBackend(object):
         """
 
         txn_root = self._repo_path / "txn"
-        if self._sqlite_metadata_is_bootstrapped():
-            if txn_root.exists():
-                for txdir in sorted(txn_root.iterdir()):
-                    if txdir.is_dir():
-                        self._recover_sqlite_transaction_unlocked(txdir)
-            for row in self._metadata_store.list_tx_logs(self._metadata_connection()):
-                self._metadata_store.delete_tx_log(self._metadata_connection(), str(row["txid"]))
-            return
-        if not txn_root.exists():
-            return
-
-        for txdir in sorted(txn_root.iterdir()):
-            if not txdir.is_dir():
-                continue
-            if (txdir / "REF_UPDATE.json").exists():
-                self._recover_ref_update_transaction(txdir)
-            else:
-                self._cleanup_txdir(txdir)
+        if txn_root.exists():
+            for txdir in sorted(txn_root.iterdir()):
+                if txdir.is_dir():
+                    self._recover_sqlite_transaction_unlocked(txdir)
+        for row in self._metadata_store.list_tx_logs(self._metadata_connection()):
+            self._metadata_store.delete_tx_log(self._metadata_connection(), str(row["txid"]))
 
     def _reflog_record(
         self,
@@ -9038,37 +8309,6 @@ class RepositoryBackend(object):
         }
         return path, record
 
-    @staticmethod
-    def _last_jsonl_record(path: Path) -> Optional[Dict[str, object]]:
-        """
-        Read the last non-empty JSON Lines record from a file.
-
-        :param path: JSONL file path
-        :type path: pathlib.Path
-        :return: Parsed last record, or ``None`` if unavailable
-        :rtype: Optional[Dict[str, object]]
-
-        Example::
-
-            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
-            >>> backend._last_jsonl_record(Path("/tmp/missing.jsonl"))
-        """
-
-        if not path.exists():
-            return None
-        lines = path.read_text(encoding="utf-8").splitlines()
-        for line in reversed(lines):
-            if not line.strip():
-                continue
-            try:
-                payload = json.loads(line)
-            except ValueError:
-                return None
-            if isinstance(payload, dict):
-                return dict(payload)
-            return None
-        return None
-
     def _append_reflog(
         self,
         revision: str,
@@ -9099,51 +8339,32 @@ class RepositoryBackend(object):
             >>> backend._append_reflog("main", None, "sha256:" + "a" * 64, "seed")  # doctest: +SKIP
         """
 
-        path, record = self._reflog_record(
+        _path, record = self._reflog_record(
             revision=revision,
             old_head=old_head,
             new_head=new_head,
             message=message,
             ref_kind=ref_kind,
         )
-        if self._metadata_store.exists():
-            last_record = self._metadata_store.last_reflog_entry(self._metadata_connection(), ref_kind, revision)
-            if (
-                last_record is not None
-                and last_record.get("checksum") == record["checksum"]
-                and last_record.get("old_head") == record["old_head"]
-                and last_record.get("new_head") == record["new_head"]
-                and last_record.get("message") == record["message"]
-            ):
-                return
-            self._metadata_store.append_reflog(
-                self._metadata_connection(),
-                ref_kind,
-                revision,
-                str(record["timestamp"]),
-                record.get("old_head"),
-                record.get("new_head"),
-                str(record.get("message", "")),
-                str(record["checksum"]),
-            )
-            return
-        path.parent.mkdir(parents=True, exist_ok=True)
-        last_record = self._last_jsonl_record(path)
+        last_record = self._metadata_store.last_reflog_entry(self._metadata_connection(), ref_kind, revision)
         if (
             last_record is not None
             and last_record.get("checksum") == record["checksum"]
-            and last_record.get("ref_name") == record["ref_name"]
             and last_record.get("old_head") == record["old_head"]
             and last_record.get("new_head") == record["new_head"]
             and last_record.get("message") == record["message"]
         ):
             return
-        with path.open("a", encoding="utf-8") as file_:
-            file_.write(json.dumps(record, sort_keys=True, ensure_ascii=False))
-            file_.write("\n")
-            file_.flush()
-            os.fsync(file_.fileno())
-        _fsync_directory(path.parent)
+        self._metadata_store.append_reflog(
+            self._metadata_connection(),
+            ref_kind,
+            revision,
+            str(record["timestamp"]),
+            record.get("old_head"),
+            record.get("new_head"),
+            str(record.get("message", "")),
+            str(record["checksum"]),
+        )
 
     def _validate_detached_target_root(self, target_root: Path) -> None:
         """

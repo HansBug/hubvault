@@ -2,11 +2,13 @@ from pathlib import Path
 
 import pytest
 import click
+import sqlite3
 from click.testing import CliRunner
 
 from hubvault import CommitOperationAdd, HubVaultApi
 from hubvault.entry.cli import cli
 from hubvault.entry.context import load_cli_repo_context, set_cli_repo_path
+from hubvault.repo.sqlite import SQLITE_METADATA_FILENAME
 
 
 @pytest.mark.unittest
@@ -56,3 +58,18 @@ class TestEntryContext:
 
         assert first.default_branch == "main"
         assert second is first
+
+    def test_load_cli_repo_context_rejects_repositories_without_visible_branches(self, tmp_path):
+        repo_dir = tmp_path / "repo"
+        api = HubVaultApi(repo_dir)
+        api.create_repo()
+
+        with sqlite3.connect(str(repo_dir / SQLITE_METADATA_FILENAME)) as conn:
+            conn.execute("DELETE FROM refs WHERE ref_kind = ?", ("branch",))
+            conn.commit()
+
+        ctx = click.Context(cli)
+        with ctx:
+            set_cli_repo_path(ctx, str(repo_dir))
+            with pytest.raises(click.ClickException, match="does not expose any branches"):
+                load_cli_repo_context(ctx)

@@ -1,8 +1,10 @@
 import pytest
+import sqlite3
 from click.testing import CliRunner
 
 from hubvault import CommitOperationAdd, HubVaultApi
 from hubvault.entry.cli import cli
+from hubvault.repo.sqlite import SQLITE_METADATA_FILENAME
 
 
 @pytest.mark.unittest
@@ -83,3 +85,31 @@ class TestEntryRefCommands:
 
         assert missing_tag_result.exit_code != 0
         assert "tag -d requires a tag name." in missing_tag_result.output
+
+    def test_delete_commands_report_empty_branch_and_empty_tag_targets(self, tmp_path):
+        repo_dir = tmp_path / "repo"
+        api = HubVaultApi(repo_dir)
+        api.create_repo()
+        api.create_branch(branch="empty-branch")
+        api.create_tag(tag="empty-tag")
+
+        with sqlite3.connect(str(repo_dir / SQLITE_METADATA_FILENAME)) as conn:
+            conn.execute(
+                "UPDATE refs SET commit_id = NULL WHERE ref_kind = ? AND ref_name = ?",
+                ("branch", "empty-branch"),
+            )
+            conn.execute(
+                "UPDATE refs SET commit_id = NULL WHERE ref_kind = ? AND ref_name = ?",
+                ("tag", "empty-tag"),
+            )
+            conn.commit()
+
+        runner = CliRunner()
+        delete_branch_result = runner.invoke(cli, ["-C", str(repo_dir), "branch", "-d", "empty-branch"])
+        delete_tag_result = runner.invoke(cli, ["-C", str(repo_dir), "tag", "-d", "empty-tag"])
+
+        assert delete_branch_result.exit_code == 0
+        assert "Deleted branch empty-branch." in delete_branch_result.output
+
+        assert delete_tag_result.exit_code == 0
+        assert "Deleted tag 'empty-tag'." in delete_tag_result.output

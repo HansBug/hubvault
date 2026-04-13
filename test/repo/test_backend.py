@@ -31,11 +31,55 @@ def _read_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
-def _write_json(path, payload):
-    Path(path).write_text(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")),
-        encoding="utf-8",
-    )
+def _insert_tx_log(
+    repo_dir,
+    txid,
+    tx_kind="ref_update",
+    state="COMMITTED",
+    ref_kind="branch",
+    ref_name="main",
+    old_head=None,
+    new_head=None,
+    message="stale tx",
+    ref_existed_before=True,
+    payload=None,
+    metadata=None,
+):
+    with sqlite3.connect(str(_repo_db_path(repo_dir))) as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO txn_log (
+                txid,
+                tx_kind,
+                state,
+                ref_kind,
+                ref_name,
+                old_head,
+                new_head,
+                message,
+                ref_existed_before,
+                payload_json,
+                metadata_json,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(txid),
+                str(tx_kind),
+                str(state),
+                None if ref_kind is None else str(ref_kind),
+                None if ref_name is None else str(ref_name),
+                old_head,
+                new_head,
+                str(message),
+                1 if ref_existed_before else 0,
+                json.dumps(payload or {}, sort_keys=True, separators=(",", ":")),
+                json.dumps(metadata or {}, sort_keys=True, separators=(",", ":")),
+                "2026-04-13T00:00:00Z",
+            ),
+        )
+        conn.commit()
 
 
 def _chunked_repo(tmp_path, repo_name):
@@ -442,52 +486,6 @@ class TestRepoBackendPackage:
 
         assert api.list_repo_files() == [".gitattributes", "new.txt"]
 
-    @pytest.mark.parametrize(
-        ("ref_kind", "ref_name", "ref_path_parts"),
-        [
-            ("branch", "temp", ("refs", "heads", "temp")),
-            ("tag", "release", ("refs", "tags", "release")),
-        ],
-    )
-    def test_backend_ref_recovery_removes_created_branch_and_tag_refs(
-        self,
-        tmp_path,
-        ref_kind,
-        ref_name,
-        ref_path_parts,
-    ):
-        api = HubVaultApi(tmp_path / "repo")
-        api.create_repo()
-        api.upload_file(path_or_fileobj=b"payload-v1", path_in_repo="bundle/file.bin")
-
-        repo_dir = tmp_path / "repo"
-        internal_head = _internal_ref_value(repo_dir, "branch", "main")
-        ref_path = repo_dir.joinpath(*ref_path_parts)
-        ref_path.parent.mkdir(parents=True, exist_ok=True)
-        ref_path.write_text(internal_head + "\n", encoding="utf-8")
-
-        txdir = repo_dir / "txn" / ("recover-" + ref_kind)
-        txdir.mkdir(parents=True)
-        _write_json(
-            txdir / "REF_UPDATE.json",
-            {
-                "ref_kind": ref_kind,
-                "ref_name": ref_name,
-                "old_head": None,
-                "new_head": internal_head,
-                "message": "create %s" % ref_kind,
-                "ref_existed_before": False,
-            },
-        )
-
-        assert api.read_bytes("bundle/file.bin") == b"payload-v1"
-        refs = api.list_repo_refs()
-        if ref_kind == "tag":
-            assert refs.tags == []
-        else:
-            assert [item.name for item in refs.branches] == ["main"]
-        assert not txdir.exists()
-
     def test_backend_write_paths_clean_empty_transaction_directory(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")
         api.create_repo()
@@ -502,89 +500,25 @@ class TestRepoBackendPackage:
         api.upload_file(path_or_fileobj=b"payload-v2", path_in_repo="bundle/second.bin")
         assert not txdir.exists()
 
-    @pytest.mark.parametrize(
-        ("journal_payload", "expected_message"),
-        [
-            ([], "expected JSON object"),
-            ({"ref_kind": "branch"}, "missing ref_name"),
-            (
-                {
-                    "ref_kind": "branch",
-                    "ref_name": "main",
-                    "old_head": 1,
-                    "ref_existed_before": True,
-                },
-                "old_head must be a string or null",
-            ),
-            (
-                {
-                    "ref_kind": "branch",
-                    "ref_name": "main",
-                    "old_head": None,
-                    "ref_existed_before": "yes",
-                },
-                "ref_existed_before must be a boolean",
-            ),
-            (
-                {
-                    "ref_kind": "weird",
-                    "ref_name": "main",
-                    "old_head": None,
-                    "ref_existed_before": False,
-                },
-                "ref_kind must be 'branch' or 'tag'",
-            ),
-        ],
-    )
-    def test_backend_ref_recovery_rejects_malformed_journals(
-        self,
-        tmp_path,
-        journal_payload,
-        expected_message,
-    ):
-        api = HubVaultApi(tmp_path / "repo")
+    def test_backend_reads_cleanup_sqlite_tracked_txdir_and_orphan_tx_log_leftovers(self, tmp_path):
+        repo_dir = tmp_path / "repo"
+        api = HubVaultApi(repo_dir)
         api.create_repo()
         api.upload_file(path_or_fileobj=b"payload-v1", path_in_repo="bundle/file.bin")
 
-        txdir = tmp_path / "repo" / "txn" / "broken"
-        txdir.mkdir(parents=True)
-        _write_json(txdir / "REF_UPDATE.json", journal_payload)
+        tracked_txdir = repo_dir / "txn" / "tracked-leftover"
+        tracked_txdir.mkdir(parents=True)
+        _insert_tx_log(repo_dir, "tracked-leftover")
+
+        orphan_txid = "orphan-leftover"
+        _insert_tx_log(repo_dir, orphan_txid)
 
         assert api.read_bytes("bundle/file.bin") == b"payload-v1"
-        assert not txdir.exists()
+        assert not tracked_txdir.exists()
 
-    @pytest.mark.parametrize("state_text", ["{bad json", "[]"])
-    def test_backend_ref_recovery_rolls_back_when_state_file_is_not_usable(self, tmp_path, state_text):
-        api = HubVaultApi(tmp_path / "repo")
-        api.create_repo()
-        first_commit = api.upload_file(path_or_fileobj=b"v1", path_in_repo="bundle/file.bin")
-        second_commit = api.upload_file(path_or_fileobj=b"v2", path_in_repo="bundle/file.bin")
-
-        repo_dir = tmp_path / "repo"
-        api.reset_ref("main", to_revision=first_commit.oid)
-        first_internal_head = _internal_ref_value(repo_dir, "branch", "main")
-        api.reset_ref("main", to_revision=second_commit.oid)
-        second_internal_head = _internal_ref_value(repo_dir, "branch", "main")
-        api.reset_ref("main", to_revision=first_commit.oid)
-
-        txdir = repo_dir / "txn" / "broken-state"
-        txdir.mkdir(parents=True)
-        _write_json(
-            txdir / "REF_UPDATE.json",
-            {
-                "ref_kind": "branch",
-                "ref_name": "main",
-                "old_head": first_internal_head,
-                "new_head": second_internal_head,
-                "message": "advance with broken state",
-                "ref_existed_before": True,
-            },
-        )
-        (txdir / "STATE.json").write_text(state_text, encoding="utf-8")
-
-        assert api.repo_info().head == first_commit.oid
-        assert api.read_bytes("bundle/file.bin") == b"v1"
-        assert not txdir.exists()
+        with sqlite3.connect(str(_repo_db_path(repo_dir))) as conn:
+            remaining = conn.execute("SELECT txid FROM txn_log ORDER BY txid").fetchall()
+        assert remaining == []
 
     def test_backend_full_verify_surfaces_corruption_recovery_and_view_warnings(self, tmp_path):
         api, repo_dir, _ = _chunked_repo(tmp_path, "full-verify")
@@ -594,20 +528,6 @@ class TestRepoBackendPackage:
         snapshot_dir = Path(api.snapshot_download())
         download_path.write_bytes(b"corrupted detached view")
         (snapshot_dir / "artifacts" / "large.bin").unlink()
-
-        broken_txdir = repo_dir / "txn" / "broken-recovery"
-        broken_txdir.mkdir(parents=True)
-        _write_json(
-            broken_txdir / "REF_UPDATE.json",
-            {
-                "ref_kind": "branch",
-                "ref_name": "main",
-                "old_head": 1,
-                "new_head": None,
-                "message": "broken recovery journal",
-                "ref_existed_before": True,
-            },
-        )
 
         pending_txdir = repo_dir / "txn" / "pending-dir"
         pending_txdir.mkdir(parents=True)
@@ -644,9 +564,10 @@ class TestRepoBackendPackage:
         assert any("chunk storage: unsupported chunk compression: gzip" in item for item in report.errors)
         assert any("stale file view:" in item for item in report.warnings)
         assert any("stale snapshot view:" in item for item in report.warnings)
+        assert any("pending transaction directory: pending-dir" in item for item in report.warnings)
         assert any("unexpected txn entry: manual-note.txt" in item for item in report.warnings)
         assert any("unexpected lock artifact: unexpected.lock" in item for item in report.warnings)
-        assert not pending_txdir.exists()
+        assert pending_txdir.exists()
 
     def test_backend_storage_overview_and_gc_cover_blob_only_and_manual_areas(self, tmp_path):
         repo_dir = tmp_path / "repo"
@@ -768,35 +689,6 @@ class TestRepoBackendPackage:
         with pytest.raises(RevisionNotFoundError, match="reflog not found: refs/tags/missing"):
             api.list_repo_reflog("refs/tags/missing")
 
-    def test_backend_tag_recovery_restores_previous_tag_head(self, tmp_path):
-        api = HubVaultApi(tmp_path / "repo")
-        api.create_repo()
-        first = api.upload_file(path_or_fileobj=b"v1", path_in_repo="bundle/file.bin")
-        api.create_tag(tag="release", revision=first.oid)
-        second = api.upload_file(path_or_fileobj=b"v2", path_in_repo="bundle/file.bin")
-
-        repo_dir = tmp_path / "repo"
-        first_tag_internal = _internal_ref_value(repo_dir, "tag", "release")
-        second_internal_head = _internal_ref_value(repo_dir, "branch", "main")
-        _set_internal_ref_value(repo_dir, "tag", "release", second_internal_head)
-        txdir = repo_dir / "txn" / "tag-rollback"
-        txdir.mkdir(parents=True)
-        _write_json(
-            txdir / "REF_UPDATE.json",
-            {
-                "ref_kind": "tag",
-                "ref_name": "release",
-                "old_head": first_tag_internal,
-                "new_head": second_internal_head,
-                "message": "retag release",
-                "ref_existed_before": True,
-            },
-        )
-
-        assert api.read_bytes("bundle/file.bin") == b"v2"
-        assert api.list_repo_refs().tags[0].target_commit == second.oid
-        assert not txdir.exists()
-
     def test_backend_public_pattern_filters_and_blank_reflog_lines_work(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")
         api.create_repo()
@@ -843,8 +735,7 @@ class TestRepoBackendPackage:
         empty_repo_dir = tmp_path / "empty-repo"
         empty_api = HubVaultApi(empty_repo_dir)
         empty_api.create_repo()
-        _remove_tree(empty_repo_dir / "refs" / "heads")
-        _remove_tree(empty_repo_dir / "refs" / "tags")
+        assert not (empty_repo_dir / "refs").exists()
 
         refs = empty_api.list_repo_refs()
         assert [item.name for item in refs.branches] == ["main"]
