@@ -251,6 +251,10 @@ code,
   margin-right: 6px;
 }
 
+.path-breadcrumb__button.is-icon-only .el-icon {
+  margin-right: 0;
+}
+
 .path-breadcrumb__separator {
   color: var(--el-text-color-placeholder);
 }

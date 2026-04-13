@@ -208,6 +208,8 @@ test("readonly frontend supports token query entry plus standalone file and comm
   await expectFileKind(page, "Dockerfile", "docker");
 
   await page.getByRole("button", { name: "icon-audit", exact: true }).click();
+  await expect(page.getByTestId("path-breadcrumb")).not.toContainText("<home>");
+  await expect(page.getByRole("button", { name: "Repository root" }).locator(".el-icon")).toBeVisible();
   await expectFileKind(page, "LICENSE", "license");
   await expectFileKind(page, "README.md", "readme");
   await expectFileKind(page, "blob.bin", "binary");

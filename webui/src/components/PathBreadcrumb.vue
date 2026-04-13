@@ -31,10 +31,11 @@ function navigate(item: BreadcrumbItem) {
 }
 
 function resolveLabel(item: BreadcrumbItem) {
-  if (item.home) {
-    return item.label || "<home>";
-  }
   return item.label || "";
+}
+
+function isIconOnly(item: BreadcrumbItem) {
+  return Boolean(item.home && !resolveLabel(item));
 }
 </script>
 
@@ -44,12 +45,12 @@ function resolveLabel(item: BreadcrumbItem) {
       <el-button
         link
         class="path-breadcrumb__button"
-        :class="{ 'is-current': item.current }"
+        :class="{ 'is-current': item.current, 'is-icon-only': isIconOnly(item) }"
         :aria-label="item.ariaLabel || item.label || 'Navigate path level'"
         @click="navigate(item)"
       >
         <el-icon v-if="item.home"><House /></el-icon>
-        <span>{{ resolveLabel(item) }}</span>
+        <span v-if="resolveLabel(item)">{{ resolveLabel(item) }}</span>
       </el-button>
       <span v-if="index < props.items.length - 1" class="path-breadcrumb__separator">/</span>
     </template>
