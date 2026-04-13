@@ -2385,10 +2385,7 @@ class RepositoryBackend(object):
                     new_head=None,
                     message="delete branch",
                     ref_existed_before=True,
-                    apply_ref_change=lambda: self._delete_ref_file(
-                        self._ref_path(branch_name),
-                        self._repo_path / "refs" / "heads",
-                    ),
+                    apply_ref_change=lambda: self._delete_ref(branch_name),
                     failpoint_prefix="delete_branch",
                 )
             except BaseException:
@@ -2515,10 +2512,7 @@ class RepositoryBackend(object):
                     new_head=None,
                     message="delete tag",
                     ref_existed_before=True,
-                    apply_ref_change=lambda: self._delete_ref_file(
-                        self._tag_ref_path(tag_name),
-                        self._repo_path / "refs" / "tags",
-                    ),
+                    apply_ref_change=lambda: self._delete_tag_ref(tag_name),
                     failpoint_prefix="delete_tag",
                 )
             except BaseException:
@@ -2571,13 +2565,7 @@ class RepositoryBackend(object):
             if limit is not None and limit < 0:
                 raise ValueError("limit must be >= 0")
 
-            _reflog_path, normalized_ref = self._resolve_reflog_query(ref_name)
-            if normalized_ref.startswith("refs/heads/"):
-                ref_kind = "branch"
-                short_name = normalized_ref[len("refs/heads/"):]
-            else:
-                ref_kind = "tag"
-                short_name = normalized_ref[len("refs/tags/"):]
+            ref_kind, short_name, normalized_ref = self._resolve_reflog_query(ref_name)
             return [
                 ReflogEntry(
                     timestamp=_parse_utc_timestamp(str(payload["timestamp"])),
@@ -4592,7 +4580,8 @@ class RepositoryBackend(object):
         historical_chunk_bytes = max(0, live_chunk_bytes - tip_chunk_bytes)
         reclaimable_gc_size = (
             sum(unreachable_object_bytes.values())
-            + max(0, actual_pack_bytes + actual_index_bytes - live_chunk_bytes)
+            + max(0, actual_pack_bytes - int(live_chunk_plan["pack_size"]))
+            + actual_index_bytes
         )
         reachable_size = metadata_size + sum(live_object_bytes.values()) + live_chunk_bytes
         historical_retained_size = historical_object_bytes + historical_chunk_bytes
@@ -4665,12 +4654,12 @@ class RepositoryBackend(object):
             ),
             StorageSectionInfo(
                 name="objects.blobs.meta",
-                path="objects/blobs/*.meta.json",
+                path="metadata.sqlite3::objects_blobs",
                 total_size=0,
                 file_count=0,
                 reclaimable_size=0,
                 reclaim_strategy="keep",
-                notes="Blob metadata lives in metadata.sqlite3; no published blob sidecar files are kept in steady state.",
+                notes="Blob metadata rows live in metadata.sqlite3 and are already counted under repo.metadata.",
             ),
             StorageSectionInfo(
                 name="objects.blobs.data",
@@ -4699,9 +4688,9 @@ class RepositoryBackend(object):
                 path="chunks/index/",
                 total_size=actual_index_bytes,
                 file_count=actual_index_files,
-                reclaimable_size=max(0, actual_index_bytes - int(live_chunk_plan["index_total_size"])),
+                reclaimable_size=actual_index_bytes,
                 reclaim_strategy="gc",
-                notes="Visible manifest plus immutable index segments for chunk lookups.",
+                notes="Legacy on-disk chunk index residue only; steady-state chunk visibility lives in metadata.sqlite3.",
             ),
             StorageSectionInfo(
                 name="cache",
@@ -4772,7 +4761,7 @@ class RepositoryBackend(object):
 
         actual_chunk_reclaimable = (
             max(0, _path_metrics(self._repo_path / "chunks" / "packs")[0] - int(live_chunk_plan["pack_size"]))
-            + max(0, _path_metrics(self._repo_path / "chunks" / "index")[0] - int(live_chunk_plan["index_total_size"]))
+            + _path_metrics(self._repo_path / "chunks" / "index")[0]
         )
         cache_size = overview.reclaimable_cache_size if prune_cache else 0
         temporary_size = int(state["quarantine_size"])
@@ -4863,7 +4852,6 @@ class RepositoryBackend(object):
 
         q_objects_root = self._repo_path / "quarantine" / "objects" / gcid
         q_packs_root = self._repo_path / "quarantine" / "packs" / gcid
-        q_index_root = self._repo_path / "quarantine" / "manifests" / gcid
         reclaimed_object_size = 0
         reclaimed_chunk_size = 0
 
@@ -4889,10 +4877,8 @@ class RepositoryBackend(object):
             )
 
         live_pack_name = None
-        live_segment_name = None
         if live_chunk_plan["index_entries"]:
             live_pack_name = "gc-%s.pack" % gcid
-            live_segment_name = "seg-gc-%s.idx" % gcid
 
         for path in sorted((self._repo_path / "chunks" / "packs").glob("*.pack")):
             if live_pack_name is not None and path.name == live_pack_name:
@@ -4903,15 +4889,7 @@ class RepositoryBackend(object):
                 relative_root=self._repo_path / "chunks" / "packs",
             )
 
-        for level in ("L0", "L1", "L2"):
-            for path in sorted((self._repo_path / "chunks" / "index" / level).glob("*.idx")):
-                if live_segment_name is not None and level == "L0" and path.name == live_segment_name:
-                    continue
-                reclaimed_chunk_size += self._quarantine_move_file_unlocked(
-                    source_path=path,
-                    quarantine_root=q_index_root,
-                    relative_root=self._repo_path / "chunks" / "index",
-                )
+        reclaimed_chunk_size += self._clear_directory_children_unlocked(self._repo_path / "chunks" / "index")
 
         reclaimed_cache_size = 0
         if prune_cache:
@@ -5338,23 +5316,11 @@ class RepositoryBackend(object):
             )
             running_offset += len(chunk_data)
 
-        segment_name = "seg-%s.idx" % pack_id
-        segment_lines = [
-            json.dumps(entry.to_dict(), sort_keys=True, ensure_ascii=False).encode("utf-8")
-            for entry in entries
-        ]
-        segment_size = sum(len(line) + 1 for line in segment_lines)
-        manifest_obj = IndexManifest.empty()
-        if entries:
-            manifest_obj = manifest_obj.add_segment("L0", segment_name)
-        manifest_size = len(_stable_json_bytes(manifest_obj.to_dict()))
         return {
             "pack_payloads": tuple(payloads) if with_data else tuple(),
             "index_entries": tuple(entries),
             "pack_size": (len(b"hubvault-pack/v1\n") + sum(len(item) for item in payloads)) if entries else 0,
-            "index_total_size": segment_size + manifest_size,
-            "segment_name": segment_name,
-            "manifest": manifest_obj,
+            "index_total_size": 0,
         }
 
     def _commit_title_and_description(self, payload: Dict[str, object]) -> Tuple[str, str]:
@@ -5458,8 +5424,7 @@ class RepositoryBackend(object):
             >>> backend._ensure_layout()  # doctest: +SKIP
         """
 
-        manifest_path = self._repo_path / "chunks" / "index" / "MANIFEST"
-        if self._layout_ensured and self._repo_lock_path.parent.is_dir() and manifest_path.is_file():
+        if self._layout_ensured and self._repo_lock_path.parent.is_dir():
             return
         for relative in [
             "objects/commits/sha256",
@@ -5474,15 +5439,9 @@ class RepositoryBackend(object):
             "cache/snapshots",
             "quarantine/objects",
             "quarantine/packs",
-            "quarantine/manifests",
             "chunks/packs",
-            "chunks/index/L0",
-            "chunks/index/L1",
-            "chunks/index/L2",
         ]:
             (self._repo_path / relative).mkdir(parents=True, exist_ok=True)
-        if not manifest_path.exists():
-            IndexStore(self._repo_path / "chunks" / "index").write_manifest(IndexManifest.empty())
         self._layout_ensured = True
 
     def _ensure_repo(self) -> None:
@@ -5581,78 +5540,6 @@ class RepositoryBackend(object):
             ]
         )
 
-    def _ref_path(self, name: str) -> Path:
-        """
-        Build the branch ref path for a name.
-
-        :param name: Normalized branch name
-        :type name: str
-        :return: Absolute branch ref path
-        :rtype: pathlib.Path
-
-        Example::
-
-            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
-            >>> backend._ref_path("main").as_posix().endswith("refs/heads/main")
-            True
-        """
-
-        return self._repo_path / "refs" / "heads" / name
-
-    def _tag_ref_path(self, name: str) -> Path:
-        """
-        Build the tag ref path for a name.
-
-        :param name: Normalized tag name
-        :type name: str
-        :return: Absolute tag ref path
-        :rtype: pathlib.Path
-
-        Example::
-
-            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
-            >>> backend._tag_ref_path("v1").as_posix().endswith("refs/tags/v1")
-            True
-        """
-
-        return self._repo_path / "refs" / "tags" / name
-
-    def _reflog_path(self, name: str) -> Path:
-        """
-        Build the reflog path for a branch name.
-
-        :param name: Normalized branch name
-        :type name: str
-        :return: Absolute reflog path
-        :rtype: pathlib.Path
-
-        Example::
-
-            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
-            >>> backend._reflog_path("main").name
-            'main.log'
-        """
-
-        return self._repo_path / "logs" / "refs" / "heads" / (name + ".log")
-
-    def _tag_reflog_path(self, name: str) -> Path:
-        """
-        Build the reflog path for a tag name.
-
-        :param name: Normalized tag name
-        :type name: str
-        :return: Absolute tag reflog path
-        :rtype: pathlib.Path
-
-        Example::
-
-            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
-            >>> backend._tag_reflog_path("v1").name
-            'v1.log'
-        """
-
-        return self._repo_path / "logs" / "refs" / "tags" / (name + ".log")
-
     def _write_ref(self, name: str, commit_id: Optional[str]) -> None:
         """
         Persist a branch ref value.
@@ -5703,37 +5590,39 @@ class RepositoryBackend(object):
             _utc_now(),
         )
 
-    def _delete_ref_file(self, path: Path, stop_root: Path) -> None:
+    def _delete_ref(self, name: str) -> None:
         """
-        Delete a ref file and prune empty parent directories.
+        Delete one branch ref from SQLite metadata.
 
-        :param path: Ref file path to remove
-        :type path: pathlib.Path
-        :param stop_root: Ref root that must not be removed
-        :type stop_root: pathlib.Path
+        :param name: Normalized branch name
+        :type name: str
         :return: ``None``.
         :rtype: None
 
         Example::
 
             >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
-            >>> backend._delete_ref_file(Path("/tmp/demo-repo/refs/heads/dev"), Path("/tmp/demo-repo/refs/heads"))  # doctest: +SKIP
+            >>> backend._delete_ref("dev")  # doctest: +SKIP
         """
 
-        if stop_root == self._repo_path / "refs" / "heads":
-            self._metadata_store.delete_ref(
-                self._metadata_connection(),
-                "branch",
-                path.relative_to(stop_root).as_posix(),
-            )
-            return
-        if stop_root == self._repo_path / "refs" / "tags":
-            self._metadata_store.delete_ref(
-                self._metadata_connection(),
-                "tag",
-                path.relative_to(stop_root).as_posix(),
-            )
-            return
+        self._metadata_store.delete_ref(self._metadata_connection(), "branch", name)
+
+    def _delete_tag_ref(self, name: str) -> None:
+        """
+        Delete one tag ref from SQLite metadata.
+
+        :param name: Normalized tag name
+        :type name: str
+        :return: ``None``.
+        :rtype: None
+
+        Example::
+
+            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))  # doctest: +SKIP
+            >>> backend._delete_tag_ref("v1")  # doctest: +SKIP
+        """
+
+        self._metadata_store.delete_ref(self._metadata_connection(), "tag", name)
 
     def _read_ref(self, name: str) -> Optional[str]:
         """
@@ -5850,27 +5739,6 @@ class RepositoryBackend(object):
         filename = digest[2:] + ".json"
         return self._repo_path / "objects" / object_type / OBJECT_HASH / prefix / filename
 
-    def _blob_meta_path(self, object_id: str) -> Path:
-        """
-        Build the metadata path for a blob object.
-
-        :param object_id: Blob object identifier
-        :type object_id: str
-        :return: Absolute blob metadata path
-        :rtype: pathlib.Path
-
-        Example::
-
-            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
-            >>> backend._blob_meta_path("sha256:" + "a" * 64).name.endswith(".meta.json")
-            True
-        """
-
-        _, digest = _split_object_id(object_id)
-        prefix = digest[:2]
-        filename = digest[2:] + ".meta.json"
-        return self._repo_path / "objects" / "blobs" / OBJECT_HASH / prefix / filename
-
     def _blob_data_path(self, object_id: str) -> Path:
         """
         Build the payload data path for a blob object.
@@ -5963,7 +5831,7 @@ class RepositoryBackend(object):
         """
 
         object_id, container_bytes = _build_object_container("blob", payload)
-        meta_path = self._stage_blob_meta_path(txdir, object_id)
+        meta_path = self._stage_object_json_path(txdir, "blobs", object_id)
         data_path = self._stage_blob_data_path(txdir, object_id)
         if not meta_path.exists():
             _write_bytes_atomic(meta_path, container_bytes)
@@ -5995,29 +5863,6 @@ class RepositoryBackend(object):
         prefix = digest[:2]
         filename = digest[2:] + ".json"
         return txdir / "objects" / object_type / OBJECT_HASH / prefix / filename
-
-    def _stage_blob_meta_path(self, txdir: Path, object_id: str) -> Path:
-        """
-        Build the staged blob metadata path for a transaction.
-
-        :param txdir: Transaction working directory
-        :type txdir: pathlib.Path
-        :param object_id: Blob object identifier
-        :type object_id: str
-        :return: Absolute staged blob metadata path
-        :rtype: pathlib.Path
-
-        Example::
-
-            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
-            >>> backend._stage_blob_meta_path(Path("/tmp/demo-repo/txn/demo"), "sha256:" + "a" * 64).name.endswith(".meta.json")
-            True
-        """
-
-        _, digest = _split_object_id(object_id)
-        prefix = digest[:2]
-        filename = digest[2:] + ".meta.json"
-        return txdir / "objects" / "blobs" / OBJECT_HASH / prefix / filename
 
     def _stage_blob_data_path(self, txdir: Path, object_id: str) -> Path:
         """
@@ -7534,14 +7379,14 @@ class RepositoryBackend(object):
                 ref_name,
             ) is not None
 
-    def _resolve_reflog_query(self, ref_name: str) -> Tuple[Path, str]:
+    def _resolve_reflog_query(self, ref_name: str) -> Tuple[str, str, str]:
         """
-        Resolve a public reflog query to a concrete reflog path.
+        Resolve a public reflog query to its SQLite-backed ref identity.
 
         :param ref_name: Full ref name or an unambiguous short ref name
         :type ref_name: str
-        :return: Reflog path and normalized full ref name
-        :rtype: Tuple[pathlib.Path, str]
+        :return: Tuple of ref kind, short ref name, and normalized full ref name
+        :rtype: Tuple[str, str, str]
         :raises ConflictError: Raised when a short name matches both a branch
             and a tag.
         :raises RevisionNotFoundError: Raised when the requested ref is absent.
@@ -7554,30 +7399,26 @@ class RepositoryBackend(object):
 
         if ref_name.startswith("refs/heads/"):
             name = _validate_ref_name(ref_name[len("refs/heads/"):])
-            path = self._reflog_path(name)
             if not self._sqlite_ref_or_reflog_exists("branch", name):
                 raise RevisionNotFoundError("reflog not found: %s" % ref_name)
-            return path, "refs/heads/" + name
+            return "branch", name, "refs/heads/" + name
 
         if ref_name.startswith("refs/tags/"):
             name = _validate_ref_name(ref_name[len("refs/tags/"):])
-            path = self._tag_reflog_path(name)
             if not self._sqlite_ref_or_reflog_exists("tag", name):
                 raise RevisionNotFoundError("reflog not found: %s" % ref_name)
-            return path, "refs/tags/" + name
+            return "tag", name, "refs/tags/" + name
 
         short_name = _validate_ref_name(ref_name)
-        branch_path = self._reflog_path(short_name)
-        tag_path = self._tag_reflog_path(short_name)
         branch_visible = self._sqlite_ref_or_reflog_exists("branch", short_name)
         tag_visible = self._sqlite_ref_or_reflog_exists("tag", short_name)
 
         if branch_visible and tag_visible:
             raise ConflictError("ambiguous ref name: %s" % short_name)
         if branch_visible:
-            return branch_path, "refs/heads/" + short_name
+            return "branch", short_name, "refs/heads/" + short_name
         if tag_visible:
-            return tag_path, "refs/tags/" + short_name
+            return "tag", short_name, "refs/tags/" + short_name
         raise RevisionNotFoundError("reflog not found: %s" % short_name)
 
     @staticmethod
@@ -8222,9 +8063,9 @@ class RepositoryBackend(object):
         new_head: Optional[str],
         message: str,
         ref_kind: str,
-    ) -> Tuple[Path, Dict[str, object]]:
+    ) -> Dict[str, object]:
         """
-        Build the reflog path and record payload for a ref update.
+        Build the reflog record payload for a ref update.
 
         :param revision: Branch or tag name
         :type revision: str
@@ -8236,21 +8077,19 @@ class RepositoryBackend(object):
         :type message: str
         :param ref_kind: Ref collection kind, either ``"branch"`` or ``"tag"``
         :type ref_kind: str
-        :return: Tuple of reflog file path and JSON-serializable record
-        :rtype: Tuple[pathlib.Path, Dict[str, object]]
+        :return: JSON-serializable reflog record
+        :rtype: Dict[str, object]
 
         Example::
 
             >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
-            >>> backend._reflog_record("main", None, None, "seed", "branch")[0].name
-            'main.log'
+            >>> backend._reflog_record("main", None, None, "seed", "branch")["ref_name"]
+            'refs/heads/main'
         """
 
         if ref_kind == "branch":
-            path = self._reflog_path(revision)
             full_ref_name = "refs/heads/" + revision
         elif ref_kind == "tag":
-            path = self._tag_reflog_path(revision)
             full_ref_name = "refs/tags/" + revision
         else:
             raise ValueError("ref_kind must be 'branch' or 'tag'")
@@ -8263,7 +8102,7 @@ class RepositoryBackend(object):
             "message": message,
             "checksum": OBJECT_HASH + ":" + _sha256_hex(_stable_json_bytes([old_head, new_head, message])),
         }
-        return path, record
+        return record
 
     def _append_reflog(
         self,
@@ -8295,7 +8134,7 @@ class RepositoryBackend(object):
             >>> backend._append_reflog("main", None, "sha256:" + "a" * 64, "seed")  # doctest: +SKIP
         """
 
-        _path, record = self._reflog_record(
+        record = self._reflog_record(
             revision=revision,
             old_head=old_head,
             new_head=new_head,

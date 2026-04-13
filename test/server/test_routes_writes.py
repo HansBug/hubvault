@@ -1,11 +1,13 @@
+import asyncio
 import json
 from hashlib import sha256
 import sqlite3
 
 import pytest
 
-from hubvault import CommitOperationAdd
+from hubvault import CommitOperationAdd, HubVaultValidationError
 from hubvault.repo.sqlite import SQLITE_METADATA_FILENAME
+from hubvault.server.routes.writes import _parse_commit_apply_payload
 from hubvault.storage import ChunkStore
 from test.support import (
     TEST_DEFAULT_BRANCH,
@@ -48,6 +50,16 @@ def _add_manifest(path_in_repo, data, include_chunks=False):
 
 @pytest.mark.unittest
 class TestServerWriteRoutes:
+    def test_parse_commit_apply_payload_rejects_invalid_multipart_form_data(self):
+        class _BadRequest:
+            headers = {"content-type": "multipart/form-data; boundary=test"}
+
+            async def form(self):
+                raise ValueError("broken multipart body")
+
+        with pytest.raises(HubVaultValidationError, match="Invalid multipart payload: broken multipart body."):
+            asyncio.run(_parse_commit_apply_payload(_BadRequest()))
+
     def test_commit_plan_and_apply_support_copy_delete_passthrough(self, tmp_path):
         repo_dir = tmp_path / "repo"
         seeded = seed_phase78_repo(repo_dir)

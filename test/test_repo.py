@@ -550,7 +550,7 @@ class TestRepoSemantics:
 
         assert api.list_repo_reflog("refs/heads/temp") == []
 
-    def test_branch_reflog_updates_survive_blank_and_malformed_last_records(self, tmp_path):
+    def test_branch_reflog_ignores_legacy_log_files_and_stays_sqlite_backed(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")
         api.create_repo()
         api.create_commit(
@@ -561,24 +561,21 @@ class TestRepoSemantics:
         reflog_path = tmp_path / "repo" / "logs" / "refs" / "heads" / "temp.log"
         reflog_path.parent.mkdir(parents=True, exist_ok=True)
 
-        def recreate_temp_branch():
-            if "temp" not in [item.name for item in api.list_repo_refs().branches]:
-                api.create_branch(branch="temp")
+        api.create_branch(branch="temp")
+        sqlite_reflog_before = api.list_repo_reflog("refs/heads/temp")
+        assert [item.message for item in sqlite_reflog_before] == ["create branch"]
 
-        recreate_temp_branch()
-        reflog_path.write_text("\n\n", encoding="utf-8")
-        api.delete_branch(branch="temp")
-        assert "temp" not in [item.name for item in api.list_repo_refs().branches]
+        for legacy_text in ("\n\n", "[]\n", "{bad json\n"):
+            reflog_path.write_text(legacy_text, encoding="utf-8")
+            assert [item.message for item in api.list_repo_reflog("refs/heads/temp")] == ["create branch"]
 
-        recreate_temp_branch()
-        reflog_path.write_text("[]\n", encoding="utf-8")
         api.delete_branch(branch="temp")
-        assert "temp" not in [item.name for item in api.list_repo_refs().branches]
 
-        recreate_temp_branch()
-        reflog_path.write_text("{bad json\n", encoding="utf-8")
-        api.delete_branch(branch="temp")
         assert "temp" not in [item.name for item in api.list_repo_refs().branches]
+        assert [item.message for item in api.list_repo_reflog("refs/heads/temp")] == [
+            "delete branch",
+            "create branch",
+        ]
 
     def test_repo_supports_explicit_commit_description_and_hf_style_commit_fallbacks(self, tmp_path):
         api, repo_dir = _single_file_repo(tmp_path, repo_name="commit-fallbacks", payload=b"payload")

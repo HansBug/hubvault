@@ -40,6 +40,7 @@ class TestServerSerde:
     def test_optional_encoders_serialize_full_payloads(self):
         timestamp = datetime(2026, 4, 11, 12, 0, 0)
 
+        assert encode_last_commit_info(None) is None
         assert encode_last_commit_info(LastCommitInfo("oid-1", "seed", timestamp)) == {
             "oid": "oid-1",
             "title": "seed",

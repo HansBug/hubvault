@@ -60,7 +60,8 @@ class TestPhase3IntegratedLifecycle:
     validates HF-style file metadata and byte-range reads, uploads a follow-up
     folder through the large-folder helper, validates commit history and
     detached downloads, exports a snapshot, and reopens the moved repository to
-    prove that chunk packs and manifests remain portable.
+    prove that chunk packs remain portable while chunk metadata stays rooted in
+    SQLite.
     """
 
     def test_phase3_chunked_storage_workflow_from_init_to_reopen(self, tmp_path):
@@ -169,7 +170,7 @@ class TestPhase3IntegratedLifecycle:
 
         manifest_path = repo_dir / "chunks" / "index" / "MANIFEST"
         pack_files = sorted((repo_dir / "chunks" / "packs").glob("*.pack"))
-        assert manifest_path.is_file()
+        assert not manifest_path.exists()
         assert len(pack_files) == 3
         assert api.quick_verify().ok is True
 

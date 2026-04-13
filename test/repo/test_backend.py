@@ -773,6 +773,29 @@ class TestRepoBackendPackage:
         assert api.list_repo_files() == ["bundle/main.bin"]
         assert api.full_verify().ok is True
 
+    def test_backend_storage_overview_and_gc_reclaim_legacy_chunk_index_residue(self, tmp_path):
+        api, repo_dir, _ = _chunked_repo(tmp_path, "legacy-index-residue")
+
+        legacy_index_root = repo_dir / "chunks" / "index"
+        (legacy_index_root / "L0").mkdir(parents=True)
+        (legacy_index_root / "MANIFEST").write_text('{"levels":{"L0":["stale.idx"],"L1":[],"L2":[]}}', encoding="utf-8")
+        (legacy_index_root / "L0" / "stale.idx").write_text("stale\n", encoding="utf-8")
+
+        overview = api.get_storage_overview()
+        index_section = next(section for section in overview.sections if section.name == "chunks.index")
+        assert index_section.total_size > 0
+        assert index_section.reclaimable_size == index_section.total_size
+        assert "Legacy on-disk chunk index residue" in index_section.notes
+
+        preview = api.gc(dry_run=True, prune_cache=False)
+        assert preview.reclaimed_chunk_size >= index_section.total_size
+
+        actual = api.gc(dry_run=False, prune_cache=False)
+        assert actual.reclaimed_chunk_size >= index_section.total_size
+        assert legacy_index_root.exists()
+        assert list(legacy_index_root.iterdir()) == []
+        assert api.full_verify().ok is True
+
     def test_backend_full_verify_accepts_invalid_cached_size_fields_when_content_still_matches(self, tmp_path):
         api, repo_dir, payload = _chunked_repo(tmp_path, "full-verify-invalid-cache-size")
 
@@ -1009,3 +1032,168 @@ class TestRepoBackendPackage:
         second = api.upload_file(path_or_fileobj=b"payload-v2", path_in_repo="bundle/second.bin")
         assert second.commit_message == "Upload bundle/second.bin with hubvault"
         assert sorted(api.list_repo_files()) == ["bundle/file.bin", "bundle/second.bin"]
+
+    def test_backend_internal_sqlite_only_helpers_cover_object_and_reflog_edges(self, tmp_path):
+        repo_dir = tmp_path / "internal-sqlite-helper-edges"
+        api = HubVaultApi(repo_dir)
+        api.create_repo()
+        api.upload_file(path_or_fileobj=b"payload", path_in_repo="bundle/file.bin")
+        backend = api._backend
+        blob_object_id = _first_object_path(repo_dir, "blobs")
+
+        with backend._write_locked():
+            assert backend._object_exists("blobs", "sha256:" + ("0" * 64)) is False
+            assert backend._object_exists("blobs", blob_object_id) is True
+
+            backend._blob_data_path(blob_object_id).unlink()
+            assert backend._object_exists("blobs", blob_object_id) is False
+
+            with pytest.raises(EntryNotFoundError, match="path not found: missing.bin"):
+                backend._file_object_id_for_commit(None, "missing.bin")
+
+            with pytest.raises(TypeError, match="Unsupported repository entry model"):
+                backend._entry_with_last_commit(object(), None)
+
+            with pytest.raises(ValueError, match="ref_kind must be 'branch' or 'tag'"):
+                backend._reflog_record("main", None, None, "seed", "invalid")
+
+            last_record = backend._metadata_store.last_reflog_entry(
+                backend._metadata_connection(),
+                "branch",
+                "main",
+            )
+            assert last_record is not None
+            reflog_before = backend._metadata_store.list_reflog(backend._metadata_connection(), "branch", "main")
+
+            backend._append_reflog(
+                "main",
+                last_record.get("old_head"),
+                last_record.get("new_head"),
+                str(last_record.get("message", "")),
+                "branch",
+            )
+
+            assert backend._metadata_store.list_reflog(backend._metadata_connection(), "branch", "main") == reflog_before
+
+    def test_backend_internal_transaction_cleanup_helpers_cover_warning_and_missing_paths(self, tmp_path, monkeypatch):
+        repo_dir = tmp_path / "repo"
+        api = HubVaultApi(repo_dir)
+        api.create_repo()
+        backend = api._backend
+
+        original_cleanup_txdir = backend._cleanup_txdir
+
+        def _raise_cleanup(_txdir):
+            raise OSError("blocked cleanup")
+
+        monkeypatch.setattr(backend, "_cleanup_txdir", _raise_cleanup)
+        with warnings.catch_warnings(record=True) as records:
+            warnings.simplefilter("always")
+            backend._safe_cleanup_txdir(repo_dir / "txn" / "warn-tx")
+        assert any("Failed to clean committed transaction directory warn-tx" in str(item.message) for item in records)
+        monkeypatch.setattr(backend, "_cleanup_txdir", original_cleanup_txdir)
+
+        missing_txid = "missing-tx"
+        _insert_tx_log(repo_dir, missing_txid)
+        with backend._write_locked():
+            backend._rollback_transaction_unlocked(repo_dir / "txn" / missing_txid)
+        with sqlite3.connect(str(_repo_db_path(repo_dir))) as conn:
+            assert conn.execute("SELECT txid FROM txn_log WHERE txid = ?", (missing_txid,)).fetchone() is None
+
+        tracked_txid = "tracked-tx"
+        tracked_txdir = repo_dir / "txn" / tracked_txid
+        tracked_txdir.mkdir(parents=True)
+        _insert_tx_log(repo_dir, tracked_txid)
+        with backend._write_locked():
+            backend._recover_sqlite_transaction_unlocked(tracked_txdir)
+            backend._metadata_store.replace_tx_log(
+                backend._metadata_connection(),
+                {
+                    "txid": "active-check",
+                    "tx_kind": "ref_update",
+                    "state": "PREPARING",
+                    "ref_kind": "branch",
+                    "ref_name": "main",
+                    "old_head": None,
+                    "new_head": None,
+                    "message": "active check",
+                    "ref_existed_before": True,
+                    "payload": {},
+                    "metadata": {},
+                    "updated_at": "2026-04-13T00:00:00Z",
+                },
+            )
+            assert backend._has_ref_update_transactions() is True
+            backend._metadata_store.delete_tx_log(backend._metadata_connection(), "active-check")
+
+        assert not tracked_txdir.exists()
+        with sqlite3.connect(str(_repo_db_path(repo_dir))) as conn:
+            assert conn.execute("SELECT txid FROM txn_log WHERE txid = ?", (tracked_txid,)).fetchone() is None
+
+    def test_backend_internal_detached_fs_helpers_cover_oserror_and_permission_edges(self, tmp_path, monkeypatch):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        backend = api._backend
+
+        class _BrokenStatPath:
+            def exists(self):
+                return True
+
+            def is_file(self):
+                return True
+
+            def is_symlink(self):
+                return False
+
+            def stat(self):
+                raise OSError("stat blocked")
+
+        assert backend._detached_file_matches_metadata(_BrokenStatPath(), size=4, view_mtime_ns=1) is False
+
+        readonly_dir = tmp_path / "readonly-dir"
+        readonly_dir.mkdir()
+        readonly_file = tmp_path / "readonly-file"
+        readonly_file.write_text("demo", encoding="utf-8")
+
+        with monkeypatch.context() as context:
+            context.setattr(Path, "chmod", lambda _self, _mode: (_ for _ in ()).throw(OSError("chmod blocked")))
+            backend._chmod_writable(readonly_dir)
+            backend._chmod_writable(readonly_file)
+
+        missing_path = tmp_path / "missing.txt"
+        protected_path = tmp_path / "protected.txt"
+        protected_path.write_text("locked", encoding="utf-8")
+        original_unlink = Path.unlink
+        protected_calls = {"count": 0}
+        chmod_calls = []
+
+        def _fake_unlink(path_obj):
+            if path_obj == missing_path:
+                raise FileNotFoundError()
+            if path_obj == protected_path:
+                protected_calls["count"] += 1
+                if protected_calls["count"] == 1:
+                    raise PermissionError("permission denied")
+            return original_unlink(path_obj)
+
+        with monkeypatch.context() as context:
+            context.setattr(Path, "unlink", _fake_unlink)
+            context.setattr(backend, "_chmod_writable", lambda path: chmod_calls.append(path))
+            backend._unlink_path(missing_path)
+            backend._unlink_path(protected_path)
+
+        assert chmod_calls == [protected_path]
+        assert not protected_path.exists()
+
+        retry_calls = []
+        retry_chmod_calls = []
+        retry_path = str(tmp_path / "retry-dir")
+        backend._rmtree_onerror(lambda path: retry_calls.append(path), retry_path, (None, FileNotFoundError(), None))
+        assert retry_calls == []
+
+        with monkeypatch.context() as context:
+            context.setattr(backend, "_chmod_writable", lambda path: retry_chmod_calls.append(path))
+            backend._rmtree_onerror(lambda path: retry_calls.append(path), retry_path, (None, PermissionError(), None))
+
+        assert retry_chmod_calls == [Path(retry_path)]
+        assert retry_calls == [retry_path]
