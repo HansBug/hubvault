@@ -75,6 +75,7 @@ SVG_V2 = b"""<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" vi
 """
 
 ICON_AUDIT_FILES = (
+    ("icon-audit/LICENSE", b"HubVault fixture license text.\n"),
     ("icon-audit/README.md", b"# Icon Audit\n\nFrontend icon alignment fixtures.\n"),
     ("icon-audit/blob.bin", b"\x00hubvault-binary-icon-fixture\x01"),
     ("icon-audit/clip.wav", b"RIFF$\x00\x00\x00WAVEfmt "),

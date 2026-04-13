@@ -208,13 +208,19 @@ test("readonly frontend supports token query entry plus standalone file and comm
   await expectFileKind(page, "Dockerfile", "docker");
 
   await page.getByRole("button", { name: "icon-audit", exact: true }).click();
+  await expectFileKind(page, "LICENSE", "license");
+  await expectFileKind(page, "README.md", "readme");
   await expectFileKind(page, "blob.bin", "binary");
   await expectFileKind(page, "clip.wav", "audio");
   await expectFileKind(page, "demo.mp4", "video");
+  await expectFileKind(page, "model.safetensors", "safetensors");
   await expectFileKind(page, "script.py", "python");
+  await expectFileIconMetrics(page, "LICENSE", "license", "material");
+  await expectFileIconMetrics(page, "README.md", "readme", "material");
   await expectFileIconMetrics(page, "blob.bin", "binary", "element");
   await expectFileIconMetrics(page, "clip.wav", "audio", "element");
   await expectFileIconMetrics(page, "demo.mp4", "video", "element");
+  await expectFileIconMetrics(page, "model.safetensors", "huggingface", "material");
   await expectFileIconMetrics(page, "script.py", "python", "material");
   await expectFileIconMetrics(page, "image.png", "image", "material");
   await page.screenshot({
@@ -224,8 +230,10 @@ test("readonly frontend supports token query entry plus standalone file and comm
   await page.getByRole("button", { name: "Repository root" }).click();
 
   await page.getByRole("button", { name: "models", exact: true }).click();
-  await expectFileKind(page, "model.safetensors", "pytorch");
+  await expectFileKind(page, "model.safetensors", "safetensors");
   await expectFileKind(page, "checkpoint.ckpt", "pytorch");
+  await expectFileIconMetrics(page, "model.safetensors", "huggingface", "material");
+  await expectFileIconMetrics(page, "checkpoint.ckpt", "pytorch", "material");
   await expectFileKind(page, "network.onnx", "onnx");
   await page.getByRole("button", { name: "Repository root" }).click();
 

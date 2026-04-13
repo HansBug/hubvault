@@ -36,6 +36,8 @@ describe("file helpers", function suite() {
 
   it("classifies common Hugging Face and GitHub file kinds", function testFileVisualKinds() {
     expect(getFileVisualKind(".gitattributes", "file")).toBe("git");
+    expect(getFileVisualKind("README.md", "file")).toBe("readme");
+    expect(getFileVisualKind("LICENSE", "file")).toBe("license");
     expect(getFileVisualKind("Dockerfile", "file")).toBe("docker");
     expect(getFileVisualKind("package.json", "file")).toBe("npm");
     expect(getFileVisualKind("pyproject.toml", "file")).toBe("python");
@@ -44,8 +46,9 @@ describe("file helpers", function suite() {
     expect(getFileVisualKind("data/train.parquet", "file")).toBe("table");
     expect(getFileVisualKind("data/records.jsonl", "file")).toBe("table");
     expect(getFileVisualKind("reports/run.duckdb", "file")).toBe("database");
-    expect(getFileVisualKind("models/model.safetensors", "file")).toBe("pytorch");
+    expect(getFileVisualKind("models/model.safetensors", "file")).toBe("safetensors");
     expect(getFileVisualKind("models/checkpoint.ckpt", "file")).toBe("pytorch");
+    expect(getFileVisualKind("models/weights.pt", "file")).toBe("pytorch");
     expect(getFileVisualKind("models/network.onnx", "file")).toBe("onnx");
     expect(getFileVisualKind("tensorboard/events.out.tfevents.1710000", "file")).toBe("log");
     expect(getFileVisualKind("notes/README.rst", "file")).toBe("readme");

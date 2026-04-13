@@ -34,6 +34,7 @@ export const FILE_ICON_META: Record<string, FileIconMeta> = {
   gradle: { icon: "gradle", kind: "gradle", source: "material", tone: "repo" },
   graphql: { icon: "graphql", kind: "graphql", source: "material", tone: "repo" },
   groovy: { icon: "groovy", kind: "groovy", source: "material", tone: "code" },
+  safetensors: { icon: "huggingface", kind: "safetensors", source: "material", tone: "model" },
   haskell: { icon: "haskell", kind: "haskell", source: "material", tone: "code" },
   helm: { icon: "helm", kind: "helm", source: "material", tone: "repo" },
   html: { icon: "html", kind: "html", source: "material", tone: "code" },

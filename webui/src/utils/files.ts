@@ -22,9 +22,9 @@ const MODEL_EXTENSIONS = [
   ".pickle",
   ".pt",
   ".pth",
-  ".safetensors",
   ".tflite"
 ];
+const SAFETENSORS_EXTENSIONS = [".safetensors"];
 const CODE_EXTENSIONS = [
   ".astro",
   ".c",
@@ -279,7 +279,6 @@ const EXTENSION_VISUALS: Record<string, string> = {
   ".sass": "sass",
   ".scala": "scala",
   ".scss": "sass",
-  ".safetensors": "pytorch",
   ".sh": "console",
   ".sol": "solidity",
   ".sqlite": "database",
@@ -461,7 +460,10 @@ export function getFileVisualKind(path, entryType) {
   if (TENSORBOARD_NAME_PATTERN.test(name)) {
     return "log";
   }
-  if (name.indexOf(".safetensors") >= 0 || name.indexOf(".ckpt") >= 0) {
+  if (name.indexOf(".safetensors") >= 0) {
+    return "safetensors";
+  }
+  if (name.indexOf(".ckpt") >= 0) {
     return "pytorch";
   }
   if (EXACT_NAME_VISUALS[name]) {
@@ -486,6 +488,9 @@ export function getFileVisualKind(path, entryType) {
   const extension = pathExtension(path);
   if (extension === ".bin" && MODEL_NAME_PATTERN.test(name)) {
     return "pytorch";
+  }
+  if (SAFETENSORS_EXTENSIONS.indexOf(extension) >= 0) {
+    return "safetensors";
   }
   if (MODEL_EXTENSIONS.indexOf(extension) >= 0) {
     return "pytorch";
