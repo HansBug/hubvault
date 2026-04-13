@@ -1,5 +1,9 @@
 fastapi>=0.95,<0.111
 uvicorn>=0.22,<0.31
-python-multipart>=0.0.6,<0.0.8
+# python-multipart raises its Python floor in secure releases, so keep the
+# highest available non-yanked line per interpreter while preserving 3.7-3.14.
+python-multipart>=0.0.22,<0.0.23; python_version >= "3.10"
+python-multipart>=0.0.18,<0.0.19; python_version >= "3.8" and python_version < "3.10"
+python-multipart>=0.0.8,<0.0.9; python_version < "3.8"
 httpx>=0.24,<0.28
 tqdm>=4.66,<5
