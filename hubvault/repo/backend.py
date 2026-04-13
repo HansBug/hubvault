@@ -4985,11 +4985,9 @@ class RepositoryBackend(object):
             stack.extend(reversed(parents))
         return ordered
 
-    def _ancestor_distances_unlocked(self, commit_id: Optional[str]) -> Dict[str, int]:
+    def _ancestor_distances_unlocked(self, commit_id: str) -> Dict[str, int]:
         """Return the shortest parent-distance from a commit to each ancestor."""
 
-        if commit_id is None:
-            return {}
         distances = {}
         pending = [(commit_id, 0)]
         while pending:
@@ -5002,22 +5000,18 @@ class RepositoryBackend(object):
             pending.extend((str(parent_id), distance + 1) for parent_id in payload.get("parents", []))
         return distances
 
-    def _is_ancestor_unlocked(self, ancestor_commit_id: Optional[str], descendant_commit_id: Optional[str]) -> bool:
+    def _is_ancestor_unlocked(self, ancestor_commit_id: str, descendant_commit_id: str) -> bool:
         """Return whether one commit is reachable from another through parents."""
 
-        if ancestor_commit_id is None or descendant_commit_id is None:
-            return False
         return ancestor_commit_id in self._ancestor_distances_unlocked(descendant_commit_id)
 
     def _find_merge_base_unlocked(
         self,
-        target_commit_id: Optional[str],
-        source_commit_id: Optional[str],
+        target_commit_id: str,
+        source_commit_id: str,
     ) -> Optional[str]:
         """Resolve the nearest common ancestor used as the merge base."""
 
-        if target_commit_id is None or source_commit_id is None:
-            return None
         target_distances = self._ancestor_distances_unlocked(target_commit_id)
         source_distances = self._ancestor_distances_unlocked(source_commit_id)
         candidates = set(target_distances).intersection(source_distances)
@@ -5760,31 +5754,6 @@ class RepositoryBackend(object):
         filename = digest[2:] + ".data"
         return self._repo_path / "objects" / "blobs" / OBJECT_HASH / prefix / filename
 
-    def _object_exists(self, object_type: str, object_id: str) -> bool:
-        """
-        Check whether a published object exists on disk.
-
-        :param object_type: Stored object collection name
-        :type object_type: str
-        :param object_id: Object identifier
-        :type object_id: str
-        :return: Whether the object exists
-        :rtype: bool
-
-        Example::
-
-            >>> backend = RepositoryBackend(Path("/tmp/demo-repo"))
-            >>> backend._object_exists("trees", "sha256:" + "a" * 64)
-            False
-        """
-
-        exists = self._metadata_store.object_exists(self._metadata_connection(), object_type, object_id)
-        if not exists:
-            return False
-        if object_type == "blobs":
-            return self._blob_data_path(object_id).exists()
-        return True
-
     def _stage_json_object(self, txdir: Path, object_type: str, payload: object) -> str:
         """
         Stage a JSON-backed object into a transaction directory.
@@ -6161,8 +6130,6 @@ class RepositoryBackend(object):
             None: {},
             head_commit_id: current_snapshot,
         }
-        commit_cache = {}
-
         def _snapshot_for(commit_id: Optional[str]) -> Dict[str, str]:
             cached_snapshot = snapshot_cache.get(commit_id)
             if cached_snapshot is not None:
@@ -6172,12 +6139,7 @@ class RepositoryBackend(object):
             return snapshot
 
         def _commit_payload_for(commit_id: str) -> dict:
-            cached_payload = commit_cache.get(commit_id)
-            if cached_payload is not None:
-                return cached_payload
-            payload = self._read_object_payload("commits", commit_id)
-            commit_cache[commit_id] = payload
-            return payload
+            return self._read_object_payload("commits", commit_id)
 
         resolved = {}
         pending = [head_commit_id]
@@ -7043,11 +7005,7 @@ class RepositoryBackend(object):
         """
 
         commit_payload = self._read_object_payload("commits", commit_id)
-        raw_message = str(commit_payload.get("message", ""))
-        title = str(commit_payload.get("title", ""))
-        description = str(commit_payload.get("description", ""))
-        if not title:
-            title, description = self._split_commit_message(raw_message)
+        title, description = self._commit_title_and_description(commit_payload)
         return CommitInfo(
             commit_url=self._commit_url(commit_id),
             commit_message=title,
@@ -7326,11 +7284,7 @@ class RepositoryBackend(object):
         """
 
         commit_payload = self._read_object_payload("commits", commit_id)
-        raw_message = str(commit_payload.get("message", ""))
-        title = str(commit_payload.get("title", ""))
-        message = str(commit_payload.get("description", ""))
-        if not title:
-            title, message = self._split_commit_message(raw_message)
+        title, message = self._commit_title_and_description(commit_payload)
         created_at = datetime.strptime(str(commit_payload["created_at"]), "%Y-%m-%dT%H:%M:%SZ").replace(
             tzinfo=timezone.utc
         )

@@ -734,6 +734,34 @@ class TestApi:
         assert result.conflicts[0].conflict_type == "delete/modify"
         assert result.conflicts[0].path == "shared.txt"
 
+    def test_merge_public_api_handles_ancestor_revisions_through_existing_merge_history(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        base_commit = api.create_commit(
+            operations=[CommitOperationAdd("shared.txt", b"seed")],
+            commit_message="seed",
+        )
+        api.create_branch(branch="feature")
+        api.create_commit(
+            operations=[CommitOperationAdd("main.txt", b"main")],
+            commit_message="main work",
+        )
+        api.create_commit(
+            revision="feature",
+            operations=[CommitOperationAdd("feature.txt", b"feature")],
+            commit_message="feature work",
+        )
+
+        merged = api.merge("feature")
+        assert merged.status == "merged"
+        assert merged.created_commit is True
+
+        result = api.merge(base_commit.oid)
+
+        assert result.status == "already-up-to-date"
+        assert result.base_commit == base_commit.oid
+        assert result.head_after == api.repo_info().head
+
     def test_merge_public_api_rejects_invalid_target_revision_and_empty_message(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")
         api.create_repo()

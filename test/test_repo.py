@@ -615,6 +615,36 @@ class TestRepoSemantics:
         assert third_commit.commit_message == "empty description"
         assert third_commit.commit_description == ""
 
+        fourth_commit = api.create_commit(
+            operations=[CommitOperationAdd("title-only.bin", b"payload-v4")],
+            parent_commit=third_commit.oid,
+            commit_message="title only fallback",
+            commit_description="body kept",
+        )
+        fourth_commit_object_id = _head_commit_id(repo_dir)
+        commit_payload = _object_payload(repo_dir, "commits", fourth_commit_object_id)
+        del commit_payload["title"]
+        _set_object_payload(repo_dir, "commits", fourth_commit_object_id, commit_payload)
+
+        title_fallback_history = api.list_repo_commits(revision=fourth_commit.oid)
+        assert title_fallback_history[0].title == "title only fallback"
+        assert title_fallback_history[0].message == "body kept"
+
+        fifth_commit = api.create_commit(
+            operations=[CommitOperationAdd("description-only.bin", b"payload-v5")],
+            parent_commit=fourth_commit.oid,
+            commit_message="title kept",
+            commit_description="description only fallback",
+        )
+        fifth_commit_object_id = _head_commit_id(repo_dir)
+        commit_payload = _object_payload(repo_dir, "commits", fifth_commit_object_id)
+        del commit_payload["description"]
+        _set_object_payload(repo_dir, "commits", fifth_commit_object_id, commit_payload)
+
+        description_fallback_history = api.list_repo_commits(revision=fifth_commit.oid)
+        assert description_fallback_history[0].title == "title kept"
+        assert description_fallback_history[0].message == "description only fallback"
+
         commit_payload = _object_payload(repo_dir, "commits", commit_object_id)
         commit_payload["message"] = ""
         _set_object_payload(repo_dir, "commits", commit_object_id, commit_payload)
