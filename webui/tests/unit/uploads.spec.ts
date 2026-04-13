@@ -178,6 +178,63 @@ describe("upload helpers", function suite() {
     vi.stubGlobal("FileReader", originalFileReader);
   });
 
+  it("keeps zero-byte progress payloads stable for empty files", async function testZeroByteUploads() {
+    const originalFileReader = globalThis.FileReader;
+    const progressSpy = vi.fn();
+    const manifestEvents: any[] = [];
+
+    class ZeroByteFileReader {
+      result = new ArrayBuffer(0);
+      error = null;
+      onload = null;
+      onerror = null;
+      onprogress = null;
+
+      readAsArrayBuffer() {
+        this.onprogress({
+          lengthComputable: true
+        });
+        this.onload({});
+      }
+    }
+
+    vi.stubGlobal("FileReader", ZeroByteFileReader as unknown as typeof FileReader);
+
+    const buffer = await readBlobAsArrayBuffer(new Blob([]), progressSpy);
+    const manifest = await buildExactUploadManifest(
+      [
+        {
+          pathInRepo: "",
+          file: new File([], "empty.bin")
+        }
+      ],
+      function handleProgress(payload) {
+        manifestEvents.push(payload);
+      }
+    );
+
+    expect(buffer.byteLength).toBe(0);
+    expect(progressSpy).toHaveBeenCalledWith(0, 0);
+    expect(manifest.operations).toEqual([
+      {
+        type: "add",
+        path_in_repo: "",
+        size: 0,
+        sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        chunks: []
+      }
+    ]);
+    expect(manifestEvents.map(function collectPhase(item) {
+      return item.phase;
+    })).toEqual(["reading", "reading", "hashing", "completed"]);
+    expect(manifestEvents[1]).toMatchObject({
+      processedBytes: 0,
+      totalBytes: 0
+    });
+
+    vi.stubGlobal("FileReader", originalFileReader);
+  });
+
   it("builds manifests without a progress callback and normalizes invalid entry lists", async function testManifestWithoutProgress() {
     const file = new File(["abc"], "demo.txt", {
       type: "text/plain"

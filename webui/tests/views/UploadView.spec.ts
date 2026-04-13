@@ -630,6 +630,7 @@ describe("UploadView", function suite() {
     expect(wrapper.get("[data-testid='upload-status-title']").text()).toBe("Upload interrupted");
     expect(wrapper.get("[data-testid='upload-status-message']").text()).toContain("upload transport failed");
     expect(wrapper.text()).toContain("upload transport failed");
+    expect(wrapper.find(".upload-status__icon.is-warning").exists()).toBe(true);
     expect(uploadViewMocks.bootstrapSession).not.toHaveBeenCalled();
   });
 
@@ -651,5 +652,423 @@ describe("UploadView", function suite() {
     await flushPromises();
 
     expect(wrapper.text()).toContain("workspace unavailable");
+
+    uploadViewMocks.getPathsInfo.mockRejectedValueOnce({});
+    const fallbackWrapper = mount(UploadView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    expect(fallbackWrapper.text()).toContain("Unable to prepare the upload workspace.");
+  });
+
+  it("supports unresolved workspaces, long auto placeholders, and root navigation without a path query", async function testPlaceholderBranches() {
+    uploadViewMocks.route.query = {
+      path: "missing/workspace"
+    };
+    uploadViewMocks.getPathsInfo.mockResolvedValueOnce([]);
+
+    const wrapper = mount(UploadView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    const input = wrapper.get("[data-testid='upload-file-input']");
+    const inputElement = input.element as HTMLInputElement;
+    setInputFiles(inputElement, [
+      new File(["a"], "a-very-very-very-very-long-name.txt", { type: "text/plain" }),
+      new File(["b"], "b-very-very-very-very-long-name.txt", { type: "text/plain" }),
+      new File(["c"], "c-very-very-very-very-long-name.txt", { type: "text/plain" })
+    ]);
+    await input.trigger("change");
+    await flushPromises();
+
+    const placeholder = wrapper.get("[data-testid='upload-commit-message-input']").attributes("placeholder");
+    expect(placeholder).toContain("+1 more");
+    expect(placeholder).toContain("...");
+
+    await findButtonByText(wrapper, "Back to Files").trigger("click");
+    expect(uploadViewMocks.push).toHaveBeenCalledWith({
+      name: "files",
+      query: {
+        revision: "release/v1",
+        path: "missing/workspace"
+      }
+    });
+
+    uploadViewMocks.route.query = {};
+    const rootWrapper = mount(UploadView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+    await flushPromises();
+
+    expect(uploadViewMocks.getPathsInfo).toHaveBeenCalledTimes(1);
+    expect(rootWrapper.get("[data-testid='upload-commit-message-input']").attributes("placeholder")).toBe(
+      "Upload queued files with hubvault"
+    );
+    await findButtonByText(rootWrapper, "Back to Files").trigger("click");
+    expect(uploadViewMocks.push).toHaveBeenLastCalledWith({
+      name: "files",
+      query: {
+        revision: "release/v1",
+        path: undefined
+      }
+    });
+  });
+
+  it("deduplicates queued paths, tolerates empty selections, and falls back folder uploads to plain file names", async function testQueueFallbackBranches() {
+    const wrapper = mount(UploadView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    const fileInput = wrapper.get("[data-testid='upload-file-input']");
+    const folderInput = wrapper.get("[data-testid='upload-folder-input']");
+    const fileInputElement = fileInput.element as HTMLInputElement;
+    const folderInputElement = folderInput.element as HTMLInputElement;
+
+    setInputFiles(fileInputElement, []);
+    await fileInput.trigger("change");
+    await flushPromises();
+    expect(wrapper.text()).toContain("No files are queued yet.");
+
+    const duplicate = new File(["hello"], "same.txt", {
+      type: "text/plain"
+    });
+    setInputFiles(fileInputElement, [duplicate]);
+    await fileInput.trigger("change");
+    await flushPromises();
+    setInputFiles(fileInputElement, [duplicate]);
+    await fileInput.trigger("change");
+    await flushPromises();
+    expect(wrapper.text()).toContain("1 files queued");
+
+    const commitInput = wrapper.get("[data-testid='upload-commit-message-input']");
+    await commitInput.setValue("custom commit");
+
+    const folderFile = new File(["folder"], "folder-fallback.txt", {
+      type: "text/plain"
+    });
+    Object.defineProperty(folderFile, "webkitRelativePath", {
+      configurable: true,
+      value: ""
+    });
+    setInputFiles(folderInputElement, [folderFile]);
+    await folderInput.trigger("change");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("docs/folder-fallback.txt");
+
+    await wrapper.get('button[aria-label="Remove queued file docs/folder-fallback.txt"]').trigger("click");
+    await wrapper.get('button[aria-label="Remove queued file docs/same.txt"]').trigger("click");
+    await flushPromises();
+
+    expect((commitInput.element as HTMLInputElement).value).toBe("");
+  });
+
+  it("uses generic upload failure copy and null parent heads when the plan omits upload metadata", async function testGenericUploadFailure() {
+    const file = new File(["hello"], "notes.txt", {
+      type: "text/plain"
+    });
+    uploadViewMocks.planCommit.mockResolvedValueOnce({
+      base_head: "",
+      operations: [
+        {
+          index: 9,
+          type: "add",
+          strategy: "upload-full",
+          field_name: "upload_file_9"
+        },
+        {
+          index: 0,
+          type: "copy"
+        }
+      ]
+    });
+    uploadViewMocks.applyCommit.mockRejectedValueOnce({});
+
+    const wrapper = mount(UploadView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    const input = wrapper.get("[data-testid='upload-file-input']");
+    setInputFiles(input.element as HTMLInputElement, [file]);
+    await input.trigger("change");
+    await flushPromises();
+
+    await findButtonByText(wrapper, "Commit Queued Uploads").trigger("click");
+    await flushPromises();
+    await flushPromises();
+
+    expect(uploadViewMocks.applyCommit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        parent_commit: null
+      }),
+      [],
+      {
+        onUploadProgress: expect.any(Function)
+      }
+    );
+    expect(wrapper.text()).toContain("Unable to upload files into the repository.");
+  });
+
+  it("handles missing file lists, zero-byte progress, and streaming uploads without planned byte totals", async function testZeroByteProgressBranches() {
+    const file = new File([], "empty.txt", {
+      type: "text/plain"
+    });
+    uploadViewMocks.buildExactUploadManifest.mockImplementationOnce(async function buildManifest(entries, onProgress) {
+      onProgress({
+        phase: "reading",
+        currentPathInRepo: entries[0].pathInRepo,
+        completedEntries: 0,
+        totalEntries: 1,
+        processedBytes: 0,
+        totalBytes: 0
+      });
+      return {
+        operations: [
+          {
+            type: "add",
+            path_in_repo: entries[0].pathInRepo,
+            size: 0,
+            sha256: "empty-sha",
+            chunks: []
+          }
+        ],
+        uploads: [
+          {
+            pathInRepo: entries[0].pathInRepo,
+            file: entries[0].file
+          }
+        ]
+      };
+    });
+    uploadViewMocks.planCommit.mockResolvedValueOnce({
+      base_head: "base-1",
+      statistics: {
+        planned_upload_bytes: 0,
+        copy_file_count: 0,
+        chunk_fast_upload_file_count: 0
+      },
+      operations: [
+        {
+          index: 0,
+          type: "add",
+          strategy: "upload-full",
+          field_name: "upload_file_0"
+        }
+      ]
+    });
+
+    let resolveApplyCommit: (value: unknown) => void = function noop() {};
+    uploadViewMocks.applyCommit.mockImplementationOnce(function deferApply(_manifest, _uploads, options) {
+      options.onUploadProgress({
+        loaded: 0,
+        total: 0
+      });
+      return new Promise(function waitForResolution(resolve) {
+        resolveApplyCommit = resolve;
+      });
+    });
+
+    const wrapper = mount(UploadView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    const fileInput = wrapper.get("[data-testid='upload-file-input']");
+    const folderInput = wrapper.get("[data-testid='upload-folder-input']");
+
+    await fileInput.trigger("change");
+    await folderInput.trigger("change");
+    await flushPromises();
+    expect(wrapper.text()).toContain("No files are queued yet.");
+
+    setInputFiles(fileInput.element as HTMLInputElement, [file]);
+    await fileInput.trigger("change");
+    await flushPromises();
+
+    await findButtonByText(wrapper, "Commit Queued Uploads").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get("[data-testid='upload-status-message']").text()).toContain("Streaming upload payloads to the server.");
+
+    resolveApplyCommit({
+      oid: "upload-commit"
+    });
+    await flushPromises();
+    await flushPromises();
+  });
+
+  it("shows completed warning states when refresh succeeds without a message payload", async function testRefreshFallbackWarning() {
+    const file = new File(["hello"], "notes.txt", {
+      type: "text/plain"
+    });
+    uploadViewMocks.planCommit.mockResolvedValueOnce({
+      base_head: "base-1",
+      statistics: {
+        planned_upload_bytes: 5,
+        copy_file_count: 0,
+        chunk_fast_upload_file_count: 0
+      },
+      operations: [
+        {
+          index: 0,
+          type: "add",
+          strategy: "upload-full",
+          field_name: "upload_file_0"
+        }
+      ]
+    });
+    uploadViewMocks.applyCommit.mockResolvedValueOnce({
+      oid: "upload-commit"
+    });
+    uploadViewMocks.bootstrapSession.mockRejectedValueOnce({});
+
+    const wrapper = mount(UploadView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    const input = wrapper.get("[data-testid='upload-file-input']");
+    setInputFiles(input.element as HTMLInputElement, [file]);
+    await input.trigger("change");
+    await flushPromises();
+
+    await findButtonByText(wrapper, "Commit Queued Uploads").trigger("click");
+    await flushPromises();
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Committed");
+    expect(wrapper.text()).toContain("Failed to refresh the repository view.");
+    expect(wrapper.find(".upload-status__icon.is-warning").exists()).toBe(true);
+  });
+
+  it("exposes the idle stage label, blocks repeated submits while writing, and renders the completed success icon", async function testIdleAndWritingGuard() {
+    const file = new File(["hello"], "notes.txt", {
+      type: "text/plain"
+    });
+    let resolveManifest: (value: unknown) => void = function noop() {};
+    uploadViewMocks.buildExactUploadManifest.mockImplementationOnce(function waitForManifest() {
+      return new Promise(function defer(resolve) {
+        resolveManifest = resolve;
+      });
+    });
+    uploadViewMocks.planCommit.mockResolvedValueOnce({
+      base_head: "base-1",
+      statistics: {
+        planned_upload_bytes: 0,
+        copy_file_count: 0,
+        chunk_fast_upload_file_count: 0
+      },
+      operations: []
+    });
+    uploadViewMocks.applyCommit.mockResolvedValueOnce({
+      oid: "upload-commit"
+    });
+
+    const wrapper = mount(UploadView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    expect((wrapper.vm as any).uploadStageLabel).toBe("Idle");
+    (wrapper.vm as any).writing = true;
+    await (wrapper.vm as any).submitUploadQueue();
+    expect(uploadViewMocks.buildExactUploadManifest).not.toHaveBeenCalled();
+    (wrapper.vm as any).writing = false;
+
+    const input = wrapper.get("[data-testid='upload-file-input']");
+    setInputFiles(input.element as HTMLInputElement, [file]);
+    await input.trigger("change");
+    await flushPromises();
+
+    const submitButton = findButtonByText(wrapper, "Commit Queued Uploads");
+    const firstSubmit = submitButton.trigger("click");
+    await flushPromises();
+
+    await submitButton.trigger("click");
+    expect(uploadViewMocks.buildExactUploadManifest).toHaveBeenCalledTimes(1);
+
+    resolveManifest({
+      operations: [
+        {
+          type: "add",
+          path_in_repo: "docs/notes.txt",
+          size: 5,
+          sha256: "docs/notes.txt-sha256",
+          chunks: []
+        }
+      ],
+      uploads: [
+        {
+          pathInRepo: "docs/notes.txt",
+          file: file
+        }
+      ]
+    });
+
+    await firstSubmit;
+    await flushPromises();
+    await flushPromises();
+
+    (wrapper.vm as any).uploadStage = "completed";
+    (wrapper.vm as any).uploadStatusTitle = "Upload committed";
+    (wrapper.vm as any).uploadStatusMessage = "Repository upload completed successfully.";
+    (wrapper.vm as any).writing = false;
+    (wrapper.vm as any).warning = "";
+    (wrapper.vm as any).error = "";
+    await flushPromises();
+
+    expect(wrapper.find("[data-testid='upload-status-panel']").exists()).toBe(true);
+    expect(wrapper.find(".upload-status__icon.is-warning").exists()).toBe(false);
   });
 });

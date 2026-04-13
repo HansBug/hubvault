@@ -145,6 +145,62 @@ describe("api client helpers", function suite() {
     expect(config).toEqual({});
   });
 
+  it("handles missing session storage and lazily creates auth headers", function testStorageGuards() {
+    const originalStorage = window.sessionStorage;
+
+    Object.defineProperty(window, "sessionStorage", {
+      configurable: true,
+      value: null
+    });
+    expect(axiosState.requestInterceptor({})).toEqual({});
+
+    Object.defineProperty(window, "sessionStorage", {
+      configurable: true,
+      value: originalStorage
+    });
+
+    window.sessionStorage.setItem("hubvault.webui.token", "secret-token");
+    const config = axiosState.requestInterceptor({});
+
+    expect(config.headers.Authorization).toBe("Bearer secret-token");
+  });
+
+  it("normalizes upload progress payloads and upload field fallbacks", async function testUploadFallbacks() {
+    const uploadProgress = vi.fn();
+    const file = new File(["payload"], "", {
+      type: "application/octet-stream"
+    });
+
+    await apiClient.applyCommit(
+      {
+        revision: "release/v1"
+      },
+      [
+        {
+          fieldName: undefined,
+          file: file,
+          fileName: ""
+        }
+      ],
+      {
+        onUploadProgress: uploadProgress
+      }
+    );
+
+    const config = axiosState.request.mock.calls[axiosState.request.mock.calls.length - 1][0];
+    const entries = Array.from((config.data as FormData).entries());
+
+    expect(entries[0]).toEqual(["manifest", JSON.stringify({ revision: "release/v1" })]);
+    expect(entries[1][0]).toBe("undefined");
+    expect((entries[1][1] as File).name).toBe("upload.bin");
+
+    config.onUploadProgress({});
+    expect(uploadProgress).toHaveBeenCalledWith({
+      loaded: 0,
+      total: 0
+    });
+  });
+
   it("builds request payloads for the full public client surface", async function testRequestBuilders() {
     const file = new File(["hello"], "demo.txt", {
       type: "text/plain"
@@ -190,6 +246,11 @@ describe("api client helpers", function suite() {
         onUploadProgress: uploadProgress
       }
     );
+    const uploadConfig = axiosState.request.mock.calls[axiosState.request.mock.calls.length - 1][0];
+    uploadConfig.onUploadProgress({
+      loaded: 3,
+      total: 7
+    });
     await apiClient.applyCommit(
       {
         revision: "release/v1"
@@ -243,6 +304,10 @@ describe("api client helpers", function suite() {
     expect(apiClient.buildDownloadUrl("release/v1", "docs/config.json")).toBe(
       "/api/v1/content/download/docs/config.json?revision=release%2Fv1&token=secret-token"
     );
+    expect(uploadProgress).toHaveBeenCalledWith({
+      loaded: 3,
+      total: 7
+    });
 
     expect(axiosState.request).toHaveBeenCalledWith({
       method: "get",

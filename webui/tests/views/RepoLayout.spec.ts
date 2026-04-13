@@ -222,4 +222,101 @@ describe("RepoLayout", function suite() {
       }
     });
   });
+
+  it("falls back bootstrap errors and route names during successful revision injection", async function testRepoLayoutFallbackBranches() {
+    repoLayoutMocks.route.name = "" as any;
+    repoLayoutMocks.route.query = {
+      token: "demo"
+    };
+    repoLayoutMocks.bootstrapSession.mockImplementationOnce(async function bootstrap() {
+      sessionState.service = {
+        repo: {
+          default_branch: "release/v9"
+        }
+      };
+      sessionState.repo = {
+        default_branch: "release/v9"
+      };
+      sessionState.repoRevision = "release/v9";
+    });
+
+    mount(RepoLayout, {
+      global: {
+        stubs: {
+          RouterView: RouterViewStub,
+          ElAlert: {
+            props: ["title"],
+            template: "<div class=\"el-alert\">{{ title }}</div>"
+          },
+          ElSkeleton: {
+            template: "<div class=\"el-skeleton\"></div>"
+          }
+        }
+      }
+    });
+    await flushPromises();
+
+    expect(repoLayoutMocks.replace).toHaveBeenCalledWith({
+      name: "overview",
+      query: {
+        token: "demo",
+        revision: "release/v9"
+      }
+    });
+
+    repoLayoutMocks.route.query = {
+      revision: "release/v10"
+    };
+    repoLayoutMocks.bootstrapSession.mockRejectedValueOnce({});
+
+    const wrapper = mount(RepoLayout, {
+      global: {
+        stubs: {
+          RouterView: RouterViewStub,
+          ElAlert: {
+            props: ["title"],
+            template: "<div class=\"el-alert\">{{ title }}</div>"
+          },
+          ElSkeleton: {
+            template: "<div class=\"el-skeleton\"></div>"
+          }
+        }
+      }
+    });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("Unable to bootstrap the repository UI.");
+  });
+
+  it("keeps the current route untouched when bootstrap succeeds without a resolved repo revision", async function testRepoLayoutWithoutResolvedRevision() {
+    repoLayoutMocks.bootstrapSession.mockImplementationOnce(async function bootstrap() {
+      sessionState.service = {
+        repo: {
+          default_branch: "release/v10"
+        }
+      };
+      sessionState.repo = {
+        default_branch: "release/v10"
+      };
+    });
+
+    const wrapper = mount(RepoLayout, {
+      global: {
+        stubs: {
+          RouterView: RouterViewStub,
+          ElAlert: {
+            props: ["title"],
+            template: "<div class=\"el-alert\">{{ title }}</div>"
+          },
+          ElSkeleton: {
+            template: "<div class=\"el-skeleton\"></div>"
+          }
+        }
+      }
+    });
+    await flushPromises();
+
+    expect(repoLayoutMocks.replace).not.toHaveBeenCalled();
+    expect(wrapper.get("[data-testid='shell-revision']").text()).toBe("release/v10");
+  });
 });

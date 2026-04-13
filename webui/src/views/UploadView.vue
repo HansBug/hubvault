@@ -20,6 +20,20 @@ import { formatBytes } from "@/utils/format";
 import { basename, buildExactUploadManifest, joinRepoPath } from "@/utils/uploads";
 
 type UploadStage = "idle" | "preparing" | "planning" | "uploading" | "finalizing" | "refreshing" | "completed";
+interface UploadQueueEntry {
+  id: string;
+  pathInRepo: string;
+  file: File;
+}
+const UPLOAD_STAGE_LABELS: Record<UploadStage, string> = {
+  idle: "Idle",
+  preparing: "Preparing",
+  planning: "Planning",
+  uploading: "Uploading",
+  finalizing: "Finalizing",
+  refreshing: "Refreshing",
+  completed: "Committed"
+};
 
 const props = defineProps({
   revision: {
@@ -39,7 +53,7 @@ const warning = ref("");
 const directoryPath = ref("");
 const uploadFileInput = ref<HTMLInputElement | null>(null);
 const uploadFolderInput = ref<HTMLInputElement | null>(null);
-const queueEntries = ref<any[]>([]);
+const queueEntries = ref<UploadQueueEntry[]>([]);
 const commitMessage = ref("");
 const uploadProgress = ref(0);
 const uploadStage = ref<UploadStage>("idle");
@@ -92,30 +106,12 @@ const breadcrumbItems = computed(function resolveBreadcrumbItems() {
 
 const queueBytes = computed(function resolveQueueBytes() {
   return queueEntries.value.reduce(function accumulate(total, item) {
-    return total + Number(item.file.size || 0);
+    return total + item.file.size;
   }, 0);
 });
 
 const uploadStageLabel = computed(function resolveUploadStageLabel() {
-  if (uploadStage.value === "preparing") {
-    return "Preparing";
-  }
-  if (uploadStage.value === "planning") {
-    return "Planning";
-  }
-  if (uploadStage.value === "uploading") {
-    return "Uploading";
-  }
-  if (uploadStage.value === "finalizing") {
-    return "Finalizing";
-  }
-  if (uploadStage.value === "refreshing") {
-    return "Refreshing";
-  }
-  if (uploadStage.value === "completed") {
-    return "Committed";
-  }
-  return "Idle";
+  return UPLOAD_STAGE_LABELS[uploadStage.value];
 });
 
 const showUploadStatusPanel = computed(function resolveShowUploadStatusPanel() {
@@ -123,13 +119,11 @@ const showUploadStatusPanel = computed(function resolveShowUploadStatusPanel() {
 });
 
 function normalizeProgress(value: number) {
-  return Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
+  return Math.max(0, Math.min(100, Math.round(value)));
 }
 
-function resetInput(element) {
-  if (element) {
-    element.value = "";
-  }
+function resetInput(element: HTMLInputElement) {
+  element.value = "";
 }
 
 function resetUploadStatus() {
@@ -143,17 +137,15 @@ function resetUploadStatus() {
   uploadTotalBytes.value = 0;
 }
 
-function setUploadStatus(stage: UploadStage, title: string, message: string, progress?: number) {
+function setUploadStatus(stage: UploadStage, title: string, message: string, progress: number) {
   uploadStage.value = stage;
   uploadStatusTitle.value = title;
   uploadStatusMessage.value = message;
-  if (typeof progress === "number") {
-    uploadProgress.value = normalizeProgress(progress);
-  }
+  uploadProgress.value = normalizeProgress(progress);
 }
 
 function shortenCommitMessagePath(value: string, maxLength = 32) {
-  const text = String(value || "");
+  const text = value;
   if (text.length <= maxLength) {
     return text;
   }
@@ -170,7 +162,7 @@ const commitMessagePlaceholder = computed(function resolveCommitMessagePlacehold
   }
 
   const paths = queueEntries.value.map(function collectPath(item) {
-    return String(item.pathInRepo || "");
+    return item.pathInRepo;
   });
   const visiblePaths = paths.slice(0, 2).map(function shortenVisiblePath(item) {
     return shortenCommitMessagePath(item, 28);
@@ -249,7 +241,7 @@ async function normalizeTargetDirectory() {
       if (info[0].entry_type === "folder") {
         directoryPath.value = info[0].path;
       } else {
-        const parts = String(info[0].path || "").split("/");
+        const parts = info[0].path.split("/");
         parts.pop();
         directoryPath.value = parts.join("/");
       }
@@ -274,20 +266,16 @@ async function backToFiles() {
 }
 
 function triggerFileUpload() {
-  if (uploadFileInput.value) {
-    uploadFileInput.value.click();
-  }
+  uploadFileInput.value!.click();
 }
 
 function triggerFolderUpload() {
-  if (uploadFolderInput.value) {
-    uploadFolderInput.value.click();
-  }
+  uploadFolderInput.value!.click();
 }
 
 async function handleFileInputChange(event) {
-  const input = event.target;
-  const files = Array.from(input && input.files ? input.files : []);
+  const input = event.target as HTMLInputElement;
+  const files = Array.from(input.files as FileList);
   resetInput(input);
   addQueueEntries(
     files.map(function mapFile(file) {
@@ -300,8 +288,8 @@ async function handleFileInputChange(event) {
 }
 
 async function handleFolderInputChange(event) {
-  const input = event.target;
-  const files = Array.from(input && input.files ? input.files : []);
+  const input = event.target as HTMLInputElement;
+  const files = Array.from(input.files as FileList);
   resetInput(input);
   addQueueEntries(
     files.map(function mapFile(file) {
@@ -325,15 +313,13 @@ function removeQueueEntry(id) {
 }
 
 function updateManifestProgress(payload) {
-  uploadProcessedBytes.value = Number(payload.processedBytes || 0);
-  uploadTotalBytes.value = Number(payload.totalBytes || 0);
-  const currentIndex = payload.totalEntries
-    ? Math.min(payload.totalEntries, Math.max(payload.completedEntries + (payload.phase === "completed" ? 0 : 1), 1))
-    : 0;
+  uploadProcessedBytes.value = payload.processedBytes;
+  uploadTotalBytes.value = payload.totalBytes;
+  const currentIndex = Math.min(payload.totalEntries, Math.max(payload.completedEntries + (payload.phase === "completed" ? 0 : 1), 1));
   const progress = uploadTotalBytes.value > 0
     ? (uploadProcessedBytes.value / uploadTotalBytes.value) * 35
-    : (payload.totalEntries ? (payload.completedEntries / payload.totalEntries) * 35 : 5);
-  const currentPath = payload.currentPathInRepo || "upload queue";
+    : (payload.completedEntries / payload.totalEntries) * 35;
+  const currentPath = payload.currentPathInRepo;
 
   if (payload.phase === "reading") {
     setUploadStatus(
@@ -362,8 +348,8 @@ function updateManifestProgress(payload) {
 }
 
 function updateUploadTransferProgress(progressEvent) {
-  const total = Number(progressEvent.total || uploadTotalBytes.value || 0);
-  const loaded = Number(progressEvent.loaded || 0);
+  const total = progressEvent.total;
+  const loaded = progressEvent.loaded;
   uploadProcessedBytes.value = loaded;
   uploadTotalBytes.value = total;
 
@@ -387,7 +373,7 @@ function updateUploadTransferProgress(progressEvent) {
 }
 
 async function submitUploadQueue() {
-  if (!queueEntries.value.length || writing.value) {
+  if (writing.value) {
     return;
   }
 
@@ -432,7 +418,7 @@ async function submitUploadQueue() {
     const plan = await planCommit(manifest);
     lastPlanStatistics.value = plan.statistics || null;
 
-    const uploads = (plan.operations || []).reduce(function collectUploads(accumulator, plannedOperation) {
+    const uploads = plan.operations.reduce(function collectUploads(accumulator, plannedOperation) {
       if (plannedOperation.type !== "add" || plannedOperation.strategy !== "upload-full") {
         return accumulator;
       }
@@ -514,10 +500,8 @@ async function submitUploadQueue() {
     ElMessage.success("Repository upload completed.");
   } catch (uploadError) {
     error.value = buildUploadErrorMessage(uploadError);
-    if (uploadStage.value !== "completed") {
-      uploadStatusTitle.value = "Upload interrupted";
-      uploadStatusMessage.value = error.value;
-    }
+    uploadStatusTitle.value = "Upload interrupted";
+    uploadStatusMessage.value = error.value;
   } finally {
     writing.value = false;
   }
@@ -645,7 +629,6 @@ watch(
               class="upload-status__icon"
               :class="{
                 'is-active': writing,
-                'is-success': uploadStage === 'completed' && !warning && !error,
                 'is-warning': Boolean(warning || error)
               }"
             >
@@ -675,7 +658,6 @@ watch(
           <el-progress
             :percentage="uploadProgress"
             :stroke-width="12"
-            :status="uploadStage === 'completed' && !warning && !error ? 'success' : undefined"
           />
         </div>
 

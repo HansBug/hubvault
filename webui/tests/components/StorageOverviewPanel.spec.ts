@@ -151,4 +151,70 @@ describe("StorageOverviewPanel", function suite() {
     expect(wrapper.emitted("load-overview")).toHaveLength(1);
     expect(wrapper.emitted("run-full-verify")).toHaveLength(1);
   });
+
+  it("renders failing quick verification counts and empty section tables", async function testQuickVerifyBranches() {
+    const wrapper = mount(StorageOverviewPanel, {
+      props: {
+        summary: {
+          total_size: 0,
+          total_file_count: 0,
+          metadata_size: 0
+        },
+        overview: {
+          total_size: 0,
+          reachable_size: 0,
+          reclaimable_gc_size: 0,
+          reclaimable_cache_size: 0,
+          sections: [],
+          recommendations: ["Inspect refs."]
+        },
+        quickVerify: {
+          ok: false,
+          checked_refs: [],
+          warnings: ["stale ref"],
+          errors: ["missing blob"]
+        }
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await findButton(wrapper, "Refresh analysis").trigger("click");
+    await findButton(wrapper, "Run again").trigger("click");
+
+    expect(wrapper.text()).toContain("Issues found");
+    expect(wrapper.text()).toContain("Checked refs");
+    expect(wrapper.text()).toContain("0");
+    expect(wrapper.text()).toContain("Inspect refs.");
+    expect(wrapper.text()).toContain("No storage section data available.");
+    expect(wrapper.emitted("load-overview")).toHaveLength(1);
+    expect(wrapper.emitted("run-quick-verify")).toHaveLength(1);
+  });
+
+  it("falls back missing overview collections to empty lists", function testOverviewCollectionFallbacks() {
+    const wrapper = mount(StorageOverviewPanel, {
+      props: {
+        summary: {
+          total_size: 0,
+          total_file_count: 0,
+          metadata_size: 0
+        },
+        overview: {
+          total_size: 0,
+          reachable_size: 0,
+          reclaimable_gc_size: 0,
+          reclaimable_cache_size: 0,
+          sections: null,
+          recommendations: null
+        }
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    expect(wrapper.text()).toContain("No storage recommendations at the moment.");
+    expect(wrapper.text()).toContain("No storage section data available.");
+  });
 });

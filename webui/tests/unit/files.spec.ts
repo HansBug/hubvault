@@ -27,8 +27,11 @@ describe("file helpers", function suite() {
   it("detects markdown, media, code, and text-like paths", function testPathKinds() {
     expect(isMarkdownPath("README.md")).toBe(true);
     expect(isMarkdownPath("README.rst")).toBe(false);
+    expect(isMarkdownPath(null as any)).toBe(false);
     expect(isJsonPath("data/config.json")).toBe(true);
     expect(isJsonPath("data/config.yaml")).toBe(false);
+    expect(isJsonPath("DATA/CONFIG.JSON")).toBe(true);
+    expect(isJsonPath(null as any)).toBe(false);
     expect(isImagePath("images/logo.png")).toBe(true);
     expect(isAudioPath("media/voice.wav")).toBe(true);
     expect(isVideoPath("clips/demo.mp4")).toBe(true);
@@ -39,9 +42,13 @@ describe("file helpers", function suite() {
     expect(isTextLikePath("CHANGELOG")).toBe(true);
     expect(isTextLikePath("Dockerfile.dev")).toBe(true);
     expect(isTextLikePath("compose.prod.yaml")).toBe(true);
+    expect(isTextLikePath("docker-compose.prod.yml")).toBe(true);
     expect(isTextLikePath("tailwind.config.ts")).toBe(true);
+    expect(isTextLikePath("package-lock.json")).toBe(true);
     expect(isTextLikePath("config.yaml")).toBe(true);
     expect(isTextLikePath("requirements-test.txt")).toBe(true);
+    expect(isTextLikePath("weights/model.safetensors")).toBe(false);
+    expect(isTextLikePath("checkpoints/model.ckpt")).toBe(false);
     expect(isTextLikePath("events.out.tfevents.1710000.fixture")).toBe(false);
     expect(isCodeLikePath("src/app.py")).toBe(true);
     expect(isCodeLikePath("README.md")).toBe(true);
@@ -59,7 +66,10 @@ describe("file helpers", function suite() {
     expect(getFileVisualKind("LICENSE", "file")).toBe("license");
     expect(getFileVisualKind("Dockerfile", "file")).toBe("docker");
     expect(getFileVisualKind("compose.dev.yaml", "file")).toBe("docker");
+    expect(getFileVisualKind("schema.gql", "file")).toBe("graphql");
     expect(getFileVisualKind("package.json", "file")).toBe("npm");
+    expect(getFileVisualKind("requirements.txt", "file")).toBe("python");
+    expect(getFileVisualKind("requirements-prod.txt", "file")).toBe("python");
     expect(getFileVisualKind("pyproject.toml", "file")).toBe("python");
     expect(getFileVisualKind("tailwind.config.ts", "file")).toBe("tailwindcss");
     expect(getFileVisualKind("schema.graphql", "file")).toBe("graphql");
@@ -78,9 +88,13 @@ describe("file helpers", function suite() {
     expect(getFileVisualKind("weights/model.gguf", "file")).toBe("pytorch");
     expect(getFileVisualKind("archive/release.tar.gz", "file")).toBe("zip");
     expect(getFileVisualKind("fonts/mono.woff2", "file")).toBe("font");
+    expect(getFileVisualKind("images/photo.avif", "file")).toBe("image");
+    expect(getFileVisualKind("images/logo.png", "file")).toBe("image");
     expect(getFileVisualKind("media/screen.svg", "file")).toBe("svg");
     expect(getFileVisualKind("media/sound.mp3", "file")).toBe("audio");
     expect(getFileVisualKind("media/movie.webm", "file")).toBe("video");
+    expect(getFileVisualKind("plainblob", "file")).toBe("binary");
+    expect(getFileVisualKind("docs/notes.txt", "file")).toBe("document");
     expect(getFileVisualKind("opaque/payload.bin", "file")).toBe("binary");
     expect(getFileVisualKind("artifacts", "folder")).toBe("folder");
   });
@@ -94,6 +108,7 @@ describe("file helpers", function suite() {
   });
 
   it("sorts repository entries like natsort with directories first", function testNaturalSorting() {
+    expect(naturalCompare("", "a")).toBeLessThan(0);
     expect(naturalCompare("001alpha.sgi", "01alpha.sgi")).toBeLessThan(0);
     expect(naturalCompare("file2.txt", "file10.txt")).toBeLessThan(0);
 
@@ -120,6 +135,14 @@ describe("file helpers", function suite() {
     expect(duplicated.map(function collectPath(item) {
       return item.path;
     })).toEqual(["a/part-2.txt", "b/part-2.txt"]);
+
+    const sparse = sortRepoEntries([
+      { entry_type: "file" } as any,
+      { path: "", entry_type: "file" } as any
+    ]);
+    expect(sparse).toHaveLength(2);
+    expect(sparse[0].path).toBeUndefined();
+
     expect(sortRepoEntries(null as any)).toEqual([]);
   });
 

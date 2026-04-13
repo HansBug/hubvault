@@ -123,4 +123,66 @@ describe("LoginView", function suite() {
       }
     });
   });
+
+  it("adds revisions to bare repo redirects and uses the default auth failure copy", async function testBareRedirectAndFallbackError() {
+    loginMocks.route.query = {
+      redirect: "/repo/commits"
+    };
+    loginMocks.bootstrapSession.mockResolvedValueOnce({
+      repoRevision: "release/v3"
+    });
+
+    const redirectWrapper = mount(LoginView, {
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await redirectWrapper.get("input").setValue("rw-token");
+    await redirectWrapper.get("button").trigger("click");
+    await flushPromises();
+
+    expect(loginMocks.replace).toHaveBeenCalledWith("/repo/commits?revision=release%2Fv3");
+
+    loginMocks.route.query = {
+      redirect: 123 as any
+    };
+    loginMocks.bootstrapSession.mockResolvedValueOnce({
+      repoRevision: "release/v4"
+    });
+
+    const fallbackRedirectWrapper = mount(LoginView, {
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await fallbackRedirectWrapper.get("input").setValue("rw-token");
+    await fallbackRedirectWrapper.get("button").trigger("click");
+    await flushPromises();
+
+    expect(loginMocks.replace).toHaveBeenLastCalledWith({
+      name: "overview",
+      query: {
+        revision: "release/v4"
+      }
+    });
+
+    loginMocks.route.query = {
+      redirect: 123 as any
+    };
+    loginMocks.bootstrapSession.mockRejectedValueOnce({});
+
+    const errorWrapper = mount(LoginView, {
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await errorWrapper.get("input").setValue("bad-token");
+    await errorWrapper.get("button").trigger("click");
+    await flushPromises();
+
+    expect(errorWrapper.text()).toContain("Unable to authenticate with the provided token.");
+  });
 });

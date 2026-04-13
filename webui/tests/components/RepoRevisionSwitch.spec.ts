@@ -133,7 +133,7 @@ describe("RepoRevisionSwitch", function suite() {
   it("accepts null refs from callers without crashing the rendered option groups", function testNullRefs() {
     const wrapper = mount(RepoRevisionSwitch, {
       props: {
-        modelValue: "",
+        modelValue: "detached-commit",
         refs: null
       },
       global: {
@@ -157,6 +157,8 @@ describe("RepoRevisionSwitch", function suite() {
 
     expect(wrapper.text()).toContain("Branches");
     expect(wrapper.text()).toContain("Tags");
-    expect(wrapper.findAll(".option-item")).toHaveLength(0);
+    expect(wrapper.text()).toContain("Selected Revision");
+    expect(wrapper.text()).toContain("detached-commit");
+    expect(wrapper.findAll(".option-item")).toHaveLength(1);
   });
 });

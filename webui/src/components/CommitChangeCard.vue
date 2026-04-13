@@ -95,12 +95,12 @@ const newBlobUrl = computed(function resolveNewBlobUrl() {
 
 const fileSummary = computed(function resolveFileSummary() {
   const parts = [];
-  if (props.change.old_file && props.change.new_file) {
-    parts.push(formatBytes(props.change.old_file.size) + " -> " + formatBytes(props.change.new_file.size));
-  } else if (props.change.new_file) {
-    parts.push(formatBytes(props.change.new_file.size));
-  } else if (props.change.old_file) {
-    parts.push(formatBytes(props.change.old_file.size));
+  const oldFile = props.change.old_file;
+  const newFile = props.change.new_file;
+  if (oldFile && newFile) {
+    parts.push(formatBytes(oldFile.size) + " -> " + formatBytes(newFile.size));
+  } else {
+    parts.push(formatBytes((newFile || oldFile).size));
   }
   if (previewKind.value) {
     parts.push(previewKind.value);
@@ -113,9 +113,6 @@ const fileSummary = computed(function resolveFileSummary() {
 });
 
 function versionRows(fileVersion) {
-  if (!fileVersion) {
-    return [];
-  }
   return [
     {
       label: "Size",

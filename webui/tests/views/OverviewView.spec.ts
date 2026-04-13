@@ -177,4 +177,54 @@ describe("OverviewView", function suite() {
 
     expect(wrapper.text()).toContain("overview failed");
   });
+
+  it("keeps readme content empty when no root readme exists and falls back snapshot metadata to the service defaults", async function testOverviewFallbackBranches() {
+    sessionState.repo = {
+      default_branch: "",
+      head: ""
+    };
+    sessionState.service = {
+      repo: {
+        default_branch: "main",
+        path: "/tmp/service-only"
+      }
+    };
+    overviewMocks.getRepoFiles.mockResolvedValueOnce(["docs/guide.md"]);
+    overviewMocks.getCommits.mockResolvedValueOnce([]);
+    overviewMocks.getStorageOverview.mockResolvedValueOnce({
+      total_size: 0
+    });
+
+    const wrapper = mount(OverviewView, {
+      props: {
+        revision: "main"
+      },
+      global: {
+        stubs: overviewStubs
+      }
+    });
+
+    await flushPromises();
+
+    expect(overviewMocks.getBlobBytes).not.toHaveBeenCalled();
+    expect(wrapper.get("[data-testid='readme-viewer']").text()).toBe("|");
+    expect(wrapper.get("[data-testid='overview-snapshot-card']").text()).toContain("main");
+    expect(wrapper.get("[data-testid='overview-commits-card']").text()).toContain("No commits available.");
+
+    overviewMocks.getRepoFiles.mockRejectedValueOnce({});
+
+    const errorWrapper = mount(OverviewView, {
+      props: {
+        revision: "main"
+      },
+      global: {
+        stubs: overviewStubs
+      }
+    });
+
+    await flushPromises();
+    await flushPromises();
+
+    expect(errorWrapper.text()).toContain("Unable to load overview data.");
+  });
 });

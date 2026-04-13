@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import {
   Delete,
-  Document,
   Download,
   Files,
   FolderOpened,
@@ -43,8 +42,8 @@ const props = defineProps({
 const emit = defineEmits(["open-folder", "open-file", "open-commit", "delete-entry"]);
 
 function displayName(path) {
-  const parts = String(path || "").split("/");
-  return parts[parts.length - 1] || path;
+  const parts = path.split("/");
+  return parts[parts.length - 1];
 }
 
 function downloadUrl(path) {
@@ -57,12 +56,12 @@ function entryVisual(row) {
 
 function fallbackIcon(row) {
   const visual = entryVisual(row);
-  return FALLBACK_ICONS[visual.icon] || Document;
+  return FALLBACK_ICONS[visual.icon as keyof typeof FALLBACK_ICONS];
 }
 
 function materialIcon(row) {
   const visual = entryVisual(row);
-  return materialFileIcons[visual.icon] || materialFileIcons.document;
+  return materialFileIcons[visual.icon as keyof typeof materialFileIcons];
 }
 
 function openEntry(row) {
@@ -70,9 +69,7 @@ function openEntry(row) {
 }
 
 function openCommit(row) {
-  if (row && row.last_commit && row.last_commit.oid) {
-    emit("open-commit", row.last_commit.oid);
-  }
+  emit("open-commit", row.last_commit.oid);
 }
 </script>
 

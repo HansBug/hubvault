@@ -246,4 +246,251 @@ describe("FileDetailView", function suite() {
       "/api/v1/content/download/media/demo.avi?revision=release/v1"
     );
   });
+
+  it("formats json previews and falls back to the raw payload when the json is invalid", async function testJsonPreviewBranches() {
+    fileDetailMocks.route.params.pathMatch = ["data", "config.json"];
+    fileDetailMocks.getPathsInfo.mockResolvedValueOnce([
+      {
+        path: "data/config.json",
+        entry_type: "file",
+        size: 18,
+        oid: "oid-json",
+        sha256: "sha-json",
+        blob_id: "blob-json",
+        etag: "etag-json",
+        last_commit: {
+          oid: "",
+          title: "",
+          date: ""
+        }
+      }
+    ]);
+    fileDetailMocks.getBlobBytes.mockResolvedValueOnce(new TextEncoder().encode("{\"value\":1}").buffer);
+
+    const formattedWrapper = mount(FileDetailView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+    await flushPromises();
+
+    expect(formattedWrapper.get("[data-testid='code-viewer-stub']").text()).toContain("{\n  \"value\": 1\n}");
+    expect(formattedWrapper.find(".detail-commit-link").exists()).toBe(false);
+
+    fileDetailMocks.getPathsInfo.mockResolvedValueOnce([
+      {
+        path: "data/config.json",
+        entry_type: "file",
+        size: 18,
+        oid: "oid-json-raw",
+        sha256: "sha-json-raw",
+        blob_id: "blob-json-raw",
+        etag: "etag-json-raw",
+        last_commit: null
+      }
+    ]);
+    fileDetailMocks.getBlobBytes.mockResolvedValueOnce(new TextEncoder().encode("{not json").buffer);
+
+    const rawWrapper = mount(FileDetailView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+    await flushPromises();
+
+    expect(rawWrapper.get("[data-testid='code-viewer-stub']").text()).toContain("{not json");
+  });
+
+  it("keeps root-level files query-free when navigating back and shortens untitled commit links", async function testRootBackNavigation() {
+    fileDetailMocks.route.params.pathMatch = ["README.md"];
+    fileDetailMocks.getPathsInfo.mockResolvedValueOnce([
+      {
+        path: "README.md",
+        entry_type: "file",
+        size: 16,
+        oid: "oid-root",
+        sha256: "sha-root",
+        blob_id: "blob-root",
+        etag: "etag-root",
+        last_commit: {
+          oid: "1234567890abcdef",
+          title: "",
+          date: "2026-04-12T00:00:00Z"
+        }
+      }
+    ]);
+    fileDetailMocks.getBlobBytes.mockResolvedValueOnce(new TextEncoder().encode("# Root\n").buffer);
+
+    const wrapper = mount(FileDetailView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("12345678");
+
+    await findButtonByLabelOrText(wrapper, "Back to Directory").trigger("click");
+
+    expect(fileDetailMocks.push).toHaveBeenCalledWith({
+      name: "files",
+      query: {
+        revision: "release/v1",
+        path: undefined
+      }
+    });
+  });
+
+  it("renders binary and video previews without fetching text bytes", async function testBinaryAndVideoBranches() {
+    fileDetailMocks.route.params.pathMatch = "artifacts/model.bin" as any;
+    fileDetailMocks.getPathsInfo.mockResolvedValueOnce([
+      {
+        path: "artifacts/model.bin",
+        entry_type: "file",
+        size: 2 * 1024 * 1024,
+        oid: "oid-bin",
+        sha256: "sha-bin",
+        blob_id: "blob-bin",
+        etag: "etag-bin",
+        last_commit: null
+      }
+    ]);
+
+    const binaryWrapper = mount(FileDetailView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    expect(fileDetailMocks.getBlobBytes).not.toHaveBeenCalled();
+    expect(binaryWrapper.text()).toContain("This binary file cannot be rendered inline.");
+
+    await findButtonByLabelOrText(binaryWrapper, "Back to Directory").trigger("click");
+    expect(fileDetailMocks.push).toHaveBeenCalledWith({
+      name: "files",
+      query: {
+        revision: "release/v1",
+        path: "artifacts"
+      }
+    });
+
+    fileDetailMocks.route.params.pathMatch = ["media", "demo.mp4"];
+    fileDetailMocks.getPathsInfo.mockResolvedValueOnce([
+      {
+        path: "media/demo.mp4",
+        entry_type: "file",
+        size: 2048,
+        oid: "oid-video",
+        sha256: "sha-video",
+        blob_id: "blob-video",
+        etag: "etag-video",
+        last_commit: null
+      }
+    ]);
+
+    const videoWrapper = mount(FileDetailView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    expect(videoWrapper.get("video").attributes("src")).toContain("/api/v1/content/blob/media/demo.mp4?revision=release/v1");
+  });
+
+  it("handles missing paths and unreadable file metadata gracefully", async function testDetailErrors() {
+    fileDetailMocks.route.params.pathMatch = undefined as any;
+
+    const missingWrapper = mount(FileDetailView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    expect(fileDetailMocks.getPathsInfo).not.toHaveBeenCalled();
+    expect(missingWrapper.find("a[href]").exists()).toBe(false);
+    expect((missingWrapper.vm as any).blobUrl).toBe("");
+
+    fileDetailMocks.route.params.pathMatch = ["docs", "folder"];
+    fileDetailMocks.getPathsInfo.mockResolvedValueOnce([
+      {
+        path: "docs/folder",
+        entry_type: "folder"
+      }
+    ]);
+
+    const nonFileWrapper = mount(FileDetailView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    expect(nonFileWrapper.text()).toContain("Selected path is not a file.");
+
+    fileDetailMocks.route.params.pathMatch = ["docs", "missing.txt"];
+    fileDetailMocks.getPathsInfo.mockResolvedValueOnce([]);
+
+    const missingEntryWrapper = mount(FileDetailView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    expect(missingEntryWrapper.text()).toContain("Selected path is not a file.");
+
+    fileDetailMocks.route.params.pathMatch = ["docs", "broken.txt"];
+    fileDetailMocks.getPathsInfo.mockRejectedValueOnce({});
+
+    const errorWrapper = mount(FileDetailView, {
+      props: {
+        revision: "release/v1"
+      },
+      global: {
+        plugins: [ElementPlus]
+      }
+    });
+
+    await flushPromises();
+
+    expect(errorWrapper.text()).toContain("Unable to load file detail.");
+  });
 });

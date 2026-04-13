@@ -31,7 +31,7 @@ const changeSummary = computed(function resolveChangeSummary() {
     deleted: 0,
     modified: 0
   };
-  const changes = detail.value && Array.isArray(detail.value.changes) ? detail.value.changes : [];
+  const changes = detail.value ? detail.value.changes : [];
   changes.forEach(function accumulate(change) {
     if (change.change_type === "added") {
       summary.added += 1;

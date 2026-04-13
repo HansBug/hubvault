@@ -43,9 +43,6 @@ const markdown = new MarkdownIt({
 });
 
 const renderedHtml = computed(function buildRenderedHtml() {
-  if (!props.content || !isMarkdownPath(props.path)) {
-    return "";
-  }
   return DOMPurify.sanitize(markdown.render(props.content));
 });
 </script>
