@@ -9,6 +9,8 @@ jobs:
     name: Publish to official pypi
     runs-on: ${{ matrix.os }}
     if: ${{ github.repository == 'hansbug/hubvault' }}
+    needs:
+      - release_docker_smoke
     strategy:
       matrix:
         os:
@@ -55,10 +57,156 @@ jobs:
           overwrite: true
           file_glob: true
 
+  release_docker_smoke:
+    name: Container Smoke Test
+    runs-on: ubuntu-latest
+    if: ${{ github.repository == 'hansbug/hubvault' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build local image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: local/hubvault:release
+
+      - name: Smoke test startup and persistent repository volume
+        shell: bash
+        run: |
+          bash docker/smoke-test.sh local/hubvault:release 9480
+
+  release_docker_ghcr:
+    name: Container Build And Release (GHCR)
+    runs-on: ubuntu-latest
+    if: ${{ github.repository == 'hansbug/hubvault' }}
+    needs:
+      - release_docker_smoke
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/hansbug/hubvault
+          flavor: |
+            latest=true
+          tags: |
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  release_docker_dockerhub:
+    name: Container Build And Release (Docker Hub)
+    runs-on: ubuntu-latest
+    if: ${{ github.repository == 'hansbug/hubvault' }}
+    needs:
+      - release_docker_smoke
+    permissions:
+      contents: read
+    env:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Detect Docker Hub credentials
+        id: dockerhub
+        shell: bash
+        run: |
+          if [ -n "${DOCKERHUB_USERNAME}" ] && [ -n "${DOCKERHUB_TOKEN}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up QEMU
+        if: ${{ steps.dockerhub.outputs.enabled == 'true' }}
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        if: ${{ steps.dockerhub.outputs.enabled == 'true' }}
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        if: ${{ steps.dockerhub.outputs.enabled == 'true' }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        if: ${{ steps.dockerhub.outputs.enabled == 'true' }}
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: hansbug/hubvault
+          flavor: |
+            latest=true
+          tags: |
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-
+
+      - name: Build and push image
+        if: ${{ steps.dockerhub.outputs.enabled == 'true' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Skip Docker Hub publish when secrets are absent
+        if: ${{ steps.dockerhub.outputs.enabled != 'true' }}
+        shell: bash
+        run: |
+          echo "DOCKERHUB_USERNAME / DOCKERHUB_TOKEN not configured; skipping Docker Hub publish."
+
   release_cli:
     name: CLI Build And Release
     runs-on: ${{ matrix.os }}
     if: ${{ github.repository == 'hansbug/hubvault' }}
+    needs:
+      - release_docker_smoke
     strategy:
       fail-fast: false
       matrix:

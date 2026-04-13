@@ -14,6 +14,8 @@
 
 它提供接近 Hugging Face Hub 的文件 API 手感，也提供接近 Git 的 commit / branch / tag / merge 语义，但仓库本身仍然只是一个可以整体移动的本地目录。不需要远端服务，也不需要你额外维护 repo 外数据库。
 
+面向对象：想评估、安装和使用 `hubvault` 的仓库用户。
+
 ## 快速开始
 
 安装:
@@ -181,6 +183,86 @@ gunicorn \
   -k uvicorn.workers.UvicornWorker \
   'hubvault.server.asgi:create_app()'
 ```
+
+## Docker
+
+仓库现在也带了一套基于 Alpine 的轻量容器镜像。镜像会按 `full` extra 构建，
+并把编译后的前端静态资源一并打进去，所以启动后前端界面可以直接使用。默认配置如下：
+
+- `frontend` 模式
+- 自动初始化仓库
+- 仓库存储目录 `/data/repo`
+- 监听地址 `0.0.0.0`
+- 默认端口 `9472`
+
+如果你只是想直接运行，先拉取已发布镜像：
+
+```bash
+docker pull ghcr.io/hansbug/hubvault:latest
+# 如果你更习惯 Docker Hub，也可以尝试镜像同步源
+docker pull hansbug/hubvault:latest
+```
+
+然后直接用一条 `docker run` 命令启动，并把仓库数据持久化到 named volume：
+
+```bash
+docker run --rm -it \
+  -e HUBVAULT_TOKEN_RW=dev-token \
+  -v hubvault-data:/data/repo \
+  -p 9472:9472 \
+  ghcr.io/hansbug/hubvault:latest
+```
+
+如果你是从源码仓库本地构建，再执行：
+
+```bash
+docker build -t hubvault:local .
+```
+
+如果你想直接走仓库内置命令，也可以：
+
+```bash
+make docker_build
+```
+
+如果你要运行本地构建出的镜像，只需要把镜像名改成 `hubvault:local`：
+
+```bash
+docker run --rm -it \
+  -e HUBVAULT_TOKEN_RW=dev-token \
+  -v hubvault-data:/data/repo \
+  -p 9472:9472 \
+  hubvault:local
+```
+
+同样的本地运行流程也可以直接用 `make docker_run`。
+
+如果你希望仓库固定落在某个本地目录，可以改成 bind mount：
+
+```bash
+docker run --rm -it \
+  -e HUBVAULT_TOKEN_RW=dev-token \
+  -e HUBVAULT_PORT=8080 \
+  -v "$(pwd)/demo-repo:/data/repo" \
+  -p 8080:8080 \
+  hubvault:local
+```
+
+或者直接使用 `make docker_run_bind DOCKER_REPO_DIR=./demo-repo DOCKER_PORT=8080`。
+
+如果你在 Linux 上用 bind mount，并且希望生成的仓库文件继续归宿主机当前用户所有，
+可以额外加上 `--user "$(id -u):$(id -g)"`，避免文件落成 `root`。
+
+容器读取和 import / ASGI 启动完全相同的 `HUBVAULT_*` 环境变量，因此你可以直接覆盖：
+
+- `HUBVAULT_PORT`
+- `HUBVAULT_SERVE_MODE`
+- `HUBVAULT_REPO_PATH`
+- `HUBVAULT_TOKEN_RO`
+- `HUBVAULT_TOKEN_RW`
+- `HUBVAULT_INIT`
+- `HUBVAULT_INITIAL_BRANCH`
+- `HUBVAULT_LARGE_FILE_THRESHOLD`
 
 ## Remote Client
 
@@ -383,18 +465,6 @@ repo/
 - 贡献指南: [CONTRIBUTING.md](CONTRIBUTING.md)
 - 仓库协作规范: [AGENTS.md](AGENTS.md)
 - Benchmark 记录: [build/benchmark/](build/benchmark/)
-
-## 构建与发布说明
-
-前端静态资源是同一个 Python 包、同一个独立可执行文件的一部分。维护中的构建
-流程如下：
-
-1. 运行 `make webui_package`，构建 `webui/dist/` 并同步到 `hubvault/server/static/webui/`。
-2. 运行 `make package`，产出已经带有这些静态资源的 sdist 和 wheel。
-3. 运行 `make build`，产出带有同一套前端资源的独立可执行文件。
-
-`make package` 和 `make build` 已经依赖前端打包步骤，所以正常发布路径不需要
-手工复制文件；单独保留 sync 流程，是为了本地检查或显式提交静态资源时更方便。
 
 ## 项目状态
 

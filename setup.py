@@ -69,8 +69,8 @@ setup(
     include_package_data=True,
     package_data={
         '%s.server' % _MODULE_NAME: [
-            'server/static/webui/*',
-            'server/static/webui/**/*',
+            'static/webui/*',
+            'static/webui/**/*',
         ],
     },
     classifiers=[

@@ -14,6 +14,8 @@
 
 It gives you Hugging Face style file APIs and Git-like commit / branch / tag / merge semantics, while the repository itself remains a single movable local directory. There is no remote service requirement and no repo-external database to operate.
 
+Audience: repository users who want to evaluate, install, and run `hubvault`.
+
 ## Quick Start
 
 Install from PyPI:
@@ -181,6 +183,91 @@ gunicorn \
   -k uvicorn.workers.UvicornWorker \
   'hubvault.server.asgi:create_app()'
 ```
+
+## Docker
+
+The repository also ships a lightweight Alpine-based container image for the
+full embedded server. The image is built with the `full` extra and bundles the
+compiled frontend assets, so the browser UI works directly after startup. It
+defaults to:
+
+- `frontend` mode
+- automatic repository initialization
+- repository data under `/data/repo`
+- bind host `0.0.0.0`
+- port `9472`
+
+Pull a published image when you want to run it directly:
+
+```bash
+docker pull ghcr.io/hansbug/hubvault:latest
+# optional mirror when you prefer Docker Hub
+docker pull hansbug/hubvault:latest
+```
+
+Then start the server with one `docker run` command and a persistent named
+volume:
+
+```bash
+docker run --rm -it \
+  -e HUBVAULT_TOKEN_RW=dev-token \
+  -v hubvault-data:/data/repo \
+  -p 9472:9472 \
+  ghcr.io/hansbug/hubvault:latest
+```
+
+Build the image locally from a source checkout when you need a local variant:
+
+```bash
+docker build -t hubvault:local .
+```
+
+Or use the convenience make target:
+
+```bash
+make docker_build
+```
+
+Run the local image with the same command shape, changing only the image name:
+
+```bash
+docker run --rm -it \
+  -e HUBVAULT_TOKEN_RW=dev-token \
+  -v hubvault-data:/data/repo \
+  -p 9472:9472 \
+  hubvault:local
+```
+
+The same local-run flow is available through `make docker_run`.
+
+Use a bind mount when you want the repository to stay in one explicit local
+directory:
+
+```bash
+docker run --rm -it \
+  -e HUBVAULT_TOKEN_RW=dev-token \
+  -e HUBVAULT_PORT=8080 \
+  -v "$(pwd)/demo-repo:/data/repo" \
+  -p 8080:8080 \
+  hubvault:local
+```
+
+Or use `make docker_run_bind DOCKER_REPO_DIR=./demo-repo DOCKER_PORT=8080`.
+
+On Linux bind mounts, add `--user "$(id -u):$(id -g)"` when you want the
+persisted repository files to stay owned by your host user instead of `root`.
+
+The container reads the same `HUBVAULT_*` environment variables as the import
+and ASGI startup paths, so you can override:
+
+- `HUBVAULT_PORT`
+- `HUBVAULT_SERVE_MODE`
+- `HUBVAULT_REPO_PATH`
+- `HUBVAULT_TOKEN_RO`
+- `HUBVAULT_TOKEN_RW`
+- `HUBVAULT_INIT`
+- `HUBVAULT_INITIAL_BRANCH`
+- `HUBVAULT_LARGE_FILE_THRESHOLD`
 
 ## Remote Client
 
@@ -385,20 +472,6 @@ Current non-goals:
 - Contribution guide: [CONTRIBUTING.md](CONTRIBUTING.md)
 - Repository collaboration rules: [AGENTS.md](AGENTS.md)
 - Benchmark records: [build/benchmark/](build/benchmark/)
-
-## Build and Release Notes
-
-The packaged frontend is part of the same Python distribution and the same
-standalone executable. The maintained build flow is:
-
-1. Run `make webui_package` to build `webui/dist/` and sync it into `hubvault/server/static/webui/`.
-2. Run `make package` to produce sdist and wheel artifacts that already contain the synced static files.
-3. Run `make build` to produce the standalone executable with the same bundled frontend.
-
-`make package` and `make build` already depend on the frontend packaging step,
-so the normal release path does not require manual copying. The sync rule is
-still useful when you want to inspect or commit the generated static assets
-explicitly.
 
 ## Project Status
 
