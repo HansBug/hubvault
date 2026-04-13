@@ -670,6 +670,14 @@ class TestRepoSemantics:
         assert any("unexpected txn entry: note.txt" in warning for warning in report.warnings)
         assert any("pending transaction directory: stale" in warning for warning in report.warnings)
         assert any("unexpected lock artifact: orphaned.lock" in warning for warning in report.warnings)
+        full_report = api.full_verify()
+        assert any("unexpected txn entry: note.txt" in warning for warning in full_report.warnings)
+        assert any("pending transaction directory: stale" in warning for warning in full_report.warnings)
+        assert any("unexpected lock artifact: orphaned.lock" in warning for warning in full_report.warnings)
+        overview = api.get_storage_overview()
+        txn_section = next(section for section in overview.sections if section.name == "txn")
+        assert txn_section.file_count >= 2
+        assert any("txn/ area still contains" in recommendation for recommendation in overview.recommendations)
 
         api.create_commit(
             operations=[CommitOperationAdd("recovered.bin", b"x")],
@@ -809,6 +817,36 @@ class TestRepoSemantics:
         assert [item.commit_id for item in api.list_repo_commits()] == history_before_squash
         assert api.quick_verify().ok is True
 
+        create_history_before = [item.commit_id for item in api.list_repo_commits()]
+        assert_runtime_failpoint(
+            "create_commit.after_publish",
+            lambda: api.create_commit(
+                operations=[CommitOperationAdd("broken-published.txt", b"nope\n")],
+                commit_message="broken published create",
+            ),
+        )
+        assert api.repo_info().head == main_commit.oid
+        assert "broken-published.txt" not in api.list_repo_files()
+        assert [item.commit_id for item in api.list_repo_commits()] == create_history_before
+
+        merge_history_before = [item.commit_id for item in api.list_repo_commits()]
+        merge_reflog_before = list(api.list_repo_reflog("main"))
+        assert_runtime_failpoint("merge.after_publish", lambda: api.merge("feature"))
+        assert api.repo_info().head == main_commit.oid
+        assert "feature.txt" not in api.list_repo_files()
+        assert [item.commit_id for item in api.list_repo_commits()] == merge_history_before
+        assert api.list_repo_reflog("main") == merge_reflog_before
+
+        assert_runtime_failpoint("squash_history.after_publish", lambda: api.squash_history("main", run_gc=False))
+        assert [item.commit_id for item in api.list_repo_commits()] == history_before_squash
+        assert api.quick_verify().ok is True
+
+        gc_history_before = [item.commit_id for item in api.list_repo_commits()]
+        assert_runtime_failpoint("gc.after_publish", lambda: api.gc())
+        assert [item.commit_id for item in api.list_repo_commits()] == gc_history_before
+        assert api.read_bytes("file.bin") == b"base\n"
+        assert api.quick_verify().ok is True
+
     def test_public_failpoints_support_non_runtime_actions_and_still_roll_back(self, tmp_path, monkeypatch):
         api = HubVaultApi(tmp_path / "repo")
         api.create_repo()
@@ -829,6 +867,18 @@ class TestRepoSemantics:
         assert_failpoint("raise-oserror", OSError, "broken-oserror")
         assert_failpoint("raise-keyboard", KeyboardInterrupt, "broken-keyboard")
         assert_failpoint("unknown-action", ValueError, "broken-valueerror")
+
+        def _raise_exit(code):
+            raise SystemExit(code)
+
+        monkeypatch.setattr("hubvault.repo.backend.os._exit", _raise_exit)
+        with monkeypatch.context() as env:
+            env.setenv("HUBVAULT_FAILPOINT", "create_branch.after_reflog_append")
+            env.setenv("HUBVAULT_FAIL_ACTION", "exit")
+            with pytest.raises(SystemExit) as excinfo:
+                api.create_branch(branch="broken-exit")
+        assert excinfo.value.code == 86
+        assert "broken-exit" not in [item.name for item in api.list_repo_refs().branches]
 
     def test_repo_write_lock_blocks_other_process_readers_and_writers(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")

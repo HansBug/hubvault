@@ -631,13 +631,34 @@ class TestRepoBackendPackage:
         tracked_txdir = repo_dir / "txn" / "tracked-leftover"
         tracked_txdir.mkdir(parents=True)
         _insert_tx_log(repo_dir, "tracked-leftover")
+        manual_note = repo_dir / "txn" / "manual-note.txt"
+        manual_note.write_text("keep", encoding="utf-8")
 
         orphan_txid = "orphan-leftover"
         _insert_tx_log(repo_dir, orphan_txid)
 
         assert api.read_bytes("bundle/file.bin") == b"payload-v1"
         assert not tracked_txdir.exists()
+        assert manual_note.is_file()
 
+        with sqlite3.connect(str(_repo_db_path(repo_dir))) as conn:
+            remaining = conn.execute("SELECT txid FROM txn_log ORDER BY txid").fetchall()
+        assert remaining == []
+
+    def test_backend_write_paths_clear_tx_logs_but_preserve_non_directory_txn_artifacts(self, tmp_path):
+        repo_dir = tmp_path / "repo"
+        api = HubVaultApi(repo_dir)
+        api.create_repo()
+        api.upload_file(path_or_fileobj=b"payload-v1", path_in_repo="bundle/file.bin")
+
+        manual_note = repo_dir / "txn" / "manual-note.txt"
+        manual_note.write_text("keep", encoding="utf-8")
+        _insert_tx_log(repo_dir, "orphan-write-leftover")
+
+        api.upload_file(path_or_fileobj=b"payload-v2", path_in_repo="bundle/second.bin")
+
+        assert manual_note.is_file()
+        assert api.read_bytes("bundle/second.bin") == b"payload-v2"
         with sqlite3.connect(str(_repo_db_path(repo_dir))) as conn:
             remaining = conn.execute("SELECT txid FROM txn_log ORDER BY txid").fetchall()
         assert remaining == []
@@ -721,6 +742,63 @@ class TestRepoBackendPackage:
         assert actual.reclaimed_temporary_size > 0
         assert (repo_dir / "txn" / "manual-note.txt").exists()
         assert api.full_verify().ok is True
+
+    def test_backend_storage_overview_and_gc_reclaim_orphan_blob_branch_objects(self, tmp_path):
+        repo_dir = tmp_path / "repo"
+        api = HubVaultApi(repo_dir)
+        api.create_repo()
+        base_commit = api.create_commit(
+            operations=[CommitOperationAdd("bundle/main.bin", b"main")],
+            commit_message="seed main",
+        )
+        api.create_branch(branch="orphan", revision=base_commit.oid)
+        api.create_commit(
+            revision="orphan",
+            operations=[CommitOperationAdd("bundle/orphan.bin", b"orphan payload")],
+            commit_message="orphan branch payload",
+        )
+        api.delete_branch(branch="orphan")
+
+        overview = api.get_storage_overview()
+        assert overview.reclaimable_gc_size > 0
+
+        preview = api.gc(dry_run=True, prune_cache=False)
+        assert preview.dry_run is True
+        assert preview.reclaimed_object_size > 0
+        assert preview.removed_file_count >= 2
+
+        actual = api.gc(dry_run=False, prune_cache=False)
+        assert actual.dry_run is False
+        assert actual.reclaimed_object_size > 0
+        assert api.list_repo_files() == ["bundle/main.bin"]
+        assert api.full_verify().ok is True
+
+    def test_backend_full_verify_accepts_invalid_cached_size_fields_when_content_still_matches(self, tmp_path):
+        api, repo_dir, payload = _chunked_repo(tmp_path, "full-verify-invalid-cache-size")
+
+        view_path = Path(api.hf_hub_download("artifacts/large.bin"))
+        snapshot_dir = Path(api.snapshot_download())
+        file_meta_path = _only_path(repo_dir / "cache" / "views" / "files", "*.json")
+        snapshot_meta_path = _only_path(repo_dir / "cache" / "views" / "snapshots", "*.json")
+
+        file_meta = _read_json(file_meta_path)
+        file_meta["size"] = "invalid"
+        file_meta_path.write_text(json.dumps(file_meta, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+
+        snapshot_meta = _read_json(snapshot_meta_path)
+        snapshot_meta["files"][0]["size"] = "invalid"
+        snapshot_meta_path.write_text(
+            json.dumps(snapshot_meta, sort_keys=True, separators=(",", ":")),
+            encoding="utf-8",
+        )
+
+        report = api.full_verify()
+
+        assert report.ok is True
+        assert view_path.read_bytes() == payload
+        assert (snapshot_dir / "artifacts" / "large.bin").read_bytes() == payload
+        assert not any("stale file view:" in item for item in report.warnings)
+        assert not any("stale snapshot view:" in item for item in report.warnings)
 
     def test_backend_gc_rejects_corrupted_repositories_before_reclaiming(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")

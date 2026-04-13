@@ -171,9 +171,7 @@ def _fsync_directory(path: Path) -> None:
 
     if not path.exists():
         return
-    flags = os.O_RDONLY
-    if hasattr(os, "O_DIRECTORY"):
-        flags |= os.O_DIRECTORY
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
     try:
         fd = os.open(str(path), flags)
     except OSError:
@@ -4668,15 +4666,11 @@ class RepositoryBackend(object):
             StorageSectionInfo(
                 name="objects.blobs.meta",
                 path="objects/blobs/*.meta.json",
-                total_size=sum(
-                    self._blob_meta_path(object_id).stat().st_size
-                    for object_id in object_sizes["blobs"]
-                    if self._blob_meta_path(object_id).exists()
-                ),
-                file_count=len(object_sizes["blobs"]),
+                total_size=0,
+                file_count=0,
                 reclaimable_size=0,
-                reclaim_strategy="gc",
-                notes="Blob metadata sidecars. Their reclaimable bytes are tied to blob payload reclamation below.",
+                reclaim_strategy="keep",
+                notes="Blob metadata lives in metadata.sqlite3; no published blob sidecar files are kept in steady state.",
             ),
             StorageSectionInfo(
                 name="objects.blobs.data",
@@ -4792,8 +4786,6 @@ class RepositoryBackend(object):
             removed_file_count += len(unreachable_object_ids[object_type])
         for object_id in unreachable_object_ids["blobs"]:
             reclaimed_object_size_estimate += object_sizes["blobs"].get(object_id, 0)
-            if self._blob_meta_path(object_id).exists():
-                removed_file_count += 1
             if self._blob_data_path(object_id).exists():
                 removed_file_count += 1
         if prune_cache:
@@ -4890,11 +4882,6 @@ class RepositoryBackend(object):
             reclaimed_object_size += object_sizes["blobs"].get(object_id, 0)
             self._metadata_store.delete_object(self._metadata_connection(), "blobs", object_id)
             self._recent_object_payload_cache.pop("blobs:%s" % object_id, None)
-            self._quarantine_move_file_unlocked(
-                source_path=self._blob_meta_path(object_id),
-                quarantine_root=q_objects_root,
-                relative_root=self._repo_path / "objects",
-            )
             self._quarantine_move_file_unlocked(
                 source_path=self._blob_data_path(object_id),
                 quarantine_root=q_objects_root,
@@ -6535,13 +6522,10 @@ class RepositoryBackend(object):
         logical_size = int(payload["logical_size"])
         lfs_info = None
         if str(payload.get("storage_kind")) == "chunked":
-            pointer_size = payload.get("pointer_size")
-            if pointer_size is None:
-                pointer_size = len(canonical_lfs_pointer(sha256_hex, logical_size))
             lfs_info = BlobLfsInfo(
                 size=logical_size,
                 sha256=sha256_hex,
-                pointer_size=int(pointer_size),
+                pointer_size=int(payload["pointer_size"]),
             )
         return RepoFile(
             path=path,
@@ -6843,10 +6827,7 @@ class RepositoryBackend(object):
             cached_entry = visible_index.get(part.descriptor.chunk_id)
             pack_signature = None
             if cached_entry is None:
-                staged_recent = staged_recent_entries.get(str(part.descriptor.chunk_id))
-                if staged_recent is None:
-                    continue
-                cached_entry, pack_signature = staged_recent
+                cached_entry, pack_signature = staged_recent_entries[str(part.descriptor.chunk_id)]
             if pack_signature is None:
                 pack_path = self._chunk_pack_path_for_cache(cached_entry.pack_id, txdir=txdir)
                 pack_signature = self._pack_state_signature(pack_path)
@@ -7753,16 +7734,14 @@ class RepositoryBackend(object):
             payload = self._read_object_payload("files", file_object_id)
             if str(payload.get("storage_kind")) == "chunked":
                 self._verify_chunked_file_payload(payload, chunk_context=chunk_context)
-                stored_pointer_size = payload.get("pointer_size")
-                if stored_pointer_size is not None:
-                    expected_pointer_size = len(
-                        canonical_lfs_pointer(
-                            _public_sha256_hex(str(payload["sha256"])),
-                            int(payload["logical_size"]),
-                        )
+                expected_pointer_size = len(
+                    canonical_lfs_pointer(
+                        _public_sha256_hex(str(payload["sha256"])),
+                        int(payload["logical_size"]),
                     )
-                    if int(stored_pointer_size) != expected_pointer_size:
-                        raise IntegrityError("file pointer size mismatch")
+                )
+                if int(payload["pointer_size"]) != expected_pointer_size:
+                    raise IntegrityError("file pointer size mismatch")
                 verified_files.add(file_object_id)
                 return
 

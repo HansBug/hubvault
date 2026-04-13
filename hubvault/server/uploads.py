@@ -125,8 +125,6 @@ def _target_branch_state(api, manifest: dict) -> dict:
         for path, file_object_id in snapshot.items():
             file_payload = backend._read_object_payload("files", file_object_id)
             file_sha256 = str(file_payload["sha256"])
-            if file_sha256.startswith("sha256:"):
-                file_sha256 = file_sha256[len("sha256:"):]
             sha_sources.setdefault(file_sha256, path)
             if str(file_payload.get("storage_kind")) == "chunked":
                 for chunk_payload in file_payload.get("chunks", []):
@@ -386,9 +384,7 @@ def _materialize_add_operation(backend, operation: dict, planned_operation: dict
                     raise HubVaultValidationError("Missing uploaded chunk payload: %s." % (field_name,))
                 payload = bytes(uploads[field_name])
             else:
-                payload = reusable_payloads.get(chunk["chunk_id"])
-                if payload is None:
-                    raise ConflictError("planned chunk is no longer available; please re-plan the upload")
+                payload = reusable_payloads[chunk["chunk_id"]]
 
             if len(payload) != int(chunk["logical_size"]):
                 raise HubVaultValidationError("Chunk payload size does not match the manifest.")

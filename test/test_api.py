@@ -410,6 +410,38 @@ class TestApi:
         assert "+++ /dev/null" in changes["README.md"].unified_diff
         assert "-# hubvault" in changes["README.md"].unified_diff
 
+    def test_get_commit_detail_marks_oversized_text_and_nul_payloads_as_binary(self, tmp_path):
+        api = HubVaultApi(tmp_path / "repo")
+        api.create_repo()
+        api.create_commit(
+            operations=[CommitOperationAdd("docs/demo.txt", b"print('v1')\n")],
+            commit_message="seed docs",
+        )
+        modified_commit = api.create_commit(
+            operations=[CommitOperationAdd("docs/demo.txt", b"print('v2')\n")],
+            commit_message="update docs",
+        )
+
+        limited_detail = api.get_commit_detail(modified_commit.oid, diff_max_text_size=1)
+        limited_change = {item.path: item for item in limited_detail.changes}["docs/demo.txt"]
+
+        assert limited_change.change_type == "modified"
+        assert limited_change.is_binary is True
+        assert limited_change.unified_diff is None
+        assert limited_change.old_file is not None
+        assert limited_change.new_file is not None
+
+        binary_commit = api.create_commit(
+            operations=[CommitOperationAdd("assets/raw.bin", b"abc\x00def")],
+            commit_message="add binary payload",
+        )
+        binary_detail = api.get_commit_detail(binary_commit.oid)
+        binary_change = {item.path: item for item in binary_detail.changes}["assets/raw.bin"]
+
+        assert binary_change.change_type == "added"
+        assert binary_change.is_binary is True
+        assert binary_change.unified_diff is None
+
     def test_public_git_oid_revisions_work_for_repo_reads(self, tmp_path):
         api = HubVaultApi(tmp_path / "repo")
         api.create_repo(default_branch="release/v1")

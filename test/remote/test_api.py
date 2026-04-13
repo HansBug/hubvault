@@ -27,6 +27,28 @@ class TestRemoteApi:
         assert api.endpoint == "https://example.com"
         assert api.token == "secret"
 
+    def test_build_client_omits_auth_header_when_token_is_missing(self, monkeypatch):
+        captured = {}
+
+        def _build_client(**kwargs):
+            captured["headers"] = kwargs.get("headers")
+
+            class _DummyClient:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, exc_type, exc, tb):
+                    return False
+
+            return _DummyClient()
+
+        monkeypatch.setattr("hubvault.remote.api.build_http_client", _build_client)
+
+        with HubVaultRemoteApi("https://example.com", token=None).build_client():
+            pass
+
+        assert captured["headers"] is None
+
     def test_missing_remote_extra_is_deferred_to_build_client(self, monkeypatch):
         api = HubVaultRemoteApi("https://example.com", token="secret")
 
@@ -63,6 +85,7 @@ class TestRemoteApi:
         assert remote_api.list_repo_reflog("release/v1", limit=2) == seeded["api"].list_repo_reflog(
             "release/v1", limit=2
         )
+        assert remote_api.list_repo_reflog("release/v1") == seeded["api"].list_repo_reflog("release/v1")
 
     def test_remote_reads_downloads_and_snapshots_round_trip(self, monkeypatch, tmp_path):
         repo_dir = tmp_path / "repo"
@@ -192,6 +215,23 @@ class TestRemoteApi:
         assert seeded["api"].read_bytes("docs/from-bytes.txt") == b"bytes upload\n"
         assert seeded["api"].read_bytes("docs/from-path.txt") == b"path upload\n"
         assert seeded["api"].read_bytes("docs/from-fileobj.txt") == b"fileobj upload\n"
+
+    def test_remote_create_commit_respects_explicit_parent_commit(self, monkeypatch, tmp_path):
+        repo_dir = tmp_path / "repo"
+        seeded = seed_phase78_repo(repo_dir)
+        app = create_phase45_app(repo_dir)
+        patch_remote_test_client(monkeypatch, app)
+        remote_api = HubVaultRemoteApi("http://testserver", token="rw-token", revision=TEST_DEFAULT_BRANCH)
+        parent_commit = seeded["api"].repo_info().head
+
+        commit = remote_api.create_commit(
+            operations=[CommitOperationAdd("docs/explicit-parent.txt", b"explicit parent\n")],
+            parent_commit=parent_commit,
+            commit_message="explicit parent commit",
+        )
+
+        assert commit.commit_message == "explicit parent commit"
+        assert seeded["api"].read_bytes("docs/explicit-parent.txt") == b"explicit parent\n"
 
     def test_remote_upload_progress_callback_tracks_streamed_bytes(self, monkeypatch, tmp_path):
         repo_dir = tmp_path / "repo"
@@ -402,6 +442,34 @@ class TestRemoteApi:
         assert seeded["api"].read_bytes("bundle/.gitattributes") == b"filter=lfs diff=lfs merge=lfs -text\n"
         assert large_commit.commit_message == "Upload large folder using hubvault"
         assert seeded["api"].read_bytes("huge.bin") == seeded["large_update"]
+
+    def test_remote_upload_folder_delete_patterns_work_from_repository_root(self, monkeypatch, tmp_path):
+        repo_dir = tmp_path / "repo"
+        seeded = seed_phase78_repo(repo_dir)
+        seeded["api"].create_commit(
+            operations=[
+                CommitOperationAdd(".gitattributes", b"*.bin filter=lfs diff=lfs merge=lfs -text\n"),
+                CommitOperationAdd("keep.txt", b"old keep\n"),
+                CommitOperationAdd("remove.txt", b"old remove\n"),
+            ],
+            commit_message="seed root files",
+        )
+        app = create_phase45_app(repo_dir)
+        patch_remote_test_client(monkeypatch, app)
+        remote_api = HubVaultRemoteApi("http://testserver", token="rw-token", revision=TEST_DEFAULT_BRANCH)
+        source_dir = tmp_path / "root-sync"
+        source_dir.mkdir()
+        (source_dir / "keep.txt").write_bytes(b"new keep\n")
+
+        upload_commit = remote_api.upload_folder(
+            folder_path=source_dir,
+            delete_patterns="*",
+        )
+
+        assert upload_commit.commit_message == "Upload folder using hubvault"
+        assert seeded["api"].read_bytes("keep.txt") == b"new keep\n"
+        assert "remove.txt" not in seeded["api"].list_repo_files()
+        assert seeded["api"].read_bytes(".gitattributes") == b"*.bin filter=lfs diff=lfs merge=lfs -text\n"
 
     def test_remote_upload_folder_rejects_non_directory_inputs(self, monkeypatch, tmp_path):
         repo_dir = tmp_path / "repo"
