@@ -130,8 +130,12 @@ jobs:
           else
             find . -maxdepth 2 -print
           fi
-          cloc hubvault
-          cloc test
+          if command -v cloc >/dev/null 2>&1; then
+            cloc hubvault
+            cloc test
+          else
+            echo "cloc not available; skipping source line counts"
+          fi
       - name: Run unittest
         env:
           CI: 'true'
