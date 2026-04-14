@@ -125,7 +125,11 @@ jobs:
           python -V
           pip --version
           pip list
-          tree .
+          if command -v tree >/dev/null 2>&1; then
+            tree .
+          else
+            find . -maxdepth 2 -print
+          fi
           cloc hubvault
           cloc test
       - name: Run unittest
@@ -249,7 +253,11 @@ jobs:
           python -V
           pip --version
           pip list
-          tree .
+          if command -v tree >/dev/null 2>&1; then
+            tree .
+          else
+            find . -maxdepth 2 -print
+          fi
       - name: Get package version
         shell: bash
         run: |
