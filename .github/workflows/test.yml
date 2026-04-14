@@ -125,9 +125,17 @@ jobs:
           python -V
           pip --version
           pip list
-          tree .
-          cloc hubvault
-          cloc test
+          if command -v tree >/dev/null 2>&1; then
+            tree .
+          else
+            find . -maxdepth 2 -print
+          fi
+          if command -v cloc >/dev/null 2>&1; then
+            cloc hubvault
+            cloc test
+          else
+            echo "cloc not available; skipping source line counts"
+          fi
       - name: Run unittest
         env:
           CI: 'true'
@@ -249,7 +257,11 @@ jobs:
           python -V
           pip --version
           pip list
-          tree .
+          if command -v tree >/dev/null 2>&1; then
+            tree .
+          else
+            find . -maxdepth 2 -print
+          fi
       - name: Get package version
         shell: bash
         run: |
