@@ -17,7 +17,7 @@
     "@fontsource/ibm-plex-mono": "^5.2.7",
     "@iconify-json/material-icon-theme": "^1.2.58",
     "@iconify/vue": "^5.0.0",
-    "axios": "^1.8.4",
+    "axios": "^1.15.2",
     "dayjs": "^1.11.13",
     "diff2html": "^3.4.56",
     "dompurify": "^3.2.3",
